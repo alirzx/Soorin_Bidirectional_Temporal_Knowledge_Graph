@@ -1,0 +1,191 @@
+{
+  "schema_version": "soorin.soc.splunk-mock.v1",
+  "synthetic": true,
+  "warning": "ALL RECORDS ARE SYNTHETIC. Reserved example IPs and example-domain hosts. Do not interpret as exported customer SIEM events.",
+  "records": [
+    {
+      "id": "SPLUNK-NOTABLE-001",
+      "kind": "notable",
+      "_time": "2026-10-29T10:02:26Z",
+      "tenant_id": "soorin-soc-lab-synthetic",
+      "source_system": "splunk_es",
+      "index": "notable",
+      "sourcetype": "stash",
+      "search_name": "Password Spray Detection",
+      "orig_sid": "scheduler__soc_lab__RMD5_lab001",
+      "severity": "medium",
+      "status": "new",
+      "host": "dc-auth-01.corp.example",
+      "src": "192.0.2.44",
+      "user": "lab-user-01",
+      "mitre_techniques": [
+        "T1110.003"
+      ],
+      "attempt_count": 27,
+      "success_count": 0,
+      "first_seen": "2026-10-29T10:01:06Z",
+      "last_seen": "2026-10-29T10:02:26Z",
+      "linked_alerts": [
+        "SPLUNK-ALERT-001",
+        "SPLUNK-ALERT-002"
+      ],
+      "case_id": "SOC-CASE-001",
+      "description": "Synthetic ES notable: 27 authentication failures against 27 distinct lab users; no successful login."
+    },
+    {
+      "id": "SPLUNK-NOTABLE-002",
+      "kind": "notable",
+      "_time": "2026-10-29T11:17:03Z",
+      "tenant_id": "soorin-soc-lab-synthetic",
+      "source_system": "splunk_es",
+      "index": "notable",
+      "sourcetype": "stash",
+      "search_name": "Suspicious Registry Persistence Modification",
+      "orig_sid": "scheduler__soc_lab__RMD5_lab002",
+      "severity": "low",
+      "status": "closed_benign",
+      "host": "ws-admin-022.corp.example",
+      "src": "198.51.100.77",
+      "user": "lab-admin",
+      "mitre_techniques": [
+        "T1112"
+      ],
+      "linked_alerts": [
+        "SPLUNK-ALERT-003"
+      ],
+      "description": "Synthetic authorized registry configuration change, marked benign after analyst review."
+    },
+    {
+      "id": "SPLUNK-ALERT-001",
+      "kind": "alert",
+      "_time": "2026-10-29T10:02:20Z",
+      "tenant_id": "soorin-soc-lab-synthetic",
+      "source_system": "agentic_soc_fusion",
+      "index": "agentic_alerts",
+      "sourcetype": "aisoc:fused",
+      "rule_name": "Password Spray Detection",
+      "severity": "medium",
+      "status": "new",
+      "host": "dc-auth-01.corp.example",
+      "src_ip": "192.0.2.44",
+      "username": "lab-user-01",
+      "mitre_techniques": [
+        "T1110.003"
+      ],
+      "notable_id": "SPLUNK-NOTABLE-001",
+      "linked_events": [
+        "SPLUNK-EVENT-4625-001",
+        "SPLUNK-EVENT-4625-002"
+      ],
+      "attempt_count": 27,
+      "success_count": 0,
+      "description": "Synthetic fused alert for broad password spraying across 27 lab accounts."
+    },
+    {
+      "id": "SPLUNK-ALERT-002",
+      "kind": "alert",
+      "_time": "2026-10-29T10:02:23Z",
+      "tenant_id": "soorin-soc-lab-synthetic",
+      "source_system": "agentic_soc_fusion",
+      "index": "agentic_alerts",
+      "sourcetype": "aisoc:fused",
+      "rule_name": "Unusual Authentication Failure Volume",
+      "severity": "medium",
+      "status": "new",
+      "host": "dc-auth-01.corp.example",
+      "src_ip": "192.0.2.44",
+      "username": "lab-user-02",
+      "mitre_techniques": [
+        "T1110.003"
+      ],
+      "notable_id": "SPLUNK-NOTABLE-001",
+      "description": "Synthetic correlated authentication-volume alert."
+    },
+    {
+      "id": "SPLUNK-ALERT-003",
+      "kind": "alert",
+      "_time": "2026-10-29T11:16:58Z",
+      "tenant_id": "soorin-soc-lab-synthetic",
+      "source_system": "agentic_soc_fusion",
+      "index": "agentic_alerts",
+      "sourcetype": "aisoc:fused",
+      "rule_name": "Windows Registry Persistence Change",
+      "severity": "low",
+      "status": "closed_benign",
+      "host": "ws-admin-022.corp.example",
+      "src_ip": "198.51.100.77",
+      "username": "lab-admin",
+      "mitre_techniques": [
+        "T1112"
+      ],
+      "notable_id": "SPLUNK-NOTABLE-002",
+      "description": "Synthetic authorized endpoint administration event."
+    },
+    {
+      "id": "SPLUNK-EVENT-4625-001",
+      "kind": "event",
+      "_time": "2026-10-29T10:01:06Z",
+      "tenant_id": "soorin-soc-lab-synthetic",
+      "source_system": "splunk_search",
+      "index": "wineventlog",
+      "sourcetype": "WinEventLog:Security",
+      "host": "dc-auth-01.corp.example",
+      "IpAddress": "192.0.2.44",
+      "AccountName": "lab-user-01",
+      "EventCode": "4625",
+      "action": "failure",
+      "search_id": "lab-search-4625-01",
+      "notable_id": "SPLUNK-NOTABLE-001",
+      "_raw": "2026-10-29T10:01:06Z WinEventLog:Security Computer=dc-auth-01.corp.example EventCode=4625 AccountName=lab-user-01 IpAddress=192.0.2.44 Status=0xC000006D"
+    },
+    {
+      "id": "SPLUNK-EVENT-4625-002",
+      "kind": "event",
+      "_time": "2026-10-29T10:01:09Z",
+      "tenant_id": "soorin-soc-lab-synthetic",
+      "source_system": "splunk_search",
+      "index": "wineventlog",
+      "sourcetype": "WinEventLog:Security",
+      "Computer": "dc-auth-01.corp.example",
+      "ClientIP": "192.0.2.44",
+      "User": "lab-user-02",
+      "EventID": "4625",
+      "action": "failure",
+      "search_id": "lab-search-4625-01",
+      "notable_id": "SPLUNK-NOTABLE-001",
+      "_raw": "2026-10-29T10:01:09Z WinEventLog:Security Computer=dc-auth-01.corp.example EventID=4625 User=lab-user-02 ClientIP=192.0.2.44 Status=0xC000006D"
+    },
+    {
+      "id": "SOC-CASE-001",
+      "kind": "case",
+      "_time": "2026-10-29T10:08:00Z",
+      "tenant_id": "soorin-soc-lab-synthetic",
+      "source_system": "agentic_soc",
+      "status": "investigating",
+      "severity": "medium",
+      "title": "Password spray against lab domain controller",
+      "host": "dc-auth-01.corp.example",
+      "linked_notables": [
+        "SPLUNK-NOTABLE-001"
+      ],
+      "linked_alerts": [
+        "SPLUNK-ALERT-001",
+        "SPLUNK-ALERT-002"
+      ],
+      "jira_key": "SOC-101",
+      "description": "Synthetic Tier 1 triage escalated to case; no successful authentication observed."
+    },
+    {
+      "id": "SOC-101",
+      "kind": "jira",
+      "_time": "2026-10-29T10:15:00Z",
+      "tenant_id": "soorin-soc-lab-synthetic",
+      "source_system": "jira_lab",
+      "status": "open",
+      "issue_type": "Incident",
+      "summary": "Investigate synthetic password spray evidence",
+      "case_id": "SOC-CASE-001",
+      "description": "Synthetic Jira test ticket referencing a SOC case; no Jira API calls are made."
+    }
+  ]
+}
