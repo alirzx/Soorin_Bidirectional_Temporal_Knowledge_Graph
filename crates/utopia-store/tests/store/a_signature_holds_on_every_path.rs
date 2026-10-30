@@ -1,0 +1,245 @@
+//! 关系的签名（domain / range）在抽取之外的写路径上也得算数（#190 / #196）。
+//!
+//! 抽取写入时按 #138 掰正方向或留空谓词，但**合并**会换掉主语的类型，守卫只装在抽取上
+//! 就被它绕过去。这里守两件事：
+//!
+//! 1. 合并之后，被换了主语的事实若违反签名 → `axiom_violations` 里多一条 `signature`。
+//! 2. 一致性检查（R0）也能量出签名违规，事实撤了它就被清掉。
+//!
+//! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
+
+use sqlx::PgPool;
+use uuid::Uuid;
+
+struct Fixture {
+    org: Uuid,
+    kb: Uuid,
+    company: Uuid,
+    person: Uuid,
+    /// schema.org 的 `employee (organization → person)`
+    employee: Uuid,
+    acme: Uuid,
+    alice: Uuid,
+    bob: Uuid,
+}
+
+async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
+    let (org, ws, kb) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    let (company, person, employee) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    let (acme, alice, bob) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    let (src, doc, chunk) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+
+    sqlx::query("INSERT INTO organizations (id, name) VALUES ($1, 'signature-test')")
+        .bind(org)
+        .execute(pool)
+        .await?;
+    sqlx::query("INSERT INTO workspaces (id, org_id, name) VALUES ($1, $2, 'signature-test')")
+        .bind(ws)
+        .bind(org)
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_bases (id, workspace_id, name) VALUES ($1, $2, 'signature-test')",
+    )
+    .bind(kb)
+    .bind(ws)
+    .execute(pool)
+    .await?;
+    for (id, key, label) in [
+        (company, "company", "Company"),
+        (person, "person", "Person"),
+    ] {
+        sqlx::query("INSERT INTO entity_types (id, kb_id, key, label) VALUES ($1, $2, $3, $4)")
+            .bind(id)
+            .bind(kb)
+            .bind(key)
+            .bind(label)
+            .execute(pool)
+            .await?;
+    }
+    sqlx::query(
+        "INSERT INTO relation_types (id, kb_id, key, label) VALUES ($1, $2, 'employee', 'employee')",
+    )
+    .bind(employee)
+    .bind(kb)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO relation_type_domains (relation_type_id, entity_type_id) VALUES ($1, $2)",
+    )
+    .bind(employee)
+    .bind(company)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO relation_type_ranges (relation_type_id, entity_type_id) VALUES ($1, $2)",
+    )
+    .bind(employee)
+    .bind(person)
+    .execute(pool)
+    .await?;
+    for (id, ty, name) in [
+        (acme, company, "Acme"),
+        (alice, person, "Alice"),
+        (bob, person, "Bob"),
+    ] {
+        sqlx::query(
+            "INSERT INTO entities (id, kb_id, type_id, canonical_name) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(id)
+        .bind(kb)
+        .bind(ty)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    }
+    sqlx::query("INSERT INTO sources (id, kb_id, name) VALUES ($1, $2, 'signature-test')")
+        .bind(src)
+        .bind(kb)
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO documents (id, kb_id, source_id, filename, sha256, status)
+         VALUES ($1, $2, $3, 'note.md', 'signature', 'ready')",
+    )
+    .bind(doc)
+    .bind(kb)
+    .bind(src)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO chunks (id, kb_id, document_id, seq, text)
+         VALUES ($1, $2, $3, 0, 'Alice is an employee of Acme. Bob is an employee of Alice.')",
+    )
+    .bind(chunk)
+    .bind(kb)
+    .bind(doc)
+    .execute(pool)
+    .await?;
+    Ok(Fixture {
+        org,
+        kb,
+        company,
+        person,
+        employee,
+        acme,
+        alice,
+        bob,
+    })
+}
+
+async fn live_employee_edges(pool: &PgPool, f: &Fixture) -> anyhow::Result<Vec<(Uuid, Uuid)>> {
+    Ok(sqlx::query_as(
+        "SELECT subject_id, object_id FROM facts
+          WHERE kb_id = $1 AND predicate_id = $2 AND invalidated_at IS NULL
+          ORDER BY recorded_at",
+    )
+    .bind(f.kb)
+    .bind(f.employee)
+    .fetch_all(pool)
+    .await?)
+}
+
+async fn open_signature_breaks(pool: &PgPool, kb: Uuid) -> anyhow::Result<Vec<Uuid>> {
+    Ok(sqlx::query_as::<_, (Uuid,)>(
+        "SELECT left_fact FROM axiom_violations
+          WHERE kb_id = $1 AND kind = 'signature' AND status = 'open'",
+    )
+    .bind(kb)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|(id,)| id)
+    .collect())
+}
+
+#[tokio::test]
+async fn a_merge_that_breaks_the_signature_is_recorded() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        // Acme employee Alice：主语 company、宾语 person，合签名
+        sqlx::query(
+            "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(f.kb)
+        .bind(f.acme)
+        .bind(f.employee)
+        .bind(f.alice)
+        .execute(&pool)
+        .await?;
+        assert!(open_signature_breaks(&pool, f.kb).await?.is_empty());
+
+        // 1. 合并：把 Acme 并进 Bob（person），Acme employee Alice 的主语变成 person
+        utopia_store::resolution::merge_entities(&pool, f.kb, f.acme, f.bob, None, "test")
+            .await?;
+        let edges = live_employee_edges(&pool, &f).await?;
+        assert_eq!(edges, vec![(f.bob, f.alice)], "the merge moved the subject onto Bob");
+        let (moved_fact,): (Uuid,) = sqlx::query_as(
+            "SELECT id FROM facts WHERE kb_id = $1 AND predicate_id = $2 AND invalidated_at IS NULL",
+        )
+        .bind(f.kb)
+        .bind(f.employee)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            open_signature_breaks(&pool, f.kb).await?,
+            vec![moved_fact],
+            "a merge that breaks the signature must show up as an open violation"
+        );
+
+        // 2. 一致性检查量得出它，撤了事实就清掉
+        let report = utopia_store::reasoning::run(&pool, f.kb).await?;
+        assert_eq!(report.found, 1);
+        assert_eq!(report.inserted, 0, "already recorded by the merge; the check must not duplicate it");
+        sqlx::query("UPDATE facts SET invalidated_at = now() WHERE id = $1")
+            .bind(moved_fact)
+            .execute(&pool)
+            .await?;
+        let report = utopia_store::reasoning::run(&pool, f.kb).await?;
+        assert_eq!(report.found, 0);
+        assert_eq!(report.cleared, 1, "a retracted fact takes its violation with it");
+        assert!(open_signature_breaks(&pool, f.kb).await?.is_empty());
+
+        // 未分类的实体不算违反：类型是 NULL 的主语没有东西可比
+        let untyped = Uuid::now_v7();
+        sqlx::query("INSERT INTO entities (id, kb_id, canonical_name) VALUES ($1, $2, 'Nobody')")
+            .bind(untyped)
+            .bind(f.kb)
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, confidence)
+             VALUES ($1, $2, $3, $4, $5, 0.9)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(f.kb)
+        .bind(untyped)
+        .bind(f.employee)
+        .bind(f.alice)
+        .execute(&pool)
+        .await?;
+        let mut conn = pool.acquire().await?;
+        assert!(
+            utopia_store::reasoning::signature_breaks(&mut conn, f.kb, None)
+                .await?
+                .is_empty(),
+            "an untyped subject is unknown, not wrong"
+        );
+        let _ = (f.company, f.person);
+        anyhow::Ok(())
+    }
+    .await;
+
+    let _ = sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await;
+    run
+}
