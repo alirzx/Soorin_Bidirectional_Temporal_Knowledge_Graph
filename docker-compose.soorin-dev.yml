@@ -1,0 +1,40 @@
+# Isolated source build for Sprint 1. This compose project does not reuse the
+# rc9 database volume or ./data bind mount. Use an explicit project name.
+services:
+  db:
+    image: ${UTOPIA_DB_IMAGE:-pgvector/pgvector:pg16}
+    environment:
+      POSTGRES_USER: utopia
+      POSTGRES_PASSWORD: ${SOORIN_DEV_DB_PASSWORD:-utopia-dev-only}
+      POSTGRES_DB: utopia
+    ports:
+      - "${SOORIN_DEV_DB_BIND:-127.0.0.1:2517}:5432"
+    volumes:
+      - soorin_sprint1_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U utopia -d utopia"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      UTOPIA_DATABASE_URL: postgres://utopia:${SOORIN_DEV_DB_PASSWORD:-utopia-dev-only}@db:5432/utopia
+      UTOPIA_BIND_ADDR: 0.0.0.0:1516
+      UTOPIA_WEB_DIST: /app/web-dist
+      UTOPIA_DATA_DIR: /app/data
+      UTOPIA_OPEN_REGISTRATION: "true"
+    ports:
+      - "${SOORIN_DEV_APP_BIND:-127.0.0.1:2516}:1516"
+    volumes:
+      - soorin_sprint1_data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  soorin_sprint1_db:
+  soorin_sprint1_data:
