@@ -43,6 +43,7 @@ pub mod review;
 pub mod review_summary;
 pub mod rss_full_content;
 pub mod sealing;
+pub mod soorin_identity;
 pub mod settings;
 pub mod signature_vectors;
 pub mod sources;
