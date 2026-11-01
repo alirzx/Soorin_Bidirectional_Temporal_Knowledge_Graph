@@ -1,27 +1,47 @@
-# SOC ontology v1
+# Soorin SOC ontology v1
 
-The source is `soorin/ontology/soc_ontology_v1.yaml`, a JSON-compatible YAML document so validation has no third-party dependency. It defines 17 entity classes and 15 relation classes with stable keys, descriptions, domain/range, cardinality, temporal behavior, provenance requirement, inverse, attributes, and confidence policy.
+The ontology source is [`soorin/ontology/soc_ontology_v1.yaml`](../../soorin/ontology/soc_ontology_v1.yaml), a JSON-compatible YAML document so the Python validator has no external YAML dependency.
 
-## Runtime import
+It declares **17 entity classes and 15 relation classes** with keys, descriptions, domain/range, temporal semantics, cardinality, inverse, expected provenance and confidence policies. **Declaration is not proof of runtime enforcement**: Utopia stores supported ontology fields; several Soorin policy fields are conventions requiring separate validation.
 
-`soorin/ontology/importer.py` validates the policy file, fetches the selected KB's authenticated ontology view, and produces a dry-run plan. Apply requires an explicit base URL, KB ID, token, and `--apply`. It creates only absent types, refuses label/temporal conflicts, never deletes or updates existing types, and verifies the resulting ontology.
+## Guarded importer: offline-tested, live verification pending
+
+[`soorin/ontology/importer.py`](../../soorin/ontology/importer.py) implements validate, preview, authenticated create-only apply and post-apply verification. Tests use a fake API. It has **not** been tested against a live isolated Utopia KB.
+
+Inspect current source and CLI help first:
 
 ```bash
+python3 -m soorin.ontology.importer --help
+```
+
+Current CLI usage is:
+
+```text
 python3 -m soorin.ontology.importer \
   --base-url http://127.0.0.1:2516 \
   --kb-id '<isolated-test-kb-uuid>' \
-  --token '<editor-session-or-supported-bearer>'
-
-# Re-run with --apply only after reviewing the preview.
+  --token '<test-only-editor-token>'
 ```
 
-Do not use `Soorin SOC Lab` for automatic testing. Native Utopia OWL import remains available for RDF/OWL vocabularies; the Soorin importer uses ontology CRUD because the domain policy contains operational fields not represented by Utopia's OWL projection.
+**Security warning:** `--token` places the credential in the process argument list and, if written literally into a shell command, may expose it through shell history. **Do not use this CLI with production tokens**. Refactor the importer to accept protected token input or a secret store before live operational use. The above syntax is documented only to describe the current implementation. Do not paste real credentials into command histories or CI logs.
 
-Key semantic safeguards:
+The `--apply` flag performs writes; leave it off for preview. Never run against the existing `Soorin SOC Lab` during automatic testing. An isolated test KB and authenticated role are required.
 
-- `CORRELATED_WITH` never means identity.
-- `DETECTED_BY` may carry a rule version/configuration time.
-- `SUPPORTED_BY` requires evidence provenance.
-- `HAD_IP` is temporal and network scoped.
-- `SUPERSEDES` is explicit only.
-- Similarity/risk scores never mean malicious probability.
+## Model and provenance semantics
+
+- `CORRELATED_WITH` represents correlation, never entity identity.
+- `DETECTED_BY` may contain rule version/configuration time; the current rule configuration is not necessarily fire-time evidence.
+- `SUPPORTED_BY` must point to recoverable evidence.
+- `HAD_IP` is time- and network-scope-aware.
+- `SUPERSEDES` requires an explicit source assertion.
+- Embedding similarity and vendor risk scores are ranking/risk signals, not malicious probabilities.
+
+The current importer **does not yet compare all pre-existing domain/range, axiom, cardinality and provenance policies**, so an apparently successful preview may miss semantic conflicts. See [P0 gaps](SOC_FOUNDATION_GAP_ANALYSIS.md).
+
+## Acceptance before merge
+
+1. Validate ontology declarations and inverse signatures.
+2. Refuse conflicts across *all* enforceable relation fields; flag policy-only fields clearly.
+3. Preview and apply to a disposable KB using a protected token.
+4. Verify persisted entity and relation types via authenticated Utopia API.
+5. Ingest a synthetic event, run alignment jobs and verify **typed graph materialization**, not merely an import acknowledgment.
