@@ -242,22 +242,13 @@ pub async fn link_utopia_entity(
     identity_id: Uuid,
     entity_id: Uuid,
 ) -> AppResult<()> {
-    let current: Option<(Option<Uuid>,)> = sqlx::query_as(
-        "SELECT utopia_entity_id FROM soorin_canonical_identities WHERE kb_id=$1 AND id=$2",
-    )
-    .bind(kb_id)
-    .bind(identity_id)
-    .fetch_optional(pool)
-    .await?;
-    let Some((current,)) = current else {
-        return Err(AppError::NotFound);
-    };
-    if current.is_some_and(|id| id != entity_id) {
-        return Err(AppError::Conflict("identity is already linked to another Utopia entity".into()));
-    }
+    // Atomic compare-and-set: first writer wins. Concurrent attempts to
+    // link a different entity cannot overwrite the established binding.
     let result = sqlx::query(
-        "UPDATE soorin_canonical_identities SET utopia_entity_id=$3
+        "UPDATE soorin_canonical_identities
+            SET utopia_entity_id=$3
           WHERE kb_id=$1 AND id=$2
+            AND (utopia_entity_id IS NULL OR utopia_entity_id=$3)
             AND EXISTS (SELECT 1 FROM entities WHERE kb_id=$1 AND id=$3)",
     )
     .bind(kb_id)
@@ -265,8 +256,21 @@ pub async fn link_utopia_entity(
     .bind(entity_id)
     .execute(pool)
     .await?;
-    if result.rows_affected() != 1 {
-        return Err(AppError::Validation("Utopia entity does not belong to this knowledge base".into()));
+    if result.rows_affected() == 0 {
+        let found: Option<(Option<Uuid>,)> = sqlx::query_as(
+            "SELECT utopia_entity_id FROM soorin_canonical_identities WHERE kb_id=$1 AND id=$2",
+        )
+        .bind(kb_id)
+        .bind(identity_id)
+        .fetch_optional(pool)
+        .await?;
+        match found {
+            None => return Err(AppError::NotFound),
+            Some((Some(other),)) if other != entity_id => {
+                return Err(AppError::Conflict("identity is already linked to another Utopia entity".into()));
+            }
+            _ => return Err(AppError::Validation("Utopia entity does not belong to this knowledge base".into())),
+        }
     }
     Ok(())
 }
