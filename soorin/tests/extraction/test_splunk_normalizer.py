@@ -57,6 +57,47 @@ class SplunkNormalizerTests(unittest.TestCase):
         self.assertEqual(ids["notable_id"], "NOTABLE-OCSF-001")
         self.assertEqual(ids["source_event_id"], "EVENT-OCSF-001")
 
+    def test_delivery_replay_has_stable_source_checksum(self):
+        payload = {"alert_id":"NOTABLE-1", "event_time":"2026-01-01T00:00:00Z", "alert_time":"2026-01-01T00:01:00Z"}
+        raw = {"notable_id":"NOTABLE-1", "source_event_id":"EVENT-1", "rule_id":"RULE-1"}
+        first = normalize_llm_payload(payload, tenant_id="t", source_instance="s", raw_record=raw, observed_at="2026-01-01T01:00:00Z", delivery_id="d-1")
+        replay = normalize_llm_payload(payload, tenant_id="t", source_instance="s", raw_record=raw, observed_at="2026-01-02T01:00:00Z", delivery_id="d-2")
+        self.assertEqual(first.event.content_checksum, replay.event.content_checksum)
+        self.assertEqual(first.event.observed_at, "2026-01-01T00:01:00.000000Z")
+        self.assertNotEqual(first.event.recorded_at, replay.event.recorded_at)
+
+    def test_agentic_alert_envelope_keeps_alert_notable_event_and_rule_distinct(self):
+        raw = {
+            "id":"SOC-ROW-1",
+            "alert": {
+                "notable_id":"NOTABLE-1", "source_event_ids":["EVENT-1", "EVENT-2"],
+                "rule_id":"RULE-1", "_time":"2026-01-01T00:00:00Z",
+            },
+        }
+        out = normalize_llm_payload({"alert_id":"NOTABLE-1", "event_time":"2026-01-01T00:00:00Z"}, tenant_id="t", source_instance="s", raw_record=raw, observed_at="2026-01-01T01:00:00Z")
+        by_type = {}
+        for entity in out.event.entities:
+            by_type.setdefault(entity.entity_type, []).append(entity)
+        self.assertEqual(out.event.event_type, "security_alert")
+        self.assertEqual(out.event.source_record_id, "SOC-ROW-1")
+        self.assertEqual(len(by_type["SecurityAlert"]), 1)
+        self.assertEqual(len(by_type["SplunkNotable"]), 1)
+        self.assertEqual(len(by_type["SecurityEvent"]), 2)
+        self.assertEqual(len(by_type["DetectionRule"]), 1)
+        self.assertIn("CORRELATED_WITH", {relation.relation_type for relation in out.event.relations})
+        self.assertIn("SUPPORTED_BY", {relation.relation_type for relation in out.event.relations})
+        self.assertIn("DETECTED_BY", {relation.relation_type for relation in out.event.relations})
+
+    def test_rule_name_is_provisional_and_index_is_not_network_scope(self):
+        raw = {"notable_id":"N-1", "_time":"2026-01-01T00:00:00Z", "rule_name":"Display only", "src_ip":"10.0.0.8", "index":"security"}
+        out = normalize_llm_payload(None, tenant_id="t", source_instance="s", raw_record=raw, observed_at="2026-01-01T01:00:00Z")
+        rule = next(entity for entity in out.event.entities if entity.entity_type == "DetectionRule")
+        address = next(entity for entity in out.event.entities if entity.entity_type == "IPAddress")
+        self.assertTrue(rule.provisional)
+        self.assertEqual(rule.source_identifiers, {})
+        self.assertTrue(address.provisional)
+        self.assertIsNone(address.scope)
+
 
 if __name__ == "__main__":
     unittest.main()

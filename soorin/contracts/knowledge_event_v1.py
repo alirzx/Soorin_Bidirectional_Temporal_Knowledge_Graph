@@ -16,6 +16,8 @@ import math
 from typing import Any, Iterable, Mapping
 
 SCHEMA_VERSION = "soorin.soc.knowledge-event.v1"
+LEGACY_CHECKSUM_VERSION = "soorin.event-content.sha256.v1"
+SOURCE_CONTENT_CHECKSUM_VERSION = "soorin.source-content.sha256.v2"
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_IDENTIFIER_LENGTH = 512
 MAX_EVIDENCE_EXCERPT = 4096
@@ -92,6 +94,10 @@ class EvidenceReference:
     checksum: str | None = None
     excerpt: str | None = None
     observed_at: str | None = None
+    source_system: str | None = None
+    source_instance: str | None = None
+    source_event_ids: tuple[str, ...] = ()
+    source_revision_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "evidence_id", _identifier(self.evidence_id, "evidence_id"))
@@ -99,6 +105,7 @@ class EvidenceReference:
         if self.excerpt is not None and len(self.excerpt) > MAX_EVIDENCE_EXCERPT:
             raise ContractError("evidence_excerpt_too_large", "excerpt exceeds 4096 characters", path="$.excerpt")
         object.__setattr__(self, "observed_at", normalize_timestamp(self.observed_at, "observed_at"))
+        object.__setattr__(self, "source_event_ids", tuple(self.source_event_ids))
 
     def to_dict(self) -> dict[str, Any]:
         return _without_none({
@@ -109,6 +116,10 @@ class EvidenceReference:
             "checksum": self.checksum,
             "excerpt": self.excerpt,
             "observed_at": self.observed_at,
+            "source_system": self.source_system,
+            "source_instance": self.source_instance,
+            "source_event_ids": list(self.source_event_ids),
+            "source_revision_id": self.source_revision_id,
         })
 
 
@@ -283,7 +294,11 @@ class SecurityKnowledgeEvent:
     attributes: Mapping[str, Any] = field(default_factory=dict)
     vendor_fields: Mapping[str, Any] = field(default_factory=dict)
     source_references: tuple[str, ...] = ()
+    source_revision_id: str | None = None
+    delivery_id: str | None = None
+    processed_at: str | None = None
     curated_payload_version: str | None = None
+    content_checksum_version: str = SOURCE_CONTENT_CHECKSUM_VERSION
     content_checksum: str | None = None
     schema_version: str = SCHEMA_VERSION
 
@@ -294,6 +309,9 @@ class SecurityKnowledgeEvent:
             object.__setattr__(self, name, _identifier(getattr(self, name), name))
         for name in ("event_time", "observed_at", "recorded_at"):
             object.__setattr__(self, name, normalize_timestamp(getattr(self, name), name, required=True))
+        object.__setattr__(self, "processed_at", normalize_timestamp(self.processed_at, "processed_at"))
+        if self.content_checksum_version not in {LEGACY_CHECKSUM_VERSION, SOURCE_CONTENT_CHECKSUM_VERSION}:
+            raise ContractError("unsupported_checksum_version", self.content_checksum_version, path="$.content_checksum_version")
         _json_value(self.attributes, "$.attributes")
         _json_value(self.vendor_fields, "$.vendor_fields")
         entity_ids = [entity.entity_id for entity in self.entities]
@@ -329,6 +347,9 @@ class SecurityKnowledgeEvent:
             "event_time": self.event_time,
             "observed_at": self.observed_at,
             "recorded_at": self.recorded_at,
+            "source_revision_id": self.source_revision_id,
+            "delivery_id": self.delivery_id,
+            "processed_at": self.processed_at,
             "source_references": list(self.source_references),
             "entities": [item.to_dict() for item in self.entities],
             "relations": [item.to_dict() for item in self.relations],
@@ -337,13 +358,29 @@ class SecurityKnowledgeEvent:
             "attributes": dict(self.attributes),
             "vendor_fields": dict(self.vendor_fields),
             "curated_payload_version": self.curated_payload_version,
+            "content_checksum_version": self.content_checksum_version,
         })
         if include_checksum:
             data["content_checksum"] = self.content_checksum
         return data
 
     def calculate_checksum(self) -> str:
-        return hashlib.sha256(canonical_json(self._payload(include_checksum=False)).encode("utf-8")).hexdigest()
+        payload = self._payload(include_checksum=False)
+        if self.content_checksum_version == LEGACY_CHECKSUM_VERSION:
+            # Exact compatibility with events serialized before checksum
+            # algorithms were named.  New fields did not exist in that form.
+            for key in ("source_revision_id", "delivery_id", "processed_at", "content_checksum_version"):
+                payload.pop(key, None)
+            encoded = canonical_json(payload).encode("utf-8")
+        else:
+            # Knowledge/delivery time changes on a replay and is not source
+            # content.  Source occurrence/observation time remains included.
+            for key in ("recorded_at", "delivery_id", "processed_at", "content_checksum_version"):
+                payload.pop(key, None)
+            for fact in payload.get("facts", []):
+                fact.pop("recorded_at", None)
+            encoded = (self.content_checksum_version + "\0" + canonical_json(payload)).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
         return self._payload(include_checksum=True)
@@ -358,6 +395,7 @@ class SecurityKnowledgeEvent:
             "event_id", "event_type", "event_time", "observed_at", "recorded_at", "entities",
             "relations", "facts", "evidence", "attributes", "vendor_fields", "source_references",
             "curated_payload_version", "content_checksum",
+            "source_revision_id", "delivery_id", "processed_at", "content_checksum_version",
         }
         extras = sorted(set(data) - allowed)
         if extras:
@@ -367,6 +405,9 @@ class SecurityKnowledgeEvent:
             if name not in data:
                 raise ContractError("missing_required_field", f"{name} is required", path=f"$.{name}")
         try:
+            checksum_version = data.get("content_checksum_version")
+            if checksum_version is None:
+                checksum_version = LEGACY_CHECKSUM_VERSION if data.get("content_checksum") else SOURCE_CONTENT_CHECKSUM_VERSION
             return cls(
                 schema_version=data.get("schema_version", SCHEMA_VERSION),
                 tenant_id=data["tenant_id"], source_system=data["source_system"], source_instance=data["source_instance"],
@@ -378,7 +419,9 @@ class SecurityKnowledgeEvent:
                 evidence=tuple(EvidenceReference(**x) for x in data.get("evidence", [])),
                 attributes=data.get("attributes", {}), vendor_fields=data.get("vendor_fields", {}),
                 source_references=tuple(data.get("source_references", [])),
-                curated_payload_version=data.get("curated_payload_version"), content_checksum=data.get("content_checksum"),
+                source_revision_id=data.get("source_revision_id"), delivery_id=data.get("delivery_id"),
+                processed_at=data.get("processed_at"), curated_payload_version=data.get("curated_payload_version"),
+                content_checksum_version=checksum_version, content_checksum=data.get("content_checksum"),
             )
         except (TypeError, KeyError) as exc:
             raise ContractError("malformed_contract", str(exc)) from exc

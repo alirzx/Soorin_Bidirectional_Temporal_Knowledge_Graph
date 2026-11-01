@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import unittest
 
 from soorin.contracts import (
     CanonicalEntity, ContractError, KnowledgeRelation, SecurityKnowledgeEvent,
-    TemporalFact, validate_event_batch,
+    LEGACY_CHECKSUM_VERSION, SOURCE_CONTENT_CHECKSUM_VERSION, TemporalFact, validate_event_batch,
 )
+from soorin.contracts.knowledge_event_v1 import canonical_json
 
 
 def event(**changes):
@@ -72,6 +74,29 @@ class KnowledgeEventTests(unittest.TestCase):
         data["content_checksum"] = "0" * 64
         with self.assertRaisesRegex(ContractError, "checksum_mismatch"):
             SecurityKnowledgeEvent.from_dict(data)
+
+    def test_source_checksum_ignores_delivery_and_processing_time(self):
+        left = event(recorded_at="2026-10-01T09:00:02Z", processed_at="2026-10-01T09:00:03Z", delivery_id="delivery-a")
+        right = event(recorded_at="2026-10-02T09:00:02Z", processed_at="2026-10-02T09:00:03Z", delivery_id="delivery-b")
+        self.assertEqual(left.content_checksum_version, SOURCE_CONTENT_CHECKSUM_VERSION)
+        self.assertEqual(left.content_checksum, right.content_checksum)
+
+    def test_source_checksum_changes_for_source_revision_and_observation(self):
+        baseline = event(source_revision_id="1")
+        revised = event(source_revision_id="2")
+        later_source_observation = event(source_revision_id="1", observed_at="2026-10-01T09:01:01Z")
+        self.assertNotEqual(baseline.content_checksum, revised.content_checksum)
+        self.assertNotEqual(baseline.content_checksum, later_source_observation.content_checksum)
+
+    def test_legacy_checksum_is_verified_without_rehashing(self):
+        data = event().to_dict()
+        for key in ("source_revision_id", "delivery_id", "processed_at", "content_checksum_version", "content_checksum"):
+            data.pop(key, None)
+        legacy_hash = hashlib.sha256(canonical_json(data).encode("utf-8")).hexdigest()
+        data["content_checksum"] = legacy_hash
+        restored = SecurityKnowledgeEvent.from_dict(data)
+        self.assertEqual(restored.content_checksum_version, LEGACY_CHECKSUM_VERSION)
+        self.assertEqual(restored.content_checksum, legacy_hash)
 
 
 if __name__ == "__main__":
