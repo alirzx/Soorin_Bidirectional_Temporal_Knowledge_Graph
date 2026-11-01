@@ -6,9 +6,11 @@ Run commands from the repository root. The baseline uses Docker Compose, the ups
 
 ```bash
 cd /mnt/X/Soorin/soorin_bi_TKG/utopia
-printf '%s\n' 'UTOPIA_IMAGE=ghcr.io/deeplethe/utopia:0.1.0-rc9' >> .env
+export UTOPIA_IMAGE='ghcr.io/deeplethe/utopia:0.1.0-rc9'
 docker compose -f docker-compose.local.yml --profile app config --quiet
-docker compose -f docker-compose.local.yml --profile app up -d
+docker compose -f docker-compose.local.yml --profile app ps
+# Only start the stack if it is not already running and configuration/volumes have been verified:
+# docker compose -f docker-compose.local.yml --profile app up -d
 docker compose -f docker-compose.local.yml --profile app ps
 curl -fsS http://127.0.0.1:1516/api/v1/health
 ```
@@ -41,8 +43,7 @@ python3 soorin/tests/mock_splunk/scripts/soc_mock.py push --replay
 unset UTOPIA_INGEST_TOKEN
 ```
 
-The Compose files default to upstream rc8, while the verified local deployment
-uses the ignored `.env` override `UTOPIA_IMAGE=ghcr.io/deeplethe/utopia:0.1.0-rc9`.
+The Compose files default to upstream rc8; the earlier verified lab used rc9. The commands above set `UTOPIA_IMAGE` for the current shell session without editing `.env`. An existing ignored local `.env` may also override it; inspect the resolved Compose configuration before starting or changing containers.
 Source changes are not present in that prebuilt container. For an isolated
 source build, use the build override described in `LOCAL_DEVELOPMENT.md`; do
 not replace the existing volume or run `down -v`.
