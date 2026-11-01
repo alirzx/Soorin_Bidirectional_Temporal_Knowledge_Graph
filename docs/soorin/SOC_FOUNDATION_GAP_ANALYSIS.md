@@ -70,3 +70,25 @@ The original Sprint 1 P0 table above is a **historical baseline**. The branch no
 7. **P1:** Update model status reporting and deploy docs with explicit installed/runtime-active/testing columns; do not claim BGE-M3 or a reranker model is deployed.
 
 **Decision:** Not ready to merge or deploy with production SOC data. Preserve `main` and the existing Utopia rc9 lab.
+
+
+## Follow-up source patches (2026-11-02)
+
+This section supersedes the earlier statement that no follow-up corrections had been made. The current feature branch now includes:
+
+- **Source replay fix:** `StatementsAdapter.render()` no longer emits delivery ID, processed time or recorded-at as versioned statements. A new regression test renders the same source content with different delivery/processing metadata. This **does not** establish live Utopia replay acceptance until `unchanged` is observed on a disposable source.
+- **Versioned document IDs:** `StatementsAdapter.external_id_version="v2"` now includes `event_type` in the identity seed, preventing same-source-ID collisions between entity kinds. `v1` is preserved as a deliberate compatibility option for historical sources. **Do not switch an existing source from v1 to v2 without a migration/reconciliation plan**; the new v2 IDs are different documents.
+- **Atomic graph binding:** `soorin_identity::link_utopia_entity()` now uses a guarded `UPDATE`, not a SELECT followed by an unrestricted UPDATE. It rejects a competing binding. Run the real two-writer PostgreSQL test before approving.
+- **Outbound policy correction:** caller-declared `approved_privacy_route` no longer grants access for sensitive text under `block_sensitive`; `block_all` now overrides synthetic and route claims. This is **not** a verified DLP integration. `allow` remains an explicit development-only bypass and must be disabled in production configuration. Chat/Reranker production egress still needs full enforcement.
+- **Optional CPU NER:** `soorin/extraction/cpu_cyber_ner.py` adds lazy English cybersecurity token classification using `bnsapa/cybersecurity-ner` (DistilBERT, Apache-2.0), loading locally with CPU only. The default path remains disabled and structured extraction authoritative. See [CPU NER](CPU_CYBER_NER.md). Live inference/model weights and accuracy against SOC/NOC data were **not** validated.
+
+### Remaining mandatory gates
+
+1. Run `cargo fmt --check`, `cargo check --workspace`, `cargo test --workspace` and the new SQL migration with PostgreSQL 16 against an isolated database; repair any compilation/migration issues.
+2. Test v1/v2 Statements ID migration choices, replay `unchanged`, evidence graph materialization and `at`/`as_of` via actual Utopia APIs.
+3. Connect authoritative canonical identity to graph materialization with tenant/KB auth, or explicitly keep the registry dormant before merge.
+4. Enforce trustworthy privacy attestation and fail-closed policy on **all** external Chat/Embedding/Reranker providers, not just the Python embedding client.
+5. Verify real model inference and evaluate NER label mapping/latency with approved synthetic SOC/NOC corpus; model-card F1 is not a product benchmark.
+6. Verify original React UI and isolated Docker Compose build on 2516/2517, and update operational docs for any changes.
+
+**Release state remains: NOT MERGE READY.** Remote commits and mocked tests are not a replacement for real Rust/PostgreSQL/graph validation.
