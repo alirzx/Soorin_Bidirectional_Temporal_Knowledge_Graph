@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections import OrderedDict
 import hashlib
 import json
 import math
@@ -13,6 +14,7 @@ import urllib.error
 import urllib.request
 
 from .configuration import ChatConfig, EmbeddingConfig
+from soorin.privacy import OutboundDataPolicy, OutboundPolicyError
 
 
 class ProviderError(RuntimeError):
@@ -93,7 +95,36 @@ class OpenAIChatHealthClient:
 class OpenAIEmbeddingClient:
     config: EmbeddingConfig
     transport: Transport | None = None
-    _cache: dict[str, tuple[float, ...]] = field(default_factory=dict)
+    privacy_policy: OutboundDataPolicy | None = None
+    _cache: OrderedDict[str, tuple[float, ...]] = field(default_factory=OrderedDict)
+    _cache_hits: int = 0
+    _cache_misses: int = 0
+    _cache_evictions: int = 0
+
+    def __post_init__(self) -> None:
+        if self.privacy_policy is None:
+            self.privacy_policy = OutboundDataPolicy(self.config.privacy_mode)
+
+    @property
+    def model(self) -> str | None:
+        return self.config.model
+
+    @property
+    def provider(self) -> str:
+        return self.config.provider
+
+    def _cache_key(self, text: str) -> str:
+        namespace = "|".join((
+            self.config.provider, self.config.base_url or "", self.config.model or "",
+            str(self.config.dimension), str(self.config.normalize),
+        ))
+        return hashlib.sha256((namespace + "\0" + text).encode("utf-8")).hexdigest()
+
+    def cache_info(self) -> dict[str, int]:
+        return {
+            "size": len(self._cache), "capacity": self.config.cache_capacity,
+            "hits": self._cache_hits, "misses": self._cache_misses, "evictions": self._cache_evictions,
+        }
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         if not self.config.enabled:
@@ -103,10 +134,14 @@ class OpenAIEmbeddingClient:
         output: list[list[float] | None] = [None] * len(texts)
         missing: list[tuple[int, str]] = []
         for index, text in enumerate(texts):
-            cached = self._cache.get(text) if self.config.cache_enabled else None
+            key = self._cache_key(text)
+            cached = self._cache.get(key) if self.config.cache_enabled else None
             if cached is not None:
+                self._cache_hits += 1
+                self._cache.move_to_end(key)
                 output[index] = list(cached)
             else:
+                self._cache_misses += 1
                 missing.append((index, text))
         for offset in range(0, len(missing), self.config.batch_size):
             batch = missing[offset:offset + self.config.batch_size]
@@ -117,17 +152,34 @@ class OpenAIEmbeddingClient:
                 checked = self._validate_vector(vector)
                 output[index] = checked
                 if self.config.cache_enabled:
-                    self._cache[text] = tuple(checked)
+                    key = self._cache_key(text)
+                    self._cache[key] = tuple(checked)
+                    self._cache.move_to_end(key)
+                    while len(self._cache) > self.config.cache_capacity:
+                        self._cache.popitem(last=False)
+                        self._cache_evictions += 1
         return [value for value in output if value is not None]
 
     def _request(self, texts: list[str]) -> list[list[float]]:
+        try:
+            assert self.privacy_policy is not None
+            self.privacy_policy.require_allowed(
+                texts, purpose="embedding", synthetic=self.config.synthetic_mode,
+                approved_privacy_route=self.config.privacy_route_approved,
+            )
+        except OutboundPolicyError as exc:
+            raise ProviderError(exc.code, str(exc)) from exc
         body = {"model": self.config.model, "input": texts}
         error: Exception | None = None
         for attempt in range(self.config.retries + 1):
             try:
-                response = (self.transport or _http_json)(
-                    f"{self.config.base_url}/embeddings", _headers(self.config.api_key), body, self.config.timeout_seconds,
-                )
+                if self.transport:
+                    response = self.transport(f"{self.config.base_url}/embeddings", _headers(self.config.api_key), body, self.config.timeout_seconds)
+                else:
+                    response = _http_json(
+                        f"{self.config.base_url}/embeddings", _headers(self.config.api_key), body,
+                        self.config.timeout_seconds, tls_verify=True,
+                    )
                 rows = response.get("data")
                 if not isinstance(rows, list):
                     raise ProviderError("malformed_response", "data must be an array")

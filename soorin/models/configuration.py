@@ -97,6 +97,10 @@ class EmbeddingConfig:
     max_concurrency: int = 4
     normalize: bool = True
     cache_enabled: bool = True
+    cache_capacity: int = 4096
+    privacy_mode: str = "block_sensitive"
+    privacy_route_approved: bool = False
+    synthetic_mode: bool = False
 
     def validate(self) -> "EmbeddingConfig":
         _url(self.base_url, self.enabled)
@@ -106,6 +110,10 @@ class EmbeddingConfig:
             raise ConfigurationError("enabled embedding provider requires model")
         if self.dimension is not None and not 1 <= self.dimension <= 65536:
             raise ConfigurationError("embedding dimension must be 1..65536")
+        if not 1 <= self.cache_capacity <= 1_000_000:
+            raise ConfigurationError("embedding cache capacity must be 1..1000000")
+        if self.privacy_mode not in {"block_sensitive", "block_all", "allow"}:
+            raise ConfigurationError("unsupported outbound privacy mode")
         return self
 
     def public_dict(self) -> dict[str, Any]:
@@ -125,6 +133,9 @@ class RerankerConfig:
     max_concurrency: int = 2
     fallback_enabled: bool = True
     max_document_chars: int = 8000
+    privacy_mode: str = "block_sensitive"
+    privacy_route_approved: bool = False
+    synthetic_mode: bool = False
 
     def validate(self) -> "RerankerConfig":
         _url(self.base_url, self.enabled)
@@ -132,6 +143,8 @@ class RerankerConfig:
             raise ConfigurationError("enabled reranker requires model")
         if self.provider not in {"cohere_v2", "jina_v1", "tei"}:
             raise ConfigurationError("unsupported reranker provider")
+        if self.privacy_mode not in {"block_sensitive", "block_all", "allow"}:
+            raise ConfigurationError("unsupported outbound privacy mode")
         return self
 
     def public_dict(self) -> dict[str, Any]:
@@ -168,6 +181,10 @@ class SoorinModelConfig:
             batch_size=_int(e.get("SOORIN_EMBED_BATCH_SIZE"), 32, minimum=1, maximum=2048),
             max_concurrency=_int(e.get("SOORIN_EMBED_MAX_CONCURRENCY"), 4, minimum=1, maximum=256),
             normalize=_bool(e.get("SOORIN_EMBED_NORMALIZE"), True), cache_enabled=_bool(e.get("SOORIN_EMBED_CACHE_ENABLED"), True),
+            cache_capacity=_int(e.get("SOORIN_EMBED_CACHE_CAPACITY"), 4096, minimum=1, maximum=1_000_000),
+            privacy_mode=e.get("SOORIN_OUTBOUND_PRIVACY_MODE", "block_sensitive"),
+            privacy_route_approved=_bool(e.get("SOORIN_OUTBOUND_PRIVACY_ROUTE_APPROVED"), False),
+            synthetic_mode=_bool(e.get("SOORIN_SYNTHETIC_MODE"), False),
         ).validate()
         reranker = RerankerConfig(
             enabled=_bool(e.get("SOORIN_RERANK_ENABLED"), False), provider=e.get("SOORIN_RERANK_PROVIDER", "cohere_v2"),
@@ -178,6 +195,9 @@ class SoorinModelConfig:
             max_concurrency=_int(e.get("SOORIN_RERANK_MAX_CONCURRENCY"), 2, minimum=1, maximum=256),
             fallback_enabled=_bool(e.get("SOORIN_RERANK_FALLBACK_ENABLED"), True),
             max_document_chars=_int(e.get("SOORIN_RERANK_MAX_DOCUMENT_CHARS"), 8000, minimum=128, maximum=100000),
+            privacy_mode=e.get("SOORIN_OUTBOUND_PRIVACY_MODE", "block_sensitive"),
+            privacy_route_approved=_bool(e.get("SOORIN_OUTBOUND_PRIVACY_ROUTE_APPROVED"), False),
+            synthetic_mode=_bool(e.get("SOORIN_SYNTHETIC_MODE"), False),
         ).validate()
         return cls(chat, embedding, reranker)
 
