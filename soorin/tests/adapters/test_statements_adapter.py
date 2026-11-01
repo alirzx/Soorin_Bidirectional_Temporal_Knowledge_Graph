@@ -4,7 +4,7 @@ import urllib.error
 import unittest
 
 from soorin.adapters.utopia import StatementsAdapter, StatementsClient, StatementsError
-from soorin.contracts import CanonicalEntity, KnowledgeRelation, SecurityKnowledgeEvent
+from soorin.contracts import CanonicalEntity, EvidenceReference, KnowledgeRelation, SecurityKnowledgeEvent
 
 
 def knowledge_event(status="new"):
@@ -16,6 +16,11 @@ def knowledge_event(status="new"):
         event_id="event-a", event_type="security_alert", event_time="2026-10-01T10:00:00Z",
         observed_at="2026-10-01T10:01:00Z", recorded_at="2026-10-01T10:01:00Z",
         entities=(alert, host), relations=(relation,), attributes={"status": status},
+        evidence=(EvidenceReference(
+            "ev-1", "A-100", field_path="llm_payload.src_ip", source_uri="splunk://notable/A-100",
+            checksum="abc123", observed_at="2026-10-01T10:00:00Z", source_system="splunk",
+            source_instance="lab", source_event_ids=("EVENT-1",), source_revision_id="7",
+        ),),
     )
 
 
@@ -25,6 +30,20 @@ class StatementsTests(unittest.TestCase):
         self.assertEqual(set(payload), {"external_id", "doc_time", "e", "s", "n"})
         self.assertEqual(payload["s"][0][0], None)
         self.assertEqual(payload["s"][0][2], "observed on")
+
+    def test_evidence_metadata_is_recoverable_without_raw_logs(self):
+        payload = StatementsAdapter().render(knowledge_event())
+        evidence_entity = next(row[0] for row in payload["e"] if row[1] == "EvidenceReference")
+        facts = {row[2]: row[4] for row in payload["s"] if row[1] == evidence_entity and row[4] is not None}
+        self.assertEqual(facts["has evidence id"], "ev-1")
+        self.assertEqual(facts["has source system"], "splunk")
+        self.assertEqual(facts["has source instance"], "lab")
+        self.assertEqual(facts["has source record id"], "A-100")
+        self.assertEqual(facts["has source event ids"], '["EVENT-1"]')
+        self.assertEqual(facts["has source field path"], "llm_payload.src_ip")
+        self.assertEqual(facts["has source URI"], "splunk://notable/A-100")
+        self.assertEqual(facts["has source checksum"], "abc123")
+        self.assertTrue(any(row[1] == "alert-key" and row[2] == "supported by" and row[3] == evidence_entity for row in payload["s"]))
 
     def test_replay_and_changed_revision_keep_external_id(self):
         adapter = StatementsAdapter()

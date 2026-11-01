@@ -55,6 +55,14 @@ class StatementsAdapter:
         aliases = [[entity.entity_id, entity.normalized_value, None] for entity in event.entities if entity.normalized_value != entity.entity_id]
         statements: list[list[Any]] = []
 
+        evidence_entities: dict[str, str] = {}
+        for evidence in event.evidence:
+            seed = f"{event.tenant_id}|{event.source_system}|{event.source_instance}|{evidence.evidence_id}"
+            entity_id = "soorin:evidence:" + hashlib.sha256(seed.encode()).hexdigest()
+            evidence_entities[evidence.evidence_id] = entity_id
+            entities.append([entity_id, "EvidenceReference", True])
+            aliases.append([entity_id, evidence.evidence_id, None])
+
         for relation in event.relations:
             evidence = relation.evidence_ids[0] if relation.evidence_ids else ""
             statements.append([
@@ -74,14 +82,46 @@ class StatementsAdapter:
         if not entities:
             raise StatementsError("missing_entities", "the Statements contract requires at least one subject entity")
         subject = event.entities[0].entity_id
+        for evidence in event.evidence:
+            evidence_entity = evidence_entities[evidence.evidence_id]
+            qualifiers = _qualifiers(event, evidence=evidence.evidence_id)
+            statements.append([
+                None, subject, "supported by", evidence_entity, None, qualifiers,
+                evidence.observed_at or event.event_time, None,
+            ])
+            evidence_literals = {
+                "has evidence id": evidence.evidence_id,
+                "has source system": evidence.source_system or event.source_system,
+                "has source instance": evidence.source_instance or event.source_instance,
+                "has source record id": evidence.source_record_id,
+                "has source event ids": list(evidence.source_event_ids),
+                "has source revision id": evidence.source_revision_id,
+                "has source field path": evidence.field_path,
+                "has source URI": evidence.source_uri,
+                "has source checksum": evidence.checksum,
+                "observed at": evidence.observed_at,
+            }
+            for phrase, value in evidence_literals.items():
+                if value in (None, [], ()):
+                    continue
+                statements.append([
+                    None, evidence_entity, phrase, None, _literal(value), qualifiers,
+                    evidence.observed_at or event.event_time, None,
+                ])
         core_literals = {
             "has event type": event.event_type,
             "has source record id": event.source_record_id,
             "has content checksum": event.content_checksum,
+            "has content checksum version": event.content_checksum_version,
+            "has source revision id": event.source_revision_id,
+            "has delivery id": event.delivery_id,
+            "processed at": event.processed_at,
             "observed at": event.observed_at,
             "recorded at": event.recorded_at,
         }
         for phrase, value in core_literals.items():
+            if value is None:
+                continue
             statements.append([None, subject, phrase, None, str(value), _qualifiers(event), event.event_time, None])
         # Preserve structured event attributes in one bounded literal. The
         # canonical event remains the source of truth; this literal supports
