@@ -13,6 +13,10 @@ data/
 !/docs/soorin/
 !/docs/soorin/**
 .claude/
+.codex/
+.agents/
+.cursor/
+/AGENTS.md
 _*.json
 _*.err
 _*.sse
