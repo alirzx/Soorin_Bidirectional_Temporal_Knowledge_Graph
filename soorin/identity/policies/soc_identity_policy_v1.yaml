@@ -1,0 +1,21 @@
+{
+  "schema_version": "soorin.soc.identity-policy.v1",
+  "automatic_merge_policy": "trusted_identifier_only",
+  "tenant_scope_required": true,
+  "semantic_similarity_role": "candidate_discovery_only",
+  "rules": [
+    {"entity_type":"Host","authoritative_components":["tenant_id","source_system","source_instance","asset_id"],"aliases":["hostname","fqdn"],"provisional_without_authority":true},
+    {"entity_type":"IPAddress","authoritative_components":["tenant_id","network_scope","normalized_ip","valid_time"],"aliases":[],"provisional_without_scope":true},
+    {"entity_type":"UserAccount","authoritative_components":["tenant_id","directory_scope","object_id"],"aliases":["windows_principal","upn"],"provisional_without_authority":true},
+    {"entity_type":"SecurityAlert","authoritative_components":["tenant_id","source_system","source_instance","soc_alert_id"],"aliases":[],"provisional_without_authority":false},
+    {"entity_type":"SplunkNotable","authoritative_components":["tenant_id","source_instance","notable_id"],"aliases":["source_guid","source_event_id","orig_sid_orig_rid"],"provisional_without_authority":false},
+    {"entity_type":"SecurityEvent","authoritative_components":["tenant_id","source_system","source_instance","source_event_id"],"aliases":[],"provisional_without_authority":true},
+    {"entity_type":"DetectionRule","authoritative_components":["tenant_id","source_system","source_instance","detection_rule_id"],"aliases":["rule_name"],"provisional_without_authority":true},
+    {"entity_type":"SOCCase","authoritative_components":["tenant_id","soc_case_id"],"aliases":["case_number"],"provisional_without_authority":false},
+    {"entity_type":"InvestigationRun","authoritative_components":["tenant_id","investigation_run_id"],"aliases":[],"provisional_without_authority":false},
+    {"entity_type":"Report","authoritative_components":["tenant_id","report_id","version"],"aliases":[],"provisional_without_authority":false},
+    {"entity_type":"Ticket","authoritative_components":["tenant_id","ticket_system","ticket_id"],"aliases":[],"provisional_without_authority":true}
+  ],
+  "decision_records": ["merge_candidate","merge_approved","merge_rejected","split_approved"],
+  "temporal_aliases": {"retain_history":true,"automatic_alias_merge":false}
+}
