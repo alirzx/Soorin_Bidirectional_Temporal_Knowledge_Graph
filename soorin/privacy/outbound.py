@@ -49,16 +49,17 @@ class OutboundDataPolicy:
         joined = "\n".join(texts)
         fingerprint = hashlib.sha256(joined.encode("utf-8")).hexdigest()
         classification = "sensitive" if any(pattern.search(joined) for pattern in (IP_RE, EMAIL_RE, SECRET_RE, SOC_RE)) else "non_sensitive"
-        if approved_privacy_route:
-            allowed, reason = True, "approved_privacy_route"
+        # A caller-supplied flag cannot attest that the payload actually
+        # traversed the privacy gateway. No trusted proof is available in
+        # this adapter: fail closed even when approved_privacy_route=True.
+        if self.mode == "block_all":
+            allowed, reason = False, "external_outbound_disabled"
         elif synthetic and self.allow_synthetic:
             allowed, reason = True, "synthetic_test_data"
         elif self.mode == "allow":
-            allowed, reason = True, "explicit_allow_mode"
-        elif self.mode == "block_all":
-            allowed, reason = False, "external_outbound_disabled"
+            allowed, reason = True, "explicit_dev_allow_mode"
         elif classification == "sensitive":
-            allowed, reason = False, "sensitive_content_requires_privacy_route"
+            allowed, reason = False, "sensitive_content_requires_verified_privacy_route"
         else:
             allowed, reason = True, "non_sensitive_content"
         decision = OutboundDecision(
