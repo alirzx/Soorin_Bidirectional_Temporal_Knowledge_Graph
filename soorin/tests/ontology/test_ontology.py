@@ -19,10 +19,20 @@ class FakeApi:
         if method == "GET":
             return {"entity_types": list(self.entities), "relation_types": list(self.relations)}
         if path.endswith("entity-types"):
-            row = {**body, "id": f"e-{len(self.entities) + 1}"}
+            row = {**body, "id": f"e-{len(self.entities) + 1}", "builtin": False,
+                   "primary_parent": None, "usage": 0}
             self.entities.append(row)
             return {"id": row["id"]}
-        row = {**body, "id": f"r-{len(self.relations) + 1}"}
+        if method == "PATCH":
+            identifier = path.rsplit("/", 1)[-1]
+            row = next(item for item in self.relations if item["id"] == identifier)
+            row.update(body)
+            return {"ok": True}
+        label = body["label"]
+        words = label.replace("_", " ").replace("-", " ").split()
+        normalized_label = words[0].lower() + "".join(word[:1].upper() + word[1:] for word in words[1:])
+        row = {**body, "label": normalized_label, "id": f"r-{len(self.relations) + 1}",
+               "builtin": False, "usage": 0}
         self.relations.append(row)
         return {"id": row["id"]}
 
@@ -61,6 +71,16 @@ class OntologyTests(unittest.TestCase):
         importer = OntologyImporter("http://test", "kb-test", "token", fake)
         with self.assertRaisesRegex(OntologyError, "refusing to overwrite"):
             importer.apply(ontology)
+
+    def test_semantic_conflict_is_not_hidden_by_matching_label(self):
+        ontology = load_and_validate(ONTOLOGY)
+        fake = FakeApi()
+        importer = OntologyImporter("http://test", "kb-test", "token", fake)
+        importer.apply(ontology)
+        fake.relations[0]["functional"] = True
+        preview = importer.preview(ontology)
+        self.assertFalse(preview.safe_to_apply)
+        self.assertIn("functional", " ".join(preview.conflicts))
 
 
 if __name__ == "__main__":

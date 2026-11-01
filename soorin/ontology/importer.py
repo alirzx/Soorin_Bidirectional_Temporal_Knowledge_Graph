@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import argparse
+import getpass
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 import urllib.error
@@ -78,6 +80,54 @@ class ImportPreview:
 Request = Callable[[str, str, Mapping[str, Any] | None], Mapping[str, Any]]
 
 
+def _lower_camel(label: str) -> str:
+    """Match Utopia's ontology label normalization exactly."""
+
+    out: list[str] = []
+    start_of_word = False
+    for char in label.strip():
+        if char in " _-":
+            start_of_word = bool(out)
+            continue
+        if not out:
+            out.append(char.lower())
+        elif start_of_word:
+            out.append(char.upper())
+            start_of_word = False
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def _entity_expected(item: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "key": item["key"], "label": item["label"], "description": item["description"],
+        "color": item.get("color", "#8ea5bd"), "shape": item.get("shape", "circle"),
+        "builtin": False, "parents": list(item.get("parents", [])),
+        "primary_parent": None, "disjoint": list(item.get("disjoint", [])),
+    }
+
+
+def _relation_expected(item: Mapping[str, Any], relation_ids: Mapping[str, str]) -> dict[str, Any]:
+    inverse = item.get("inverse")
+    return {
+        "key": item["key"], "label": _lower_camel(item["label"]),
+        "description": item["description"], "temporal": item["temporal"], "kind": "relation",
+        "functional": item["cardinality"] in {"many_to_one", "many_to_one_at_time"},
+        "inverse_functional": item["cardinality"] == "one_to_many",
+        "is_transitive": False, "is_symmetric": inverse == item["key"],
+        "is_asymmetric": False, "is_irreflexive": False,
+        "inverse_of": relation_ids.get(inverse) if inverse else None,
+        "sub_property_of": None, "builtin": False,
+        "domains": list(item["domains"]), "ranges": list(item["ranges"]),
+        "qualifiers": [], "datatype": None, "unit": None,
+    }
+
+
+def _different(actual: Mapping[str, Any], expected: Mapping[str, Any]) -> list[str]:
+    return [key for key, value in expected.items() if actual.get(key) != value]
+
+
 @dataclass(slots=True)
 class OntologyImporter:
     base_url: str
@@ -116,22 +166,45 @@ class OntologyImporter:
         create_r: list[str] = []
         same_r: list[str] = []
         conflicts: list[str] = []
+        entity_id_to_key = {str(item.get("id")): str(item.get("key")) for item in current.get("entity_types", [])}
+        relation_id_to_key = {str(item.get("id")): str(item.get("key")) for item in current.get("relation_types", [])}
+        relation_key_to_id = {key: identifier for identifier, key in relation_id_to_key.items()}
         for item in ontology["entity_types"]:
             existing = existing_entities.get(item["key"])
             if existing is None:
                 create_e.append(item["key"])
-            elif str(existing.get("label")) == item["label"]:
-                same_e.append(item["key"])
             else:
-                conflicts.append(f"entity:{item['key']}: existing label differs")
+                actual = dict(existing)
+                actual["parents"] = sorted(entity_id_to_key.get(str(value), str(value)) for value in existing.get("parents", []))
+                actual["disjoint"] = sorted(entity_id_to_key.get(str(value), str(value)) for value in existing.get("disjoint", []))
+                expected = _entity_expected(item)
+                expected["parents"] = sorted(expected["parents"])
+                expected["disjoint"] = sorted(expected["disjoint"])
+                changed = _different(actual, expected)
+                if changed:
+                    conflicts.append(f"entity:{item['key']}: fields differ: {','.join(changed)}")
+                else:
+                    same_e.append(item["key"])
         for item in ontology["relation_types"]:
             existing = existing_relations.get(item["key"])
             if existing is None:
                 create_r.append(item["key"])
-            elif str(existing.get("label")) == item["label"] and str(existing.get("temporal")) == item["temporal"]:
-                same_r.append(item["key"])
             else:
-                conflicts.append(f"relation:{item['key']}: existing definition differs")
+                actual = dict(existing)
+                for field in ("domains", "ranges"):
+                    actual[field] = sorted(entity_id_to_key.get(str(value), str(value)) for value in existing.get(field, []))
+                actual["qualifiers"] = sorted(str(value) for value in existing.get("qualifiers", []))
+                actual["inverse_of"] = relation_id_to_key.get(str(existing.get("inverse_of"))) if existing.get("inverse_of") else None
+                actual["sub_property_of"] = relation_id_to_key.get(str(existing.get("sub_property_of"))) if existing.get("sub_property_of") else None
+                expected = _relation_expected(item, {key: key for key in relation_key_to_id})
+                expected["domains"] = sorted(expected["domains"])
+                expected["ranges"] = sorted(expected["ranges"])
+                expected["inverse_of"] = item.get("inverse")
+                changed = _different(actual, expected)
+                if changed:
+                    conflicts.append(f"relation:{item['key']}: fields differ: {','.join(changed)}")
+                else:
+                    same_r.append(item["key"])
         return ImportPreview(tuple(create_e), tuple(create_r), tuple(same_e), tuple(same_r), tuple(conflicts))
 
     def apply(self, ontology: Mapping[str, Any]) -> ImportPreview:
@@ -145,27 +218,39 @@ class OntologyImporter:
                 continue
             response = self._call("POST", "/ontology/entity-types", {
                 "key": item["key"], "label": item["label"], "description": item["description"],
-                "shape": "circle", "parents": [],
+                "color": item.get("color", "#8ea5bd"), "shape": item.get("shape", "circle"),
+                "parents": list(item.get("parents", [])), "disjoint": list(item.get("disjoint", [])),
             })
             if not response.get("id"):
                 raise OntologyError(f"missing id after creating entity type {item['key']}")
             entity_ids[item["key"]] = str(response["id"])
-        existing_relations = {str(item.get("key")) for item in current.get("relation_types", [])}
+        relation_ids = {str(item["key"]): str(item["id"]) for item in current.get("relation_types", [])}
+        created_relations: set[str] = set()
         for item in ontology["relation_types"]:
-            if item["key"] in existing_relations:
+            if item["key"] in relation_ids:
                 continue
+            expected = _relation_expected(item, relation_ids)
             response = self._call("POST", "/ontology/relation-types", {
-                "key": item["key"], "label": item["label"], "description": item["description"],
-                "temporal": item["temporal"], "kind": "relation",
+                **expected, "label": item["label"],
                 "domains": [entity_ids[key] for key in item["domains"]],
                 "ranges": [entity_ids[key] for key in item["ranges"]],
-                "functional": item["cardinality"] in {"many_to_one", "many_to_one_at_time"},
-                "inverse_functional": False, "is_transitive": False,
-                "is_symmetric": item.get("inverse") == item["key"],
-                "is_asymmetric": False, "is_irreflexive": False,
+                "inverse_of": None,
             })
             if not response.get("id"):
                 raise OntologyError(f"missing id after creating relation type {item['key']}")
+            relation_ids[item["key"]] = str(response["id"])
+            created_relations.add(item["key"])
+        # Inverse pairs are often cyclic, so link them only after every new
+        # relation has an API id. Existing relations are never modified.
+        for item in ontology["relation_types"]:
+            if item["key"] not in created_relations or not item.get("inverse"):
+                continue
+            expected = _relation_expected(item, relation_ids)
+            self._call("PATCH", f"/ontology/relation-types/{relation_ids[item['key']]}", {
+                **expected,
+                "domains": [entity_ids[key] for key in item["domains"]],
+                "ranges": [entity_ids[key] for key in item["ranges"]],
+            })
         verified = self.current()
         final_preview = self.preview(ontology, verified)
         if final_preview.create_entity_types or final_preview.create_relation_types or final_preview.conflicts:
@@ -178,11 +263,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ontology", type=Path, default=Path(__file__).with_name("soc_ontology_v1.yaml"))
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--kb-id", required=True, help="Explicit isolated test KB identifier")
-    parser.add_argument("--token", required=True)
+    parser.add_argument("--token-env", default="UTOPIA_ACCESS_TOKEN", help="Environment variable containing the bearer token")
+    parser.add_argument("--prompt-token", action="store_true", help="Read the bearer token securely from the terminal")
     parser.add_argument("--apply", action="store_true", help="Apply after preview; omitted means dry-run")
     args = parser.parse_args(argv)
     ontology = load_and_validate(args.ontology)
-    importer = OntologyImporter(args.base_url, args.kb_id, args.token)
+    token = os.environ.get(args.token_env, "").strip()
+    if not token and args.prompt_token:
+        token = getpass.getpass("Utopia access token: ").strip()
+    if not token:
+        parser.error(f"missing bearer token in {args.token_env}; use --prompt-token for secure entry")
+    importer = OntologyImporter(args.base_url, args.kb_id, token)
     preview = importer.preview(ontology)
     print(json.dumps(asdict(preview), sort_keys=True, indent=2))
     if args.apply:
