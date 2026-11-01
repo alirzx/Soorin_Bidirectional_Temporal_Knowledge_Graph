@@ -33,12 +33,19 @@ python3 soorin/tests/mock_splunk/scripts/soc_mock.py render --output-dir /tmp/so
 ```bash
 export UTOPIA_BASE_URL='http://127.0.0.1:1516'
 export UTOPIA_SOURCE_ID='<actual-statements-source-uuid>'
-read -rsp 'Enter source ingest token: ' UTOPIA_INGEST_TOKEN; echo
+# Zsh syntax (Bash uses: read -rsp 'Enter source ingest token: ' UTOPIA_INGEST_TOKEN)
+read -rs 'UTOPIA_INGEST_TOKEN?Enter source ingest token: '; echo
 export UTOPIA_INGEST_TOKEN
 python3 soorin/tests/mock_splunk/scripts/soc_mock.py push
 python3 soorin/tests/mock_splunk/scripts/soc_mock.py push --replay
 unset UTOPIA_INGEST_TOKEN
 ```
+
+The Compose files default to upstream rc8, while the verified local deployment
+uses the ignored `.env` override `UTOPIA_IMAGE=ghcr.io/deeplethe/utopia:0.1.0-rc9`.
+Source changes are not present in that prebuilt container. For an isolated
+source build, use the build override described in `LOCAL_DEVELOPMENT.md`; do
+not replace the existing volume or run `down -v`.
 
 First push should report `created` for nine IDs. An identical replay should report `unchanged`. If you already pushed them, the first observed action may be `unchanged`. Any non-2xx response is a failure and prints a bounded error body. The Python sender uses only standard-library HTTPS/HTTP libraries and does not log source tokens.
 

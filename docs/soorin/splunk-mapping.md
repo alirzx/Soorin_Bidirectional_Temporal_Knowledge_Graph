@@ -12,7 +12,10 @@
 
 Normalization precedence in the lab: `host` then `hostname` then `Computer`; `src_ip` then `src` then `source_ip` then `ClientIP` then `IpAddress`; `user` then `username` then `user_name` then `AccountName` then `User`; `EventID` then `EventCode`.
 
-Agentic SOC also uses nested OCSF `device.name`, `actor.user.name`, `src_endpoint.ip` and `dst_endpoint.ip`. That **separate normalization adapter is not implemented** in this rc9 mock generator.
+Agentic SOC also uses nested OCSF envelopes. The Sprint 1 adapter at
+`soorin/adapters/splunk/llm_payload_normalizer.py` unwraps the canonical
+envelope and curated `llm_payload`; the older rc9 mock generator remains
+unchanged as a regression fixture.
 
 ## Seeded investigation scenario
 

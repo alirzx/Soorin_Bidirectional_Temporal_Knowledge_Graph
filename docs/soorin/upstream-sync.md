@@ -6,7 +6,10 @@ Remotes:
 
 - `personal`: `git@github.com:alirzx/Soorin_Bidirectional_Temporal_Knowledge_Graph.git`
 - `upstream`: `https://github.com/deeplethe/utopia.git`
-- `origin`: reserved for future organization remote.
+- `origin`: `https://github.com/SoorinSecurity/Soorin_Bidirectional_Temporal_Knowledge_Graph`
+
+`origin` is now the Soorin organization repository. Push feature branches to
+`personal` and `origin` explicitly. Never push Soorin work to `upstream`.
 
 A normal `git merge upstream/main` would attempt to join unrelated histories and should be avoided. Instead:
 
