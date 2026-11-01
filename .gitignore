@@ -31,6 +31,8 @@ _*.txt
 # Soorin local secrets and generated outputs
 .env.*
 !.env.example
+/graphify-out/
+data-sprint1/
 soorin/tests/mock_splunk/generated/
 **/__pycache__/
 *.pyc
