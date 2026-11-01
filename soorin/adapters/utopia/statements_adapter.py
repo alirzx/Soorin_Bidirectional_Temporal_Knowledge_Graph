@@ -44,11 +44,24 @@ def _qualifiers(event: SecurityKnowledgeEvent, *, evidence: str = "", confidence
 class StatementsAdapter:
     max_bytes: int = MAX_BYTES
     max_statements: int = MAX_STATEMENTS
+    # v1 is opt-in for historical sources whose external IDs already exist.
+    # New, isolated sources use v2 to prevent event-type collisions.
+    external_id_version: str = "v2"
 
     def external_id(self, event: SecurityKnowledgeEvent) -> str:
-        raw = "|".join(event.source_key)
+        if self.external_id_version == "v1":
+            seed = event.source_key
+        elif self.external_id_version == "v2":
+            seed = (*event.source_key, event.event_type)
+        else:
+            raise StatementsError("unsupported_external_id_version", self.external_id_version)
+        raw = json.dumps(seed, ensure_ascii=False, separators=(",", ":"))
+        # Historical v1 used pipe concatenation; retain exact bytes for
+        # existing sources and avoid rewriting their document identity.
+        if self.external_id_version == "v1":
+            raw = "|".join(event.source_key)
         digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
-        return f"soorin-soc-v1:{event.tenant_id}:{digest}"
+        return f"soorin-soc-{self.external_id_version}:{event.tenant_id}:{digest}"
 
     def render(self, event: SecurityKnowledgeEvent) -> dict[str, Any]:
         entities = [[entity.entity_id, entity.entity_type, True] for entity in event.entities]
@@ -108,16 +121,16 @@ class StatementsAdapter:
                     None, evidence_entity, phrase, None, _literal(value), qualifiers,
                     evidence.observed_at or event.event_time, None,
                 ])
+        # Delivery/processing/knowledge-recorded timestamps are not source
+        # content; keeping them here turns identical replays into updates.
+        # Store these in a separate operational ingestion ledger, if needed.
         core_literals = {
             "has event type": event.event_type,
             "has source record id": event.source_record_id,
             "has content checksum": event.content_checksum,
             "has content checksum version": event.content_checksum_version,
             "has source revision id": event.source_revision_id,
-            "has delivery id": event.delivery_id,
-            "processed at": event.processed_at,
             "observed at": event.observed_at,
-            "recorded at": event.recorded_at,
         }
         for phrase, value in core_literals.items():
             if value is None:
