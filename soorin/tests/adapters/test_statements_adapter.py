@@ -50,6 +50,28 @@ class StatementsTests(unittest.TestCase):
         self.assertEqual(adapter.render(knowledge_event())["external_id"], adapter.render(knowledge_event("closed"))["external_id"])
         self.assertNotEqual(adapter.dumps(adapter.render(knowledge_event())), adapter.dumps(adapter.render(knowledge_event("closed"))))
 
+    def test_delivery_metadata_does_not_mutate_statements(self):
+        from dataclasses import replace
+        adapter = StatementsAdapter()
+        event = knowledge_event()
+        replay = replace(
+            event, recorded_at="2026-10-02T11:12:13Z",
+            processed_at="2026-10-02T11:12:14Z", delivery_id="retry-12",
+        )
+        self.assertEqual(event.content_checksum, replay.content_checksum)
+        self.assertEqual(adapter.dumps(adapter.render(event)), adapter.dumps(adapter.render(replay)))
+
+    def test_document_type_is_in_v2_identity_and_v1_remains_available(self):
+        from dataclasses import replace
+        adapter = StatementsAdapter()
+        event = knowledge_event()
+        other_kind = replace(event, event_type="splunk_notable", content_checksum=None)
+        self.assertNotEqual(adapter.external_id(event), adapter.external_id(other_kind))
+        self.assertEqual(StatementsAdapter(external_id_version="v1").external_id(event),
+                         StatementsAdapter(external_id_version="v1").external_id(other_kind))
+        with self.assertRaises(StatementsError):
+            StatementsAdapter(external_id_version="unknown").external_id(event)
+
     def test_statement_count_and_size_limits(self):
         adapter = StatementsAdapter(max_statements=1)
         with self.assertRaisesRegex(StatementsError, "invalid_statement_count"):
