@@ -1,6 +1,12 @@
 -- Soorin source authorities must survive process restarts and parallel workers.
 -- Canonical identities are separate from authority mappings so several source
 -- identifiers can deliberately resolve to one Utopia entity.
+-- PostgreSQL requires a unique constraint/index covering the referenced columns.
+-- entities.id is the PK but (kb_id, id) is not unique in upstream Utopia.
+-- The composite FK below enforces same-KB linkage at the database boundary.
+CREATE UNIQUE INDEX IF NOT EXISTS soorin_entities_kb_id_unique
+    ON entities (kb_id, id);
+
 CREATE TABLE soorin_canonical_identities (
     id                UUID PRIMARY KEY,
     kb_id             UUID NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
