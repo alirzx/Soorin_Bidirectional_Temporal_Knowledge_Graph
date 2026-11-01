@@ -1,34 +1,45 @@
-# SOC foundation gap analysis
+# Soorin SOC foundation · Gap analysis and release gates
 
-## Closed in Sprint 1
+**Status:** Sprint 1 contracts and offline Python foundation exist, but the feature branch is **not approved for production or merge**. This document distinguishes a real implementation from an offline-only proof.
 
-- Versioned `soorin.soc.knowledge-event.v1` contracts and JSON Schema.
-- Explicit retention of vendor extensions, source identifiers, provenance, and curated payload version.
-- Tenant/source-scoped deterministic identity with provisional and ambiguous outcomes.
-- Field-aware offline extraction for SOC identifiers and observables.
-- Real Agentic SOC `llm_payload` and nested OCSF normalization with historical fallback.
-- SOC ontology/model card plus previewed, idempotent, non-overwriting API importer.
-- Alert lifecycle classification and mapping to Utopia's two axes.
-- Strict Utopia Statements adapter and authenticated transport.
-- Typed chat/embedding/reranker configuration, redacted public status, fake-provider tests.
-- Exact, BM25, dense, RRF, optional reranking, tenant/time filtering, provenance, and status metadata in the reusable SOC layer.
-- Offline graph, temporal, and retrieval evaluations with machine-readable output.
+## Verified Sprint 1 deliverables
 
-## Existing Utopia gaps not expanded into rewrites
+- Versioned `soorin.soc.knowledge-event.v1` contracts and JSON Schema; deterministic serialization and synthetic fixtures.
+- SOC ontology declaration: 17 entity types and 15 relation types; dry-run/guarded importer using mock API tests.
+- Canonical key generation, normalization, provisional decisions and conservative identity policy.
+- Field-aware security entity extraction; optional NER **interface only**.
+- Splunk/Agentic SOC `llm_payload` normalization and Utopia Statements rendering/transport adapters.
+- Alert revision classification and domain-time mapping tests **without live KB revision validation**.
+- Python model profiles, Chat readiness/embedding adapters, provider-specific reranker adapters and offline retrieval/benchmark.
+- Reported tests: 61 Python foundation, 7 baseline synthetic lab, 268 React UI, isolated Compose syntax and synthetic evaluation. See [Implementation report](SPRINT1_IMPLEMENTATION_REPORT.md) for exact evidence.
 
-1. Tantivy indexes current chunks only. `as_of` BM25 cannot recall content that existed historically but has since been replaced. Sprint 1 documents this rather than redesigning the index.
-2. The inspected Utopia retrieval path has no cross-encoder stage or reranker settings persistence. The Soorin adapter is disabled by default and not wired into the rc9 container.
-3. Utopia's similarity-driven candidate resolution is general-purpose. SOC authoritative keys must be applied before open graph resolution; no persistent Soorin identity registry migration was required for the offline foundation.
-4. Statements document updates preserve record-axis history, but a live isolated-KB experiment was not run because this task preserved the existing installation and no disposable authenticated KB/token was provided.
-5. External model privacy routing is deployment-specific. Sprint 1 documents and validates adapters but does not implement the Agentic SOC Privacy Gateway.
+## P0 · Correctness/security issues to resolve before live SOC data
 
-## Future integration gaps
+| ID | Problem observed in feature-branch source | Required proof |
+| --- | --- | --- |
+| S1-P0-01 | Normalizer defaults `observed_at`/`recorded_at` to processing time, and source-event checksum includes it. Same source event may appear as a changed revision on replay. | Replay at different ingest times yields stable source-content identity; true revision remains detectable. |
+| S1-P0-02 | `llm_payload_normalizer` always creates a `SplunkNotable` anchor, even for event-only input or SOC Alert IDs. | Distinct Event / Notable / SOC Alert identities, each mapped from authoritative IDs, with tested relationships. |
+| S1-P0-03 | In-memory canonical key functions are not a persistent TKG identity registry. Splunk `index` must not be assumed to identify a network scope. | Stable ID across documents, tenant/network collision tests in persisted Utopia graph. |
+| S1-P0-04 | Ontology importer comparison mostly checks labels/temporal type; domain/range and remaining semantic constraints can diverge undetected. | Full-diff, conflict refusal, and isolated-KB import verification. |
+| S1-P0-05 | Statements adapter does not project all `EvidenceReference` metadata into recoverable evidence structure. | Evidence locator, source field, checksum and timestamp are round-trippable. |
+| S1-P0-06 | `SOORIN_*` model variables are Python-only in the current checkout; they do **not** configure live Utopia Rust. | Actual Workspace Settings connection tests, embedding dimension and alignment; correct docs/config. |
+| S1-P0-07 | Semantic-text filtering by secret-looking keys is not a complete DLP/privacy boundary. | Approved privacy routing for any real SOC content sent to external model/embedding endpoints. |
+| S1-P0-08 | Live Utopia revision, `at`/`as_of`, typed materialization and actual Graph API results are unverified. | Disposable KB/source integration tests with expected historical results and graph counts. |
+| S1-P0-09 | Cargo fmt/check/test were blocked by absent toolchain/image availability. | Rust checks pass on a supported host or CI before merge. |
 
-- Kafka/Splunk live ingestion, DLQ, backfill, and SOC database synchronization.
-- Agentic SOC Auto-Triage/Copilot/Investigator tool registration and runtime reads.
-- Production authorization mapping between SOC tenants and Utopia workspaces/KBs.
-- Persistent cross-system identity mapping, merge/split review UI, and alias interval storage if later workloads require it.
-- Reranker persistence and authenticated UI controls in the Rust runtime after benchmark-driven approval.
-- Live embedding dimension/model connectivity validation with approved credentials.
+## P1 · Integration, accuracy and scalability
 
-These are explicit future-sprint items, not hidden success claims.
+- Native Rust retrieval/reranker integration, authenticated configuration persistence and React UI; Python's in-memory search is a **reference/evaluation implementation**, not a production search service.
+- Do not embed every eligible document on every query; use existing Utopia pgvector indexes, bounded candidates and scalable re-ranking.
+- Implement a real optional SOC NER model only if deterministic extraction + validated model enrichment is required.
+- Verify authoritative DetectionRule identifiers; display-only `rule_name` is not equivalent to a stable rule ID.
+- Version-aware historical Tantivy retrieval: current index can filter current hits for `as_of` but cannot recall replaced historical chunks.
+- Limit Python embedding cache growth; expose resource budgets, timeout/retry metrics and useful provider diagnostics.
+- Replace ontology CLI `--token` process arguments with protected input/environment handling before operational use.
+- Build and health-test the isolated Soorin source image on ports `2516`/`2517`; do not overwrite rc9 lab `1516`/`1517`.
+
+## Not yet in scope: future Agentic SOC integrations
+
+The live Splunk/Kafka consumer, SOC PostgreSQL backfill, Agentic SOC Auto-Triage/Copilot/Investigator reads, tenant-to-KB authorization, Privacy Gateway integration, report/case write-back, operational monitoring and production deployment remain later sprint work.
+
+**Release decision:** Keep `feature/soc-knowledge-foundation-v1` separate from `main` until P0 code hardening, isolated live Utopia acceptance, real model verification and Rust regression gates are complete. Offline evaluation metrics are not production accuracy evidence.
