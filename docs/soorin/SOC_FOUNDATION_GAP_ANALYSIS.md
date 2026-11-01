@@ -43,3 +43,30 @@
 The live Splunk/Kafka consumer, SOC PostgreSQL backfill, Agentic SOC Auto-Triage/Copilot/Investigator reads, tenant-to-KB authorization, Privacy Gateway integration, report/case write-back, operational monitoring and production deployment remain later sprint work.
 
 **Release decision:** Keep `feature/soc-knowledge-foundation-v1` separate from `main` until P0 code hardening, isolated live Utopia acceptance, real model verification and Rust regression gates are complete. Offline evaluation metrics are not production accuracy evidence.
+
+
+## November 2026 hardening review · current implementation status
+
+The original Sprint 1 P0 table above is a **historical baseline**. The branch now includes four hardening commits (`b321fd0`, `c296cbd`, `af4be6e`, `0a3e48e`) and two WIP commits (`b386dc3`, `99fee1d`). Previous issues must not be reported as wholly unresolved without acknowledging these changes. This review is source-based; no real PostgreSQL migration, Rust compile, or live model test was run here.
+
+### Code delivered but not yet validated
+
+- **Checksum/classification:** source-content checksum excludes delivery/processing time. Splunk Notable, SOC Alert, source Event and Rule IDs are separated in the normalizer. However **rendered Utopia Statements still include delivery/processing/recorded timestamps** and can differ on an unchanged source replay. Confirm `StatementsClient.push()` yields `unchanged` for an actual replay.
+- **Identity registry:** `migrations/0111_soorin_external_identity_registry.sql` defines canonical identities, source authorities, provenance observations, aliases and binding conflicts. `utopia-store/src/soorin_identity.rs` supports registration and linking. The initial migration's `FOREIGN KEY (kb_id, utopia_entity_id)` referenced `entities(kb_id,id)` without a unique composite key; a follow-up migration correction now adds the required unique index. **No migration or SQLx-backed test was run here**. Identity registration is **not wired to SOC ingestion/graph resolution**, so storage presence does not guarantee graph identity.
+- **Ontology:** importer now compares most Utopia API fields, performs guarded create/link operations, and supports protected token input. Live API behavior, idempotency and materialization remain unverified.
+- **Evidence:** Statements adapter creates EvidenceReference nodes with structured evidence field statements. Verify on a persisted typed graph and check multi-evidence relations, retention, and source locator privacy.
+- **Models and privacy:** Python embedding provider has bounded in-process LRU and a new outbound policy. The default regex heuristic is **not comprehensive sensitive-entity detection**. `approved_privacy_route=true` / `synthetic_mode=true` are **caller-provided declarations, not cryptographic proof of gateway traversal or synthetic provenance**. The policy must be enforced on a trusted egress boundary, and must include Chat and Reranker clients; current reranker HTTP transport does not invoke it.
+- **Retrieval:** Python evaluation still embeds all eligible documents on every dense query; it is not the Rust Utopia pgvector/Tantivy production retrieval. `fallback_enabled=True` in `RetrievalFoundation.search()` ignores provider settings. Native reranker and NER model remain unintegrated.
+- **Runtime:** Chat/Embedding are configured by Utopia authenticated Workspace Settings; `SOORIN_*` environment settings only configure Python adapters. A real LLM, embedding model, cross-encoder, Rust CI and isolated Compose build remain unverified.
+
+### Release blockers and ordered follow-up
+
+1. **P0:** Run isolated PostgreSQL migration from scratch and `cargo fmt --check`, `cargo check --workspace`, `cargo test --workspace` with `UTOPIA_TEST_REQUIRE_DB=1`. Validate composite FKs, concurrency, alias upsert and cross-KB constraints. Do not run against the existing SOC Lab.
+2. **P0:** Fix end-to-end replay stability and type-safe Statements `external_id` collisions with an explicit migration/backward compatibility plan. Preserve source-observed timestamps while excluding delivery-only metadata from versioned document content.
+3. **P0:** Make the SOC identity registry authoritative in the real ingestion/entity-resolution boundary (or explicitly block use until wired), including tenant-to-KB authorization and canonical-ID → Utopia-ID mapping.
+4. **P0:** Require verified privacy transformation for **all** external model egress (Chat, Embedding, Rerank), fail closed for unknown/untrusted data, and prohibit caller-controlled bypass from being a production security control.
+5. **P0:** Test source-notable/alert/event distinctions, ontology domain/range/inverse apply, Evidence graph retrieval, and temporal `at`/`as_of` over an isolated live Utopia KB.
+6. **P1:** Use Utopia native pgvector/Tantivy indexes and bounded candidates; keep Python retrieval labeled offline-only. Integrate optional native reranker and NER only when separate quality/cost benchmarks justify them.
+7. **P1:** Update model status reporting and deploy docs with explicit installed/runtime-active/testing columns; do not claim BGE-M3 or a reranker model is deployed.
+
+**Decision:** Not ready to merge or deploy with production SOC data. Preserve `main` and the existing Utopia rc9 lab.
