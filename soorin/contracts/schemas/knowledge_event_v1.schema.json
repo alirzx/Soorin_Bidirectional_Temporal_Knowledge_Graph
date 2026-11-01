@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soorin.example/schemas/soorin.soc.knowledge-event.v1.json",
+  "title": "Soorin SOC SecurityKnowledgeEvent v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "tenant_id", "source_system", "source_instance", "source_record_id", "event_id", "event_type", "event_time", "observed_at", "recorded_at", "content_checksum"],
+  "properties": {
+    "schema_version": {"const": "soorin.soc.knowledge-event.v1"},
+    "tenant_id": {"$ref": "#/$defs/nonempty"},
+    "source_system": {"$ref": "#/$defs/nonempty"},
+    "source_instance": {"$ref": "#/$defs/nonempty"},
+    "source_record_id": {"$ref": "#/$defs/nonempty"},
+    "event_id": {"$ref": "#/$defs/nonempty"},
+    "event_type": {"$ref": "#/$defs/nonempty"},
+    "event_time": {"$ref": "#/$defs/timestamp"},
+    "observed_at": {"$ref": "#/$defs/timestamp"},
+    "recorded_at": {"$ref": "#/$defs/timestamp"},
+    "curated_payload_version": {"type": ["string", "null"]},
+    "content_checksum": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_references": {"type": "array", "items": {"type": "string"}},
+    "attributes": {"type": "object"},
+    "vendor_fields": {"type": "object"},
+    "entities": {"type": "array", "items": {"$ref": "#/$defs/entity"}},
+    "relations": {"type": "array", "items": {"$ref": "#/$defs/relation"}},
+    "facts": {"type": "array", "items": {"$ref": "#/$defs/fact"}},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+  },
+  "$defs": {
+    "nonempty": {"type": "string", "minLength": 1, "maxLength": 512},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "entity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["entity_id", "entity_type", "normalized_value", "source_identifiers", "aliases", "provisional", "attributes"],
+      "properties": {
+        "entity_id": {"$ref": "#/$defs/nonempty"}, "entity_type": {"$ref": "#/$defs/nonempty"},
+        "normalized_value": {"$ref": "#/$defs/nonempty"}, "scope": {"type": ["string", "null"]},
+        "source_identifiers": {"type": "object", "additionalProperties": {"type": "string"}},
+        "aliases": {"type": "array", "items": {"type": "string"}}, "provisional": {"type": "boolean"},
+        "attributes": {"type": "object"}
+      }
+    },
+    "relation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relation_id", "relation_type", "subject_entity_id", "object_entity_id", "confidence_category", "evidence_ids", "attributes"],
+      "properties": {
+        "relation_id": {"$ref": "#/$defs/nonempty"}, "relation_type": {"$ref": "#/$defs/nonempty"},
+        "subject_entity_id": {"$ref": "#/$defs/nonempty"}, "object_entity_id": {"$ref": "#/$defs/nonempty"},
+        "confidence_category": {"enum": ["observed", "asserted", "inferred", "model_proposed"]},
+        "valid_from": {"$ref": "#/$defs/timestamp"}, "valid_to": {"$ref": "#/$defs/timestamp"},
+        "evidence_ids": {"type": "array", "items": {"type": "string"}}, "attributes": {"type": "object"}
+      }
+    },
+    "fact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["fact_id", "subject_entity_id", "predicate", "recorded_at", "evidence_ids", "confidence_category"],
+      "oneOf": [
+        {"required": ["object_entity_id"], "not": {"required": ["object_value"]}},
+        {"required": ["object_value"], "not": {"required": ["object_entity_id"]}}
+      ],
+      "properties": {
+        "fact_id": {"$ref": "#/$defs/nonempty"}, "subject_entity_id": {"$ref": "#/$defs/nonempty"},
+        "predicate": {"$ref": "#/$defs/nonempty"}, "object_entity_id": {"type": "string"}, "object_value": {},
+        "valid_from": {"$ref": "#/$defs/timestamp"}, "valid_to": {"$ref": "#/$defs/timestamp"},
+        "recorded_at": {"$ref": "#/$defs/timestamp"}, "invalidated_at": {"$ref": "#/$defs/timestamp"},
+        "evidence_ids": {"type": "array", "items": {"type": "string"}}, "confidence_category": {"type": "string"}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false, "required": ["evidence_id", "source_record_id"],
+      "properties": {
+        "evidence_id": {"$ref": "#/$defs/nonempty"}, "source_record_id": {"$ref": "#/$defs/nonempty"},
+        "field_path": {"type": "string"}, "source_uri": {"type": "string"}, "checksum": {"type": "string"},
+        "excerpt": {"type": "string", "maxLength": 4096}, "observed_at": {"$ref": "#/$defs/timestamp"}
+      }
+    }
+  }
+}

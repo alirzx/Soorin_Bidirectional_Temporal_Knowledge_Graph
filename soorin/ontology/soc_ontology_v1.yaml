@@ -1,0 +1,40 @@
+{
+  "schema_version": "soorin.soc.ontology.v1",
+  "description": "Synthetic-safe SOC ontology projected through Utopia ontology APIs.",
+  "entity_types": [
+    {"key":"host","label":"Host","description":"A tenant-scoped computing asset. Hostname alone is not authoritative identity."},
+    {"key":"ip_address","label":"IP Address","description":"An IPv4 or IPv6 address scoped to tenant, network, and valid time."},
+    {"key":"network","label":"Network","description":"A named routing, address, or trust scope."},
+    {"key":"user_account","label":"User Account","description":"A directory, local, cloud, or service principal."},
+    {"key":"security_event","label":"Security Event","description":"A source-observed security-relevant event."},
+    {"key":"security_alert","label":"Security Alert","description":"A SOC alert with lifecycle revisions."},
+    {"key":"splunk_notable","label":"Splunk Notable","description":"A fired Splunk Enterprise Security notable, distinct from its SOC alert."},
+    {"key":"detection_rule","label":"Detection Rule","description":"A versioned detection configuration; current configuration is not fire-time proof."},
+    {"key":"mitre_technique","label":"MITRE Technique","description":"A MITRE ATT&CK technique identifier."},
+    {"key":"indicator","label":"Indicator","description":"A domain, URL, file hash, file path, process, or other observable indicator."},
+    {"key":"incident","label":"Incident","description":"A correlated security incident."},
+    {"key":"soc_case","label":"SOC Case","description":"A tenant-scoped analyst case."},
+    {"key":"investigation_run","label":"Investigation Run","description":"One immutable execution of an investigation workflow."},
+    {"key":"triage_decision","label":"Triage Decision","description":"An analyst or model-assisted decision with provenance and review state."},
+    {"key":"report","label":"Report","description":"A versioned investigation or case report."},
+    {"key":"ticket","label":"Ticket","description":"An external workflow, incident, or change ticket."},
+    {"key":"evidence_reference","label":"Evidence Reference","description":"A stable reference to source evidence, never a copy of private raw logs."}
+  ],
+  "relation_types": [
+    {"key":"observed_on","label":"observed on","description":"An event, alert, or notable was observed on a host.","domains":["security_event","security_alert","splunk_notable"],"ranges":["host"],"cardinality":"many_to_many","temporal":"event","required_provenance":true,"inverse":"host_observed","attributes":["source_field"],"confidence_policy":"source_observed"},
+    {"key":"host_observed","label":"host observed","description":"Inverse of observed_on.","domains":["host"],"ranges":["security_event","security_alert","splunk_notable"],"cardinality":"many_to_many","temporal":"event","required_provenance":true,"inverse":"observed_on","attributes":[],"confidence_policy":"source_observed"},
+    {"key":"originated_from","label":"originated from","description":"A security record reported a source address or network.","domains":["security_event","security_alert","splunk_notable"],"ranges":["ip_address","network"],"cardinality":"many_to_many","temporal":"event","required_provenance":true,"inverse":null,"attributes":["source_field","network_scope"],"confidence_policy":"source_observed"},
+    {"key":"involves_user","label":"involves user","description":"A security record involves a user account.","domains":["security_event","security_alert","splunk_notable","incident","soc_case"],"ranges":["user_account"],"cardinality":"many_to_many","temporal":"event","required_provenance":true,"inverse":null,"attributes":["role"],"confidence_policy":"source_observed_or_asserted"},
+    {"key":"detected_by","label":"detected by","description":"An alert or notable was produced by a detection rule.","domains":["security_alert","splunk_notable"],"ranges":["detection_rule"],"cardinality":"many_to_one_at_time","temporal":"event","required_provenance":true,"inverse":"triggered","attributes":["rule_version","configuration_time"],"confidence_policy":"source_identifier_required"},
+    {"key":"triggered","label":"triggered","description":"A detection rule produced an alert or notable.","domains":["detection_rule"],"ranges":["security_alert","splunk_notable"],"cardinality":"one_to_many","temporal":"event","required_provenance":true,"inverse":"detected_by","attributes":["rule_version"],"confidence_policy":"source_identifier_required"},
+    {"key":"correlated_with","label":"correlated with","description":"Two records are correlated; correlation is not identity.","domains":["security_event","security_alert","splunk_notable","incident"],"ranges":["security_event","security_alert","splunk_notable","incident"],"cardinality":"many_to_many","temporal":"state","required_provenance":true,"inverse":"correlated_with","attributes":["method","score_type","score"],"confidence_policy":"asserted_or_inferred"},
+    {"key":"mapped_to_technique","label":"mapped to technique","description":"A record or rule reports a MITRE ATT&CK mapping.","domains":["security_event","security_alert","splunk_notable","detection_rule"],"ranges":["mitre_technique"],"cardinality":"many_to_many","temporal":"state","required_provenance":true,"inverse":null,"attributes":["mapping_source"],"confidence_policy":"reported_mapping"},
+    {"key":"supported_by","label":"supported by","description":"A conclusion, decision, report, alert, or case is supported by evidence.","domains":["security_alert","triage_decision","report","soc_case","incident"],"ranges":["security_event","evidence_reference"],"cardinality":"many_to_many","temporal":"state","required_provenance":true,"inverse":null,"attributes":["support_type"],"confidence_policy":"evidence_reference_required"},
+    {"key":"part_of_case","label":"part of case","description":"An alert, incident, decision, report, or investigation belongs to a case.","domains":["security_alert","splunk_notable","incident","investigation_run","triage_decision","report"],"ranges":["soc_case"],"cardinality":"many_to_one_at_time","temporal":"state","required_provenance":true,"inverse":null,"attributes":[],"confidence_policy":"source_or_analyst_asserted"},
+    {"key":"has_decision","label":"has decision","description":"An alert or case has a versioned triage decision.","domains":["security_alert","soc_case"],"ranges":["triage_decision"],"cardinality":"one_to_many","temporal":"state","required_provenance":true,"inverse":null,"attributes":["review_status"],"confidence_policy":"decision_provenance_required"},
+    {"key":"has_report","label":"has report","description":"A case or investigation has a versioned report.","domains":["soc_case","investigation_run"],"ranges":["report"],"cardinality":"one_to_many","temporal":"state","required_provenance":true,"inverse":null,"attributes":["report_version"],"confidence_policy":"source_identifier_required"},
+    {"key":"tracked_by_ticket","label":"tracked by ticket","description":"A case, incident, or alert is tracked by an external ticket.","domains":["soc_case","incident","security_alert"],"ranges":["ticket"],"cardinality":"many_to_many","temporal":"state","required_provenance":true,"inverse":null,"attributes":["ticket_system"],"confidence_policy":"source_identifier_required"},
+    {"key":"had_ip","label":"had IP","description":"A host had an address during a bounded valid-time interval.","domains":["host"],"ranges":["ip_address"],"cardinality":"many_to_many_over_time","temporal":"state","required_provenance":true,"inverse":null,"attributes":["network_scope"],"confidence_policy":"source_observed"},
+    {"key":"supersedes","label":"supersedes","description":"A revision or artifact explicitly supersedes an earlier one.","domains":["security_alert","detection_rule","triage_decision","report"],"ranges":["security_alert","detection_rule","triage_decision","report"],"cardinality":"many_to_one","temporal":"event","required_provenance":true,"inverse":null,"attributes":["reason"],"confidence_policy":"explicit_only"}
+  ]
+}

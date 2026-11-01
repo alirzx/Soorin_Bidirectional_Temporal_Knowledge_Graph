@@ -1,0 +1,21 @@
+{
+  "schema_version": "soorin.soc.knowledge-model-card.v1",
+  "version": "1.0.0",
+  "domain": "Security operations and temporal incident knowledge",
+  "supported_entity_classes": ["Host","IPAddress","Network","UserAccount","SecurityEvent","SecurityAlert","SplunkNotable","DetectionRule","MITRETechnique","Indicator","Incident","SOCCase","InvestigationRun","TriageDecision","Report","Ticket","EvidenceReference"],
+  "supported_relation_classes": ["OBSERVED_ON","ORIGINATED_FROM","INVOLVES_USER","DETECTED_BY","TRIGGERED","CORRELATED_WITH","MAPPED_TO_TECHNIQUE","SUPPORTED_BY","PART_OF_CASE","HAS_DECISION","HAS_REPORT","TRACKED_BY_TICKET","HAD_IP","SUPERSEDES"],
+  "canonical_identity_policy": {"version":"soorin.soc.identity-policy.v1","automatic_merge":"trusted tenant- and source-scoped identifiers only","semantic_similarity":"candidate discovery and review only"},
+  "extraction_strategy": {"default":"deterministic","modes":["deterministic","hybrid","llm_assisted"],"structured_fields_take_precedence":true},
+  "ner_strategy": {"enabled_by_default":false,"purpose":"unstructured enrichment only","cannot_override_authoritative_identity":true},
+  "llm_configuration_profile": {"runtime":"Utopia OpenAI-compatible workspace client","required":false,"secrets":"runtime only","structured_output_validation":true},
+  "embedding_configuration_profile": {"runtime":"Utopia workspace embedding client or Soorin adapter","required":false,"candidate_model":"BAAI/bge-m3","candidate_dimension":1024,"response_dimension_must_be_validated":true},
+  "reranker_configuration_profile": {"enabled_by_default":false,"providers":["cohere_v2","jina_v1","tei"],"fallback":"preserve RRF order"},
+  "temporal_semantics": {"world_axis":["event_time","valid_from","valid_to"],"knowledge_axis":["recorded_at","invalidated_at"],"revision_types":["exact_replay","new_occurrence","correction","state_change","supersession","retraction","late_arrival"]},
+  "provenance_policy": {"required_for_relations":true,"source_observation_separate_from_analyst_assertion":true,"model_output_never_source_fact":true},
+  "confidence_semantics": {"categories":["observed","asserted","inferred","model_proposed"],"similarity_is_not_malicious_probability":true,"risk_score_is_not_probability":true},
+  "review_policy": {"ambiguous_identity":"human review","model_proposed_entity":"validated and non-authoritative","ontology_conflict":"refuse overwrite"},
+  "known_limitations": ["Tantivy indexes current chunks and cannot recall replaced historical chunks","No live Agentic SOC integration in Sprint 1","Optional external model privacy route is deployment-specific"],
+  "evaluation_datasets": ["synthetic_splunk_soc.json","soc_llm_payload_scenarios_v1.json"],
+  "evaluation_metrics": ["entity_precision","relation_precision","duplicate_rate","tenant_collision_rate","Recall@K","MRR","nDCG@K","latency_p50","latency_p95","failure_rate"],
+  "runtime_secrets": "not part of this model card"
+}
