@@ -500,6 +500,16 @@ class KnowledgeQuery:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "tenant_id", _identifier(self.tenant_id, "tenant_id"))
+        if not isinstance(self.text, str):
+            raise ContractError("unexpected_type", "text must be a string", path="$.text")
+        object.__setattr__(
+            self, "exact_identifiers",
+            tuple(_identifier(value, "exact_identifier") for value in self.exact_identifiers),
+        )
+        object.__setattr__(
+            self, "entity_types",
+            tuple(_identifier(value, "entity_type") for value in self.entity_types),
+        )
         if not self.text.strip() and not self.exact_identifiers:
             raise ContractError("empty_query", "text or an exact identifier is required", path="$.text")
         if not 1 <= self.top_k <= 100:

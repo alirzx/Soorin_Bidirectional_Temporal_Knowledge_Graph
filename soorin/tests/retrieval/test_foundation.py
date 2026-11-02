@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from soorin.contracts import KnowledgeQuery
 from soorin.models import DeterministicFakeEmbeddingClient
 from soorin.retrieval import DeterministicReranker, RetrievalFoundation, SearchDocument
+from soorin.retrieval.reranker import RerankerError
 
 
 DOCS = (
@@ -54,6 +56,93 @@ class RetrievalTests(unittest.TestCase):
     def test_empty_lookup_is_unavailable(self):
         out = RetrievalFoundation(DOCS).search(KnowledgeQuery("tenant-a", "ignored", exact_identifiers=("MISSING",)))
         self.assertEqual(out.status, "unavailable")
+
+    def test_type_aware_exact_ids_do_not_cross_entity_kinds(self):
+        documents = (
+            SearchDocument(
+                "host-doc", "tenant-a", "host", ("SHARED-1",), (),
+                metadata={"entity_type": "Host"}, typed_identifiers=(("Host", "SHARED-1"),),
+            ),
+            SearchDocument(
+                "alert-doc", "tenant-a", "alert", ("SHARED-1",), (),
+                metadata={"entity_type": "SecurityAlert"},
+                typed_identifiers=(("SecurityAlert", "SHARED-1"),),
+            ),
+        )
+        out = RetrievalFoundation(documents).search(KnowledgeQuery(
+            "tenant-a", "ignored", exact_identifiers=("SHARED-1",), entity_types=("Host",),
+        ))
+        self.assertEqual([item["document_id"] for item in out.items], ["host-doc"])
+
+    def test_dense_embedding_is_bounded_and_document_vectors_are_cached(self):
+        class TrackingEmbedder:
+            provider = "tracking"
+            model = "tracking-v1"
+
+            def __init__(self):
+                self.calls = []
+
+            def embed(self, texts):
+                self.calls.append(tuple(texts))
+                return [[1.0, float(index + 1)] for index, _ in enumerate(texts)]
+
+        documents = tuple(
+            SearchDocument(f"doc-{index:03d}", "tenant-a", f"document {index} needle")
+            for index in range(200)
+        )
+        embedder = TrackingEmbedder()
+        engine = RetrievalFoundation(
+            documents, embedder, candidate_limit=10, dense_candidate_limit=5,
+            vector_cache_capacity=5,
+        )
+        first = engine.search(KnowledgeQuery("tenant-a", "needle", top_k=3))
+        second = engine.search(KnowledgeQuery("tenant-a", "needle", top_k=3))
+        self.assertEqual([len(call) for call in embedder.calls], [6, 1])
+        self.assertEqual(first.retrieval_metadata["dense_input_count"], 5)
+        self.assertEqual(first.retrieval_metadata["candidate_limit"], 10)
+        self.assertEqual(second.retrieval_metadata["vector_cache"]["hits"], 5)
+
+    def test_precomputed_vectors_avoid_document_embedding_and_cache_is_bounded(self):
+        class TrackingEmbedder:
+            provider = "tracking"
+            model = "tracking-v1"
+
+            def __init__(self):
+                self.calls = []
+
+            def embed(self, texts):
+                self.calls.append(tuple(texts))
+                return [[1.0, 1.0] for _ in texts]
+
+        documents = (
+            SearchDocument("precomputed", "tenant-a", "needle one", embedding=(1.0, 1.0)),
+            SearchDocument("uncached-1", "tenant-a", "needle two"),
+            SearchDocument("uncached-2", "tenant-a", "needle three"),
+            SearchDocument("uncached-3", "tenant-a", "needle four"),
+        )
+        embedder = TrackingEmbedder()
+        engine = RetrievalFoundation(
+            documents, embedder, candidate_limit=4, dense_candidate_limit=4,
+            vector_cache_capacity=2,
+        )
+        out = engine.search(KnowledgeQuery("tenant-a", "needle", top_k=2))
+        self.assertNotIn("needle one", embedder.calls[0])
+        self.assertEqual(len(embedder.calls[0]), 4)  # query + three missing document vectors
+        self.assertEqual(out.retrieval_metadata["vector_cache"]["size"], 2)
+        self.assertEqual(out.retrieval_metadata["vector_cache"]["evictions"], 1)
+
+    def test_reranker_fallback_policy_is_read_from_provider_configuration(self):
+        class BrokenReranker:
+            provider = "broken"
+            model = "broken-v1"
+            config = SimpleNamespace(fallback_enabled=False)
+
+            def rerank(self, query, candidates, top_n):
+                raise RerankerError("unavailable", "synthetic failure")
+
+        engine = RetrievalFoundation(DOCS, reranker=BrokenReranker())
+        with self.assertRaisesRegex(RerankerError, "unavailable"):
+            engine.search(KnowledgeQuery("tenant-a", "password spray"))
 
 
 if __name__ == "__main__":

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import platform
 import statistics
+import sys
 import time
 
 from soorin.contracts import KnowledgeQuery
@@ -40,7 +42,21 @@ def run_benchmark(k: int = 3) -> dict:
         "bm25_dense_rrf": RetrievalFoundation(DOCUMENTS, DeterministicFakeEmbeddingClient(64)),
         "bm25_dense_rrf_reranker": RetrievalFoundation(DOCUMENTS, DeterministicFakeEmbeddingClient(64), DeterministicReranker()),
     }
-    report = {"schema_version": "soorin.soc.retrieval-benchmark.v1", "k": k, "modes": {}}
+    report = {
+        "schema_version": "soorin.soc.retrieval-benchmark.v1",
+        "dataset": {
+            "name": "soorin-synthetic-retrieval", "version": "v1", "synthetic": True,
+            "document_count": len(DOCUMENTS), "query_count": len(CASES),
+        },
+        "reproducibility": {
+            "deterministic": True, "random_seed": None,
+            "python": platform.python_version(), "implementation": platform.python_implementation(),
+            "platform": platform.platform(), "machine": platform.machine(),
+            "executable": sys.executable,
+        },
+        "k": k,
+        "modes": {},
+    }
     for name, engine in modes.items():
         values: list[tuple[float, float, float]] = []
         latencies: list[float] = []
