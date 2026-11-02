@@ -318,13 +318,17 @@ def _live_checks(
     deadline = time.monotonic() + poll_seconds
     graph = before_graph
     poll_error: str | None = None
-    while time.monotonic() < deadline:
+    fetched_after_push = False
+    while True:
         try:
             graph = _request_json(base_url, f"/api/v1/kbs/{kb_id}/graph/overview?limit=1000", token=session_token, timeout=timeout)
-            if int(graph.get("total_nodes", 0)) > int(before_graph.get("total_nodes", 0)) or graph.get("edges"):
+            fetched_after_push = True
+            if _graph_assertions(graph).status == "PASS":
                 break
         except (ValidationError, TypeError, ValueError) as exc:
             poll_error = str(exc)
+        if time.monotonic() >= deadline:
+            break
         time.sleep(min(2.0, max(0.1, deadline - time.monotonic())))
     try:
         after_failed = _request_json(base_url, f"/api/v1/kbs/{kb_id}/jobs/failed", token=session_token, timeout=timeout)
@@ -338,7 +342,7 @@ def _live_checks(
         ))
     except (ValidationError, TypeError, ValueError) as exc:
         checks.append(_check("background_jobs", "BLOCKED", str(exc)))
-    if poll_error and graph is before_graph:
+    if poll_error and not fetched_after_push:
         checks.append(_check("graph_fetch", "BLOCKED", poll_error))
     else:
         checks.append(_check(
@@ -447,6 +451,7 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         checks.append(_check("semantic_search", "SKIPPED", "live execution and an available embedding model are required"))
 
     counts = Counter(check.status for check in checks)
+    passed = counts.get("FAIL", 0) == 0 and (not args.execute or counts.get("BLOCKED", 0) == 0)
     report = {
         "schema_version": "soorin.soc.e2e-report.v1",
         "synthetic": True,
@@ -455,9 +460,9 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "fixture": str(args.fixture),
         "checks": [asdict(check) for check in checks],
         "summary": {status: counts.get(status, 0) for status in sorted(STATUSES)},
-        "passed": counts.get("FAIL", 0) == 0 and (not args.execute or counts.get("BLOCKED", 0) == 0),
+        "passed": passed,
     }
-    return report, 0 if counts.get("FAIL", 0) == 0 else 1
+    return report, 0 if passed else 1
 
 
 def main(argv: list[str] | None = None) -> int:
