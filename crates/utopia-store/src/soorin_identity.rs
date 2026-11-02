@@ -147,6 +147,17 @@ pub async fn register(pool: &PgPool, item: Registration<'_>) -> AppResult<Regist
         .bind(item.observed_at)
         .fetch_one(&mut *tx)
         .await?;
+        // A collision artifact may be retained for review and provenance, but
+        // it must never look like an automatically usable canonical identity.
+        sqlx::query(
+            "UPDATE soorin_canonical_identities
+                SET status='ambiguous'
+              WHERE kb_id=$1 AND id=$2",
+        )
+        .bind(item.kb_id)
+        .bind(candidate_identity_id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         return Ok(RegistrationOutcome::Conflict {
             conflict_id,
@@ -213,12 +224,19 @@ pub async fn record_alias(
     }
     let (id,): (Uuid,) = sqlx::query_as(
         "INSERT INTO soorin_identity_aliases
-             (id,kb_id,identity_id,alias,normalized_alias,valid_from,valid_to,recorded_at,provenance)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-         ON CONFLICT (identity_id, normalized_alias, valid_from)
-         DO UPDATE SET alias=EXCLUDED.alias, valid_to=EXCLUDED.valid_to,
-                       recorded_at=GREATEST(soorin_identity_aliases.recorded_at, EXCLUDED.recorded_at),
-                       provenance=EXCLUDED.provenance
+             (id,kb_id,identity_id,alias,normalized_alias,valid_from,valid_to,recorded_at,provenance,
+              provenance_hash,first_seen_at,last_seen_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,
+                 sha256(convert_to(
+                     $4 || chr(0) || $5 || chr(0)
+                     || COALESCE($6::timestamptz::text, '') || chr(0)
+                     || COALESCE($7::timestamptz::text, '') || chr(0)
+                     || $9::jsonb::text,
+                     'UTF8'
+                 )),$8,$8)
+         ON CONFLICT (identity_id, normalized_alias, valid_from, provenance_hash)
+         DO UPDATE SET last_seen_at=GREATEST(soorin_identity_aliases.last_seen_at, EXCLUDED.last_seen_at),
+                       occurrence_count=soorin_identity_aliases.occurrence_count+1
          RETURNING id",
     )
     .bind(Uuid::now_v7())
