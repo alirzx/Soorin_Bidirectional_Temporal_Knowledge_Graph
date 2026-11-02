@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 import urllib.error
 import urllib.request
 
@@ -26,7 +26,9 @@ def _phrase(value: str) -> str:
     return value.strip().replace("_", " ").casefold()
 
 
-def _qualifiers(event: SecurityKnowledgeEvent, *, evidence: str = "", confidence: str = "observed") -> dict[str, str]:
+def _qualifiers(
+    event: SecurityKnowledgeEvent, *, evidence: Sequence[str] = (), confidence: str = "observed",
+) -> dict[str, str]:
     values = {
         "schema_version": event.schema_version,
         "tenant_id": event.tenant_id,
@@ -35,8 +37,12 @@ def _qualifiers(event: SecurityKnowledgeEvent, *, evidence: str = "", confidence
         "source_record_id": event.source_record_id,
         "confidence_category": confidence,
     }
-    if evidence:
-        values["evidence_id"] = evidence
+    evidence_ids = sorted(set(evidence))
+    if evidence_ids:
+        # Keep the singular field for existing Utopia consumers while making
+        # the complete, deterministically ordered evidence set recoverable.
+        values["evidence_id"] = evidence_ids[0]
+        values["evidence_ids"] = json.dumps(evidence_ids, ensure_ascii=False, separators=(",", ":"))
     return values
 
 
@@ -64,40 +70,47 @@ class StatementsAdapter:
         return f"soorin-soc-{self.external_id_version}:{event.tenant_id}:{digest}"
 
     def render(self, event: SecurityKnowledgeEvent) -> dict[str, Any]:
-        entities = [[entity.entity_id, entity.entity_type, True] for entity in event.entities]
-        aliases = [[entity.entity_id, entity.normalized_value, None] for entity in event.entities if entity.normalized_value != entity.entity_id]
+        ordered_entities = list(event.entities)
+        ordered_evidence = list(event.evidence)
+        ordered_relations = list(event.relations)
+        ordered_facts = list(event.facts)
+        if self.external_id_version == "v2":
+            ordered_entities.sort(key=lambda item: item.entity_id)
+            ordered_evidence.sort(key=lambda item: item.evidence_id)
+            ordered_relations.sort(key=lambda item: item.relation_id)
+            ordered_facts.sort(key=lambda item: item.fact_id)
+        entities = [[entity.entity_id, entity.entity_type, True] for entity in ordered_entities]
+        aliases = [[entity.entity_id, entity.normalized_value, None] for entity in ordered_entities if entity.normalized_value != entity.entity_id]
         statements: list[list[Any]] = []
 
         evidence_entities: dict[str, str] = {}
-        for evidence in event.evidence:
+        for evidence in ordered_evidence:
             seed = f"{event.tenant_id}|{event.source_system}|{event.source_instance}|{evidence.evidence_id}"
             entity_id = "soorin:evidence:" + hashlib.sha256(seed.encode()).hexdigest()
             evidence_entities[evidence.evidence_id] = entity_id
             entities.append([entity_id, "EvidenceReference", True])
             aliases.append([entity_id, evidence.evidence_id, None])
 
-        for relation in event.relations:
-            evidence = relation.evidence_ids[0] if relation.evidence_ids else ""
+        for relation in ordered_relations:
             statements.append([
                 None, relation.subject_entity_id, _phrase(relation.relation_type), relation.object_entity_id, None,
-                _qualifiers(event, evidence=evidence, confidence=relation.confidence_category),
+                _qualifiers(event, evidence=relation.evidence_ids, confidence=relation.confidence_category),
                 relation.valid_from or event.event_time, relation.valid_to,
             ])
-        for fact in event.facts:
-            evidence = fact.evidence_ids[0] if fact.evidence_ids else ""
+        for fact in ordered_facts:
             statements.append([
                 None, fact.subject_entity_id, _phrase(fact.predicate), fact.object_entity_id,
                 None if fact.object_entity_id else _literal(fact.object_value),
-                _qualifiers(event, evidence=evidence, confidence=fact.confidence_category),
+                _qualifiers(event, evidence=fact.evidence_ids, confidence=fact.confidence_category),
                 fact.valid_from or event.event_time, fact.valid_to,
             ])
 
         if not entities:
             raise StatementsError("missing_entities", "the Statements contract requires at least one subject entity")
-        subject = event.entities[0].entity_id
-        for evidence in event.evidence:
+        subject = ordered_entities[0].entity_id
+        for evidence in ordered_evidence:
             evidence_entity = evidence_entities[evidence.evidence_id]
-            qualifiers = _qualifiers(event, evidence=evidence.evidence_id)
+            qualifiers = _qualifiers(event, evidence=(evidence.evidence_id,))
             statements.append([
                 None, subject, "supported by", evidence_entity, None, qualifiers,
                 evidence.observed_at or event.event_time, None,
@@ -228,9 +241,8 @@ class StatementsClient:
         except TimeoutError as exc:
             raise StatementsError("api_timeout", str(exc)) from exc
         except urllib.error.HTTPError as exc:
-            body = exc.read(2048).decode("utf-8", errors="replace")
             code = "authentication_failed" if exc.code in {401, 403} else "api_error"
-            raise StatementsError(code, f"HTTP {exc.code}: {body}") from exc
+            raise StatementsError(code, f"HTTP {exc.code}") from exc
         except urllib.error.URLError as exc:
             raise StatementsError("api_unavailable", str(exc.reason)) from exc
         if not isinstance(response, Mapping):

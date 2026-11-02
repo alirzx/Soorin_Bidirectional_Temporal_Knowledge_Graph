@@ -20,7 +20,7 @@
     "source_revision_id": {"type": "string"},
     "delivery_id": {"type": "string"},
     "curated_payload_version": {"type": ["string", "null"]},
-    "content_checksum_version": {"enum": ["soorin.event-content.sha256.v1", "soorin.source-content.sha256.v2"]},
+    "content_checksum_version": {"enum": ["soorin.event-content.sha256.v1", "soorin.source-content.sha256.v2", "soorin.source-content.sha256.v3"]},
     "content_checksum": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "source_references": {"type": "array", "items": {"type": "string"}},
     "attributes": {"type": "object"},
@@ -52,7 +52,7 @@
         "subject_entity_id": {"$ref": "#/$defs/nonempty"}, "object_entity_id": {"$ref": "#/$defs/nonempty"},
         "confidence_category": {"enum": ["observed", "asserted", "inferred", "model_proposed"]},
         "valid_from": {"$ref": "#/$defs/timestamp"}, "valid_to": {"$ref": "#/$defs/timestamp"},
-        "evidence_ids": {"type": "array", "items": {"type": "string"}}, "attributes": {"type": "object"}
+        "evidence_ids": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}}, "attributes": {"type": "object"}
       }
     },
     "fact": {
@@ -64,10 +64,12 @@
       ],
       "properties": {
         "fact_id": {"$ref": "#/$defs/nonempty"}, "subject_entity_id": {"$ref": "#/$defs/nonempty"},
-        "predicate": {"$ref": "#/$defs/nonempty"}, "object_entity_id": {"type": "string"}, "object_value": {},
+        "predicate": {"$ref": "#/$defs/nonempty"}, "object_entity_id": {"$ref": "#/$defs/nonempty"},
+        "object_value": {"not": {"type": "null"}},
         "valid_from": {"$ref": "#/$defs/timestamp"}, "valid_to": {"$ref": "#/$defs/timestamp"},
         "recorded_at": {"$ref": "#/$defs/timestamp"}, "invalidated_at": {"$ref": "#/$defs/timestamp"},
-        "evidence_ids": {"type": "array", "items": {"type": "string"}}, "confidence_category": {"type": "string"}
+        "evidence_ids": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}},
+        "confidence_category": {"enum": ["observed", "asserted", "inferred", "model_proposed"]}
       }
     },
     "evidence": {
@@ -76,9 +78,9 @@
         "evidence_id": {"$ref": "#/$defs/nonempty"}, "source_record_id": {"$ref": "#/$defs/nonempty"},
         "field_path": {"type": "string"}, "source_uri": {"type": "string"}, "checksum": {"type": "string"},
         "excerpt": {"type": "string", "maxLength": 4096}, "observed_at": {"$ref": "#/$defs/timestamp"},
-        "source_system": {"type": "string"}, "source_instance": {"type": "string"},
-        "source_event_ids": {"type": "array", "items": {"type": "string"}},
-        "source_revision_id": {"type": "string"}
+        "source_system": {"$ref": "#/$defs/nonempty"}, "source_instance": {"$ref": "#/$defs/nonempty"},
+        "source_event_ids": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}},
+        "source_revision_id": {"$ref": "#/$defs/nonempty"}
       }
     }
   }

@@ -17,7 +17,8 @@ from typing import Any, Iterable, Mapping
 
 SCHEMA_VERSION = "soorin.soc.knowledge-event.v1"
 LEGACY_CHECKSUM_VERSION = "soorin.event-content.sha256.v1"
-SOURCE_CONTENT_CHECKSUM_VERSION = "soorin.source-content.sha256.v2"
+SOURCE_CONTENT_CHECKSUM_V2 = "soorin.source-content.sha256.v2"
+SOURCE_CONTENT_CHECKSUM_VERSION = "soorin.source-content.sha256.v3"
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_IDENTIFIER_LENGTH = 512
 MAX_EVIDENCE_EXCERPT = 4096
@@ -40,6 +41,20 @@ def _identifier(value: Any, name: str) -> str:
         raise ContractError("empty_identifier", f"{name} cannot be empty", path=f"$.{name}")
     if len(value) > MAX_IDENTIFIER_LENGTH:
         raise ContractError("identifier_too_long", f"{name} exceeds {MAX_IDENTIFIER_LENGTH} characters", path=f"$.{name}")
+    return value
+
+
+def _optional_text(value: Any, name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ContractError("unexpected_type", f"{name} must be a string", path=f"$.{name}")
+    return value
+
+
+def _text(value: Any, name: str) -> str:
+    if not isinstance(value, str):
+        raise ContractError("unexpected_type", f"{name} must be a string", path=f"$.{name}")
     return value
 
 
@@ -104,8 +119,15 @@ class EvidenceReference:
         object.__setattr__(self, "source_record_id", _identifier(self.source_record_id, "source_record_id"))
         if self.excerpt is not None and len(self.excerpt) > MAX_EVIDENCE_EXCERPT:
             raise ContractError("evidence_excerpt_too_large", "excerpt exceeds 4096 characters", path="$.excerpt")
+        for name in ("field_path", "source_uri", "checksum", "excerpt"):
+            object.__setattr__(self, name, _optional_text(getattr(self, name), name))
         object.__setattr__(self, "observed_at", normalize_timestamp(self.observed_at, "observed_at"))
-        object.__setattr__(self, "source_event_ids", tuple(self.source_event_ids))
+        for name in ("source_system", "source_instance", "source_revision_id"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _identifier(value, name))
+        event_ids = tuple(_identifier(value, "source_event_id") for value in self.source_event_ids)
+        object.__setattr__(self, "source_event_ids", event_ids)
 
     def to_dict(self) -> dict[str, Any]:
         return _without_none({
@@ -141,7 +163,9 @@ class CanonicalEntity:
         for key, value in self.source_identifiers.items():
             _identifier(str(key), "source_identifier_key")
             _identifier(value, "source_identifier")
-        object.__setattr__(self, "aliases", tuple(self.aliases))
+        aliases = tuple(_text(value, "alias") for value in self.aliases)
+        object.__setattr__(self, "aliases", aliases)
+        object.__setattr__(self, "scope", _optional_text(self.scope, "scope"))
         _json_value(self.attributes, "$.attributes")
 
     def to_dict(self) -> dict[str, Any]:
@@ -174,7 +198,7 @@ class KnowledgeRelation:
             object.__setattr__(self, name, _identifier(getattr(self, name), name))
         if self.confidence_category not in {"observed", "asserted", "inferred", "model_proposed"}:
             raise ContractError("invalid_confidence_category", self.confidence_category, path="$.confidence_category")
-        object.__setattr__(self, "evidence_ids", tuple(self.evidence_ids))
+        object.__setattr__(self, "evidence_ids", tuple(_identifier(value, "evidence_id") for value in self.evidence_ids))
         object.__setattr__(self, "valid_from", normalize_timestamp(self.valid_from, "valid_from"))
         object.__setattr__(self, "valid_to", normalize_timestamp(self.valid_to, "valid_to"))
         if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
@@ -218,7 +242,9 @@ class TemporalFact:
             object.__setattr__(self, "object_entity_id", _identifier(self.object_entity_id, "object_entity_id"))
         else:
             _json_value(self.object_value, "$.object_value")
-        object.__setattr__(self, "evidence_ids", tuple(self.evidence_ids))
+        if self.confidence_category not in {"observed", "asserted", "inferred", "model_proposed"}:
+            raise ContractError("invalid_confidence_category", self.confidence_category, path="$.confidence_category")
+        object.__setattr__(self, "evidence_ids", tuple(_identifier(value, "evidence_id") for value in self.evidence_ids))
         for name, required in (("recorded_at", True), ("valid_from", False), ("valid_to", False), ("invalidated_at", False)):
             object.__setattr__(self, name, normalize_timestamp(getattr(self, name), name, required=required))
         if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
@@ -310,7 +336,15 @@ class SecurityKnowledgeEvent:
         for name in ("event_time", "observed_at", "recorded_at"):
             object.__setattr__(self, name, normalize_timestamp(getattr(self, name), name, required=True))
         object.__setattr__(self, "processed_at", normalize_timestamp(self.processed_at, "processed_at"))
-        if self.content_checksum_version not in {LEGACY_CHECKSUM_VERSION, SOURCE_CONTENT_CHECKSUM_VERSION}:
+        for name in ("source_revision_id", "delivery_id", "curated_payload_version"):
+            object.__setattr__(self, name, _optional_text(getattr(self, name), name))
+        object.__setattr__(
+            self, "source_references",
+            tuple(_text(value, "source_reference") for value in self.source_references),
+        )
+        if self.content_checksum_version not in {
+            LEGACY_CHECKSUM_VERSION, SOURCE_CONTENT_CHECKSUM_V2, SOURCE_CONTENT_CHECKSUM_VERSION,
+        }:
             raise ContractError("unsupported_checksum_version", self.content_checksum_version, path="$.content_checksum_version")
         _json_value(self.attributes, "$.attributes")
         _json_value(self.vendor_fields, "$.vendor_fields")
@@ -318,12 +352,27 @@ class SecurityKnowledgeEvent:
         if len(entity_ids) != len(set(entity_ids)):
             raise ContractError("duplicate_entity", "event contains duplicate entity_id", path="$.entities")
         known = set(entity_ids)
+        relation_ids = [relation.relation_id for relation in self.relations]
+        fact_ids = [fact.fact_id for fact in self.facts]
+        evidence_ids = [item.evidence_id for item in self.evidence]
+        for values, code, path in (
+            (relation_ids, "duplicate_relation", "$.relations"),
+            (fact_ids, "duplicate_fact", "$.facts"),
+            (evidence_ids, "duplicate_evidence", "$.evidence"),
+        ):
+            if len(values) != len(set(values)):
+                raise ContractError(code, f"event contains duplicate {code.removeprefix('duplicate_')}_id", path=path)
+        known_evidence = set(evidence_ids)
         for index, relation in enumerate(self.relations):
             if relation.subject_entity_id not in known or relation.object_entity_id not in known:
                 raise ContractError("invalid_entity_reference", "relation references an entity outside this event", path=f"$.relations[{index}]")
+            if not set(relation.evidence_ids) <= known_evidence:
+                raise ContractError("invalid_evidence_reference", "relation references evidence outside this event", path=f"$.relations[{index}]")
         for index, fact in enumerate(self.facts):
             if fact.subject_entity_id not in known or (fact.object_entity_id and fact.object_entity_id not in known):
                 raise ContractError("invalid_entity_reference", "fact references an entity outside this event", path=f"$.facts[{index}]")
+            if not set(fact.evidence_ids) <= known_evidence:
+                raise ContractError("invalid_evidence_reference", "fact references evidence outside this event", path=f"$.facts[{index}]")
         calculated = self.calculate_checksum()
         if self.content_checksum is not None and self.content_checksum != calculated:
             raise ContractError("checksum_mismatch", "content_checksum does not match canonical event content", path="$.content_checksum")
@@ -362,6 +411,8 @@ class SecurityKnowledgeEvent:
         })
         if include_checksum:
             data["content_checksum"] = self.content_checksum
+        if self.content_checksum_version == SOURCE_CONTENT_CHECKSUM_VERSION:
+            _canonicalize_v3_collections(data)
         return data
 
     def calculate_checksum(self) -> str:
@@ -502,3 +553,21 @@ def validate_event_batch(events: Iterable[SecurityKnowledgeEvent]) -> list[Dupli
 
 def _without_none(data: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in data.items() if value is not None}
+
+
+def _canonicalize_v3_collections(payload: dict[str, Any]) -> None:
+    """Normalize set-like v3 collections without changing legacy v1/v2 bytes."""
+
+    payload["source_references"] = sorted(set(payload.get("source_references", [])))
+    for entity in payload.get("entities", []):
+        entity["aliases"] = sorted(set(entity.get("aliases", [])))
+    for relation in payload.get("relations", []):
+        relation["evidence_ids"] = sorted(set(relation.get("evidence_ids", [])))
+    for fact in payload.get("facts", []):
+        fact["evidence_ids"] = sorted(set(fact.get("evidence_ids", [])))
+    for evidence in payload.get("evidence", []):
+        evidence["source_event_ids"] = sorted(set(evidence.get("source_event_ids", [])))
+    payload["entities"].sort(key=lambda row: row["entity_id"])
+    payload["relations"].sort(key=lambda row: row["relation_id"])
+    payload["facts"].sort(key=lambda row: row["fact_id"])
+    payload["evidence"].sort(key=lambda row: row["evidence_id"])

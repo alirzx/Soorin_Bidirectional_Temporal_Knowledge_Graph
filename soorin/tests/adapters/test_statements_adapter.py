@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import urllib.error
 import unittest
+from dataclasses import replace
 
 from soorin.adapters.utopia import StatementsAdapter, StatementsClient, StatementsError
-from soorin.contracts import CanonicalEntity, EvidenceReference, KnowledgeRelation, SecurityKnowledgeEvent
+from soorin.contracts import CanonicalEntity, EvidenceReference, KnowledgeRelation, SecurityKnowledgeEvent, TemporalFact
 
 
 def knowledge_event(status="new"):
@@ -51,7 +52,6 @@ class StatementsTests(unittest.TestCase):
         self.assertNotEqual(adapter.dumps(adapter.render(knowledge_event())), adapter.dumps(adapter.render(knowledge_event("closed"))))
 
     def test_delivery_metadata_does_not_mutate_statements(self):
-        from dataclasses import replace
         adapter = StatementsAdapter()
         event = knowledge_event()
         replay = replace(
@@ -62,15 +62,45 @@ class StatementsTests(unittest.TestCase):
         self.assertEqual(adapter.dumps(adapter.render(event)), adapter.dumps(adapter.render(replay)))
 
     def test_document_type_is_in_v2_identity_and_v1_remains_available(self):
-        from dataclasses import replace
         adapter = StatementsAdapter()
         event = knowledge_event()
         other_kind = replace(event, event_type="splunk_notable", content_checksum=None)
         self.assertNotEqual(adapter.external_id(event), adapter.external_id(other_kind))
         self.assertEqual(StatementsAdapter(external_id_version="v1").external_id(event),
-                         StatementsAdapter(external_id_version="v1").external_id(other_kind))
+            StatementsAdapter(external_id_version="v1").external_id(other_kind))
         with self.assertRaises(StatementsError):
             StatementsAdapter(external_id_version="unknown").external_id(event)
+
+    def test_v2_statements_are_order_independent_and_preserve_all_evidence_ids(self):
+        base = knowledge_event()
+        ev2 = EvidenceReference("ev-2", "A-100", source_event_ids=("EVENT-2",))
+        relation = replace(base.relations[0], evidence_ids=("ev-2", "ev-1"))
+        fact = TemporalFact(
+            "fact-1", "alert-key", "has status", "2026-10-01T10:01:00Z",
+            object_value="new", evidence_ids=("ev-1", "ev-2"),
+        )
+        left = replace(
+            base, evidence=(base.evidence[0], ev2), relations=(relation,), facts=(fact,),
+            content_checksum=None,
+        )
+        right = replace(
+            base, entities=tuple(reversed(base.entities)), evidence=(ev2, base.evidence[0]),
+            relations=(relation,), facts=(fact,), content_checksum=None,
+        )
+        adapter = StatementsAdapter()
+        left_payload = adapter.render(left)
+        right_payload = adapter.render(right)
+        self.assertEqual(adapter.dumps(left_payload), adapter.dumps(right_payload))
+        relation_row = next(row for row in left_payload["s"] if row[2] == "observed on")
+        self.assertEqual(relation_row[5]["evidence_id"], "ev-1")
+        self.assertEqual(relation_row[5]["evidence_ids"], '["ev-1","ev-2"]')
+
+    def test_v1_external_identity_uses_exact_historical_pipe_hash(self):
+        event = knowledge_event()
+        expected = "soorin-soc-v1:tenant-a:" + __import__("hashlib").sha256(
+            "tenant-a|splunk|lab|A-100".encode("utf-8")
+        ).hexdigest()[:24]
+        self.assertEqual(StatementsAdapter(external_id_version="v1").external_id(event), expected)
 
     def test_statement_count_and_size_limits(self):
         adapter = StatementsAdapter(max_statements=1)
