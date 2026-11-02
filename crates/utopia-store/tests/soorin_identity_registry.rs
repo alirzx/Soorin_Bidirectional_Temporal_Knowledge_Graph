@@ -35,23 +35,29 @@ async fn concurrent_authority_registration_is_idempotent_and_conflicts_are_audit
     let pool = PgPool::connect(&url).await?;
     let (org, kb) = seed(&pool).await?;
     let provenance = serde_json::json!({"evidence_id":"splunk:NOTABLE-1"});
-    let make = |canonical_key: &str| Registration {
-        kb_id: kb,
-        tenant_id: "tenant-a",
-        entity_type: "SplunkNotable",
-        source_system: "splunk",
-        source_instance: "prod",
-        source_identifier: "NOTABLE-1",
-        canonical_key,
-        status: "active",
-        source_revision_id: Some("1"),
-        observed_at: Utc::now(),
-        provenance: &provenance,
-    };
+    fn make_registration<'a>(
+        kb_id: Uuid,
+        provenance: &'a serde_json::Value,
+        canonical_key: &'a str,
+    ) -> Registration<'a> {
+        Registration {
+            kb_id,
+            tenant_id: "tenant-a",
+            entity_type: "SplunkNotable",
+            source_system: "splunk",
+            source_instance: "prod",
+            source_identifier: "NOTABLE-1",
+            canonical_key,
+            status: "active",
+            source_revision_id: Some("1"),
+            observed_at: Utc::now(),
+            provenance,
+        }
+    }
 
     let (left, right) = tokio::join!(
-        soorin_identity::register(&pool, make("soorin:splunknotable:one")),
-        soorin_identity::register(&pool, make("soorin:splunknotable:one")),
+        soorin_identity::register(&pool, make_registration(kb, &provenance, "soorin:splunknotable:one")),
+        soorin_identity::register(&pool, make_registration(kb, &provenance, "soorin:splunknotable:one")),
     );
     let left = left?;
     let right = right?;
@@ -66,7 +72,7 @@ async fn concurrent_authority_registration_is_idempotent_and_conflicts_are_audit
     });
     assert_eq!(ids[0], ids[1]);
 
-    let conflict = soorin_identity::register(&pool, make("soorin:splunknotable:different")).await?;
+    let conflict = soorin_identity::register(&pool, make_registration(kb, &provenance, "soorin:splunknotable:different")).await?;
     assert!(matches!(conflict, RegistrationOutcome::Conflict { .. }));
     let (count,): (i64,) = sqlx::query_as(
         "SELECT count(*) FROM soorin_identity_conflicts WHERE kb_id=$1 AND resolved_at IS NULL",
