@@ -8,7 +8,8 @@ which already contained the 30 Sprint 1 and follow-up commits after Soorin
 `main` baseline `4bf6a2cb5b98919fe910ba43da7698f7d1b670b9`.
 Those commits were inspected and retained; none was amended or rewritten.
 
-The final pre-build series after `9ec66ef` was separated by responsibility:
+The final pre-build series through `18e2ac5` contains 14 commits after
+`9ec66ef`, separated by responsibility:
 
 | Commit | Outcome |
 | --- | --- |
@@ -24,9 +25,11 @@ The final pre-build series after `9ec66ef` was separated by responsibility:
 | `ad3d340` | Docker source-copy fix, isolated Compose and feature-branch CI gates |
 | `cc87c8a` | Synthetic, lab-safe E2E fixture/harness and machine report |
 | `b0a4a8e` | Product README, current gap register and five architecture diagrams |
+| `34f8b68` | Current validation evidence, Graphify audit and release gates |
+| `18e2ac5` | Conflict-row tenant/entity-type constraints found in final manual registry review |
 
-This report and final release-gate documentation form the final documentation
-commit; consult `git log` for its resulting hash.
+The final graph-count synchronization commit that contains this wording is
+documentation-only; `git log` is authoritative for its resulting hash.
 
 Agentic SOC was used read-only at:
 
@@ -40,7 +43,7 @@ volume was modified. The organization and upstream remotes were not pushed.
 ## Architecture evidence
 
 Graphify 0.9.51 was refreshed after the source changes. The local code graph now
-contains **11,634 nodes, 31,025 edges, and 571 communities**. Generated
+contains **11,637 nodes, 31,028 edges, and 575 communities**. Generated
 `graphify-out/` files remain ignored and local. The refresh reported that
 `tree_sitter_sql` is absent, so all SQL migrations were also inspected directly;
 Graphify was navigation evidence, not the authority for SQL or runtime claims.
@@ -193,7 +196,7 @@ reindex because `chunks.embedding` has no model-identity column.
 | TypeScript | `tsc --noEmit` passed |
 | Frontend production build | Passed; style guard 125 files; Vite warned that the 1.82 MB JS chunk exceeds 500 kB |
 | Compose syntax | Isolated and source-build overlay configurations both passed |
-| Graphify refresh | 11,634 nodes, 31,025 edges, 571 communities |
+| Graphify refresh | 11,637 nodes, 31,028 edges, 575 communities |
 
 The retrieval scores are synthetic regression results, not model-quality or
 production-relevance claims.

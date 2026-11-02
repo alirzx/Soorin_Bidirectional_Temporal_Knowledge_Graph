@@ -5,7 +5,7 @@
 - Soorin TKG: final pre-build review on `feature/soc-knowledge-foundation-v1`, starting from recorded hardening head `9ec66ef7c13fc743752f3d81276a11b36931fd6e`; independent `main` remained `4bf6a2cb5b98919fe910ba43da7698f7d1b670b9`.
 - Agentic SOC `main`: `19a0ceeb5375f2dfb8d50760c883053e50b529e9`.
 - Agentic SOC privacy feature: `11cd70c9dcd27a3bf91a364046e3ab86c0cdc201`.
-- Graphify: 0.9.51, local code/Cargo extraction. The baseline pass indexed 725 code files into 9,872 nodes, 28,207 edges, and 411 communities. The final `graphify update .` refreshed the local graph to **11,634 nodes, 31,025 edges, and 571 communities**. `graphify-out/graph.html` is the local aggregated visualization; generated outputs are Git-ignored.
+- Graphify: 0.9.51, local code/Cargo extraction. The baseline pass indexed 725 code files into 9,872 nodes, 28,207 edges, and 411 communities. The final `graphify update .` refreshed the local graph to **11,637 nodes, 31,028 edges, and 575 communities**. `graphify-out/graph.html` is the local aggregated visualization; generated outputs are Git-ignored.
 
 Graphify identified candidate paths, then each finding below was verified in source. SQL symbol extraction was incomplete because optional `tree_sitter_sql` was not installed; migrations were inspected directly with text search. Graphify also returned unrelated same-name symbols for broad queries, so only source-verified relationships are treated as facts.
 
