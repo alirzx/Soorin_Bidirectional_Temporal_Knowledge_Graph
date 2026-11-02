@@ -86,7 +86,7 @@ async fn concurrent_authority_registration_is_idempotent_and_conflicts_are_audit
 
     let other_tenant = soorin_identity::register(
         &pool,
-        Registration {    
+        Registration {
             kb_id: kb,
             tenant_id: "tenant-b",
             entity_type: "SplunkNotable",
@@ -147,7 +147,7 @@ async fn alias_history_is_append_only_and_exact_replay_is_counted() -> anyhow::R
     let provenance = serde_json::json!({"evidence_id":"splunk:NOTABLE-2"});
     let outcome = soorin_identity::register(
         &pool,
-        Registration {    
+        Registration {
             kb_id: kb,
             tenant_id: "tenant-a",
             entity_type: "Host",
@@ -261,7 +261,7 @@ async fn utopia_entity_link_is_same_kb_compare_and_set() -> anyhow::Result<()> {
     let provenance = serde_json::json!({"evidence_id":"splunk:NOTABLE-4"});
     let outcome = soorin_identity::register(
         &pool,
-        Registration {    
+        Registration {
             kb_id: kb,
             tenant_id: "tenant-a",
             entity_type: "Host",
