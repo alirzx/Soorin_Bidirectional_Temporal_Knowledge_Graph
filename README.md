@@ -4,154 +4,178 @@
 
 # Soorin Temporal Knowledge Graph
 
-**Temporal security intelligence · Provenance-aware knowledge · Graph retrieval foundations**
+**Temporal security intelligence · Provenance-aware knowledge · Hybrid graph retrieval**
 
-A standalone, extensible knowledge service for organizing security entities, relationships, evidence, and historical state. Designed to become a reusable knowledge layer for **Soorin Agentic SOC** and other Soorin products.
+An independent knowledge service for security entities, evidence, relationships,
+and historical state, built on Utopia and designed for future Agentic SOC use.
 
-[Architecture](docs/soorin/SOC_KNOWLEDGE_ARCHITECTURE.md) · [Getting started](docs/soorin/LOCAL_DEVELOPMENT.md) · [Sprint 1 status](docs/soorin/SPRINT1_IMPLEMENTATION_REPORT.md) · [Documentation](docs/soorin/README.md)
+[Architecture](docs/soorin/SOC_KNOWLEDGE_ARCHITECTURE.md) · [Local development](docs/soorin/LOCAL_DEVELOPMENT.md) · [E2E validation](docs/soorin/LOCAL_E2E_VALIDATION.md) · [Engineering docs](docs/soorin/README.md)
 
 </div>
 
 > [!IMPORTANT]
-> **Development status: Sprint 1 foundation, not production-ready.** The baseline Utopia server and synthetic Statements lab have been exercised. The new SOC-specific Python contracts, identity/extraction, model adapters, and retrieval evaluation are implemented and tested offline. They are **not automatically wired into the running Rust API or React UI**. Live model, typed ontology, historical revision, and full Rust regression validation remain open.
+> **Release-candidate foundation; not production or merge ready.** The SOC Python
+> boundary is offline-tested and the original frontend build is validated. Rust,
+> PostgreSQL migrations, source-image build, live graph history, and real model
+> inference remain explicit gates for the isolated build phase.
 
-## Product vision
+## What Soorin TKG does
 
-Soorin TKG is being developed as an **independent knowledge-graph service**, with Agentic SOC as its initial target consumer. Its eventual responsibility is to make security facts, prior alerts and notable events, investigative context, and evidence **identifiable, queryable, time-aware, and traceable to sources**. SOC detection, Fusion, Auto-Triage decisions, and agent orchestration remain owned by Agentic SOC.
+Soorin TKG turns source-observed security records into replay-stable,
+tenant-scoped knowledge events with explicit evidence and two time axes. Utopia
+then provides authenticated Statements ingestion, ontology alignment, entity
+resolution, bitemporal graph persistence, Tantivy/pgvector retrieval, jobs, and
+the React operator UI.
 
-The intended data flow is:
+The current branch implements:
+
+- `soorin.soc.knowledge-event.v1`, representative JSON Schema validation, stable
+  v3 source-content checksums, and exact legacy v1/v2 compatibility paths.
+- Agentic SOC/Splunk normalization that keeps durable SOC Alert, Splunk Notable,
+  source Event/Finding, Detection Rule, Case, and Ticket identities separate.
+- Deterministic structured extraction and conservative tenant/source/network
+  canonical keys; optional CPU NER emits review-only proposals.
+- EvidenceReference projection, multi-evidence qualifiers, source revisions,
+  and world-time/knowledge-time lifecycle classification.
+- A 17-entity/15-relation SOC ontology with guarded, create-only import.
+- A dormant PostgreSQL identity registry with cross-KB constraints,
+  append-oriented alias evidence, conflict state, and compare-and-set Utopia
+  binding. It is **implemented but not active in ingestion**.
+- One fail-closed Python outbound policy for Chat, Embedding, and Reranking, plus
+  bounded offline exact/BM25/dense/RRF/reranking evaluation.
+- Isolated Docker/CI preflight and a synthetic E2E harness that refuses the
+  existing lab.
+
+## Status by execution boundary
+
+| Capability | Implemented | Offline-tested | Runtime-active |
+| --- | --- | --- | --- |
+| Utopia API, UI, jobs, graph ledger, ontology, Tantivy, pgvector, RRF | Yes | Existing Rust/frontend tests | Yes in a built Utopia service |
+| SOC contract, normalizer, extraction, identity keys, Statements render | Yes | Yes, synthetic only | External CLI/library; not a server sidecar |
+| SOC ontology declaration/importer | Yes | Validator and fake API | Live isolated import pending |
+| Persistent Soorin identity registry | Yes | Source/SQL tests prepared | No; deliberately dormant |
+| CPU cybersecurity NER | Adapter and pinned revision | Mock/provider tests | Disabled; real CPU inference pending |
+| Python reranker | Provider adapters | Fake transport/fallback tests | No native Rust integration |
+| Agentic SOC connector | Contract compatibility documented | Read-only source audit | Not implemented |
+
+## Data lifecycle
 
 ```text
-Splunk and SOC data (future live integration)
-    -> canonical, tenant-scoped knowledge event
-    -> deterministic entities + evidence + temporal facts
-    -> Utopia Statements / ontology / graph processing
-    -> PostgreSQL + pgvector + Tantivy
-    -> graph + exact + semantic + temporal retrieval
-    -> evidence-backed context for Auto-Triage, Copilot and other agents
+future Agentic SOC / synthetic fixture
+  -> llm_payload normalization
+  -> deterministic extraction (+ optional review-only NER)
+  -> canonical identity + evidence + temporal contract
+  -> replay-stable Utopia Statements
+  -> open extraction / ontology alignment / resolution
+  -> bitemporal graph
+  -> exact, BM25, pgvector, RRF and graph context
 ```
 
-**Currently implemented:** the synthetic SOC lab, standardized contracts, normalization, ontology importer, identity-key generation, offline temporal checks, and reusable model/retrieval adapters. **Not yet implemented:** live Kafka/Splunk ingestion, a persistent cross-system identity registry, native runtime reranking, and Agentic SOC agent connections.
+Exact replay retains the same document identity and serialized Statements.
+Source corrections and lifecycle changes retain document identity while changing
+the source-content checksum. Historical v1 Statements IDs are never silently
+migrated to v2; existing sources need an explicit reconciliation plan.
 
-## Capabilities and verified boundaries
+## Technology stack
 
-| Area | Current capability | Evidence / remaining gate |
-| --- | --- | --- |
-| **Temporal graph core** | Utopia bitemporal graph and source-revision semantics | Live SOC revision + `at`/`as_of` acceptance test pending |
-| **SOC data contracts** | Versioned `soorin.soc.knowledge-event.v1` and JSON Schema | Offline tests pass; replay/content identity needs hardening |
-| **SOC ontology** | 17 entity types; 15 relation types; guarded preview/apply importer | Live isolated-KB import and semantic constraint validation pending |
-| **Identity & extraction** | Tenant-scoped deterministic keys; structured Splunk/OCSF extraction | Persisted identity mapping and false-merge tests pending |
-| **Evidence & provenance** | Source references, qualifiers, evidence contract | Full evidence projection and round-trip verification pending |
-| **Chat / embedding** | Configurable OpenAI-compatible Python adapters and fake-provider tests | Runtime Utopia Workspace Settings and real provider validation pending |
-| **Retrieval & reranking** | Offline exact, BM25, dense, RRF, optional reranker adapters | Production retrieval remains in Rust; native reranking not connected |
-| **UI** | Original Utopia React UI for KBs, graph, ontology, search and settings | No Sprint 1 Soorin-specific UI changes |
-| **Agentic SOC integration** | Source-contract research and future-facing designs | Live pipeline and agent reads are outside Sprint 1 |
+| Technology | Responsibility |
+| --- | --- |
+| Rust | Authenticated Utopia API, workers, model clients, graph/materialization and retrieval runtime |
+| Python | SOC contracts, normalization, deterministic extraction, adapters, CLIs and offline evaluation |
+| PostgreSQL 16 | Authorization, documents, ontology, bitemporal facts, jobs and optional identity registry |
+| pgvector | Dense indexes and vector search in the live Rust path |
+| Tantivy | Current full-text/BM25 index |
+| React + TypeScript | Utopia operator UI for settings, library, ontology, review, graph and history |
+| Docker Compose | Existing-lab and isolated source-build orchestration with separate volumes |
+| OpenAI-compatible APIs | Workspace-configured Rust Chat/Embedding; optional Python evaluation adapters |
+| DistilBERT CPU NER | Optional local English proposal generator, disabled by default |
+| Utopia | Upstream-derived graph, retrieval, authorization and UI foundation |
+| Graphify | Local code-analysis aid only; not a runtime dependency |
 
-This table intentionally distinguishes **implemented code**, **tested functionality**, and **future integration**.
+## Safe local workflow
 
-## Architecture
+The existing lab is loopback-bound to API/UI `1516` and PostgreSQL `1517`.
+Preserve its KB and volumes. The source-build project uses API/UI `2516`,
+PostgreSQL `2517`, project name `soorin-sprint1`, and separate named volumes.
 
-The deployed core is based on **Utopia v0.1.0-rc9**:
-
-```text
-             Utopia API + React UI
-                     |
-    +----------------+----------------+
-    |                |                |
- Statements       Ontology         Graph / Search
- ingestion        alignment         & history
-    |                |                |
-    +----------------+----------------+
-                     |
-        PostgreSQL 16 + pgvector
-             Tantivy index
-                     |
-       Soorin Sprint 1 Python modules
-    contracts · extraction · identity
-    temporal · adapters · model checks
-              offline retrieval
-```
-
-**Implementation boundary:** the Soorin Python modules are development/compatibility components today. They are not presented as live endpoints in the upstream rc9 image. See the [architecture audit](docs/soorin/SPRINT1_ARCHITECTURE_AUDIT.md) and [known gaps](docs/soorin/SOC_FOUNDATION_GAP_ANALYSIS.md).
-
-## Quick start
-
-### 1. Protect the existing lab
-
-The previously verified local lab uses the upstream rc9 container on `127.0.0.1:1516` and PostgreSQL on `127.0.0.1:1517`. It holds the **Soorin SOC Lab** knowledge base. Do not reset its database volumes or assume source edits affect that prebuilt image.
+Run the no-network foundation gates:
 
 ```bash
-docker compose -f docker-compose.local.yml --profile app ps
-curl -fsS http://127.0.0.1:1516/api/v1/health
-```
-
-For a **separate source-build environment**, use [the isolated development guide](docs/soorin/LOCAL_DEVELOPMENT.md), which defines ports `2516`/`2517` and independent named volumes.
-
-### 2. Validate the synthetic SOC pipeline without credentials
-
-```bash
-python3 soorin/tests/mock_splunk/scripts/soc_mock.py validate
-python3 -m unittest discover -s soorin/tests/mock_splunk/tests -v
+python3 -m compileall -q soorin
 python3 -m unittest discover -s soorin/tests -p 'test_*.py' -v
+python3 -m unittest discover -s soorin/tests/mock_splunk/tests -v
 python3 -m soorin.evaluation.graph_integrity soorin/tests/fixtures/soc_llm_payload_scenarios_v1.json
 python3 -m soorin.evaluation.temporal_cases
 python3 -m soorin.evaluation.retrieval_benchmark
+python3 -m soorin.e2e.local_validation --report /tmp/soorin-e2e-offline.json
 ```
 
-The baseline fixture contains **nine synthetic SOC records and 122 open Statements**. A second fixture contains **ten synthetic `llm_payload` scenarios**. The small offline retrieval benchmark is not a production quality benchmark.
+Validate Compose without starting services:
 
-### 3. Test Statements ingestion (optional)
-
-Create a **Statements** source in an intentionally selected test knowledge base and follow the [local smoke runbook](docs/soorin/local-smoke.md). The API uses a source UUID and its own ingest token:
-
-```text
-POST /api/v1/sources/{source_id}/statements
+```bash
+docker compose -p soorin-sprint1 -f docker-compose.soorin-dev.yml config --quiet
+docker compose -f docker-compose.yml -f docker-compose.build.yml --profile app config --quiet
 ```
 
-A successful `created` action confirms document ingestion, **not** completed ontology alignment or typed-graph materialization. Check document status, jobs, Ontology/Review, and graph queries separately. Never commit a token or private SIEM data.
+Then follow [local development](docs/soorin/LOCAL_DEVELOPMENT.md), [pre-build
+validation](docs/soorin/PREBUILD_VALIDATION.md), and the [isolated E2E
+runbook](docs/soorin/LOCAL_E2E_VALIDATION.md). Never point database-backed tests
+or the E2E harness at the existing lab.
 
-## AI models and search
+## Models, privacy, and retrieval
 
-The **running Utopia Rust service** owns Chat/Embedding inference through authenticated Workspace Settings. Sprint 1 adds **Python configuration, OpenAI-compatible embedding/health adapters, and optional reranker adapters** for compatibility tests and evaluation.
+Live Rust Chat and Embedding are configured only through authenticated Utopia
+Workspace Settings. Python `SOORIN_*` variables configure development/evaluation
+adapters and do not activate Rust inference.
 
-- **Chat LLM:** provider-agnostic OpenAI-compatible setting; no live provider was configured by Sprint 1.
-- **Embedding:** configurable model and dimensions. `BAAI/bge-m3` (1024 dense dimensions) is an **evaluation candidate**, not a validated deployed model.
-- **Reranker:** Cohere v2, Jina v1 and TEI-compatible Python adapters; **disabled by default and not wired to Utopia Rust retrieval**.
-- **Retrieval:** the existing Utopia core uses Tantivy BM25 + pgvector with RRF. The Soorin Python reference layer evaluates exact, BM25, dense, hybrid and reranking over in-memory synthetic documents.
+- `BAAI/bge-m3` at 1024 dimensions is an evaluation candidate, not a deployed
+  or validated model. Changing the model/dimension is not a proven full document
+  reindex because `chunks.embedding` does not record model identity.
+- `bnsapa/cybersecurity-ner` is pinned to reviewed revision
+  `1ad52f1a7686a58da2a427c0706d8b868df47181`, CPU-only, local-files-only,
+  disabled by default, and never authoritative.
+- Sensitive external inference fails closed without a deployment-owned route
+  verifier. Synthetic traffic is allowed only when deployment test mode is on.
+- Utopia's live retrieval remains Tantivy + pgvector + RRF. Python retrieval is
+  bounded reference/evaluation code; native reranking is deferred.
 
-Read [model configuration](docs/soorin/MODEL_CONFIGURATION.md) and [retrieval boundaries](docs/soorin/RETRIEVAL_AND_RERANKING.md) before setting any `SOORIN_*` variable.
+See [model configuration](docs/soorin/MODEL_CONFIGURATION.md), [CPU NER](docs/soorin/CPU_CYBER_NER.md), [outbound privacy](docs/soorin/OUTBOUND_PRIVACY.md), and [retrieval](docs/soorin/RETRIEVAL_AND_RERANKING.md).
 
-## Quality gates and known limitations
+## SOC and NOC use cases
 
-Sprint 1's recorded offline results were **61 Python foundation tests**, **7 existing mock-Splunk tests**, **268 frontend tests**, TypeScript checks, frontend build and Compose validation. These were reported from the development environment and are **not CI or independent live-backend verification**.
+- Join alerts, notables, source events, hosts, users, IP scopes, rules, cases,
+  tickets, techniques, and evidence without collapsing their identities.
+- Ask what was true at world time `at` and what was known by `as_of`.
+- Retrieve prior evidence and graph neighborhoods for analyst context.
+- Track corrections, state changes, supersession, and late arrival while keeping
+  source provenance recoverable.
+- Reuse the same contract/identity rules for NOC observability sources after
+  adding an explicitly versioned domain mapping.
 
-The following remain open:
+## Known restrictions and roadmap
 
-1. Stable replay/content checksums independent of processing time.
-2. Correct separation of source events, Splunk notables and SOC alert identities.
-3. Cross-document canonical identity and safe tenant/network scoping.
-4. Semantic ontology compatibility and complete evidence-provenance projection.
-5. Isolated live KB tests for ingestion, revisions, typed graph and temporal queries.
-6. Rust workspace gates, approved live model checks and actual Utopia runtime configuration.
-7. Native reranking, historical full-text recall, scale testing, and production security controls.
+Before merge or production data, the project still requires Cargo format/check/
+workspace tests, PostgreSQL migration tests, isolated source-image build, live
+ontology/Statements/graph/temporal acceptance, real CPU NER validation, and
+approved provider checks. Historical Tantivy recall is incomplete for text that
+was replaced after the requested `as_of` time.
 
-See [Sprint 1 gap register](docs/soorin/SOC_FOUNDATION_GAP_ANALYSIS.md) and [testing guide](docs/soorin/TESTING_AND_EVALUATION.md). **Do not merge to `main` until the P0 correctness and live validation gates are addressed.**
+Future Agentic SOC work includes a versioned Kafka/Splunk transport, tenant-to-KB
+authorization, one atomic registry/materialization boundary, Privacy Gateway
+attestation, read-only Auto-Triage/Copilot context tools, monitoring, and
+controlled write-back. None is presented as active today.
 
 ## Documentation
 
-Start with the [Soorin documentation index](docs/soorin/README.md), organized into architecture, contracts, ontology/identity, temporal knowledge, models/retrieval, runbooks, and project status. The [Sprint 1 implementation report](docs/soorin/SPRINT1_IMPLEMENTATION_REPORT.md) records what Codex implemented and actually tested.
+The [documentation index](docs/soorin/README.md) links the architecture, source
+contract audit, ontology/identity/temporal model, deployment runbooks, testing
+evidence, implementation report, and release gates.
 
-## Development workflow
+## License and attribution
 
-- Work on `feature/soc-knowledge-foundation-v1`; keep `main` protected from unreviewed changes.
-- Use sanitized, explicitly synthetic fixtures and isolated KBs for integration tests.
-- Keep `personal` and Soorin organization `origin` remotes separate; do not push to `upstream`.
-- Preserve the original project runtime and its data volumes.
-- Keep configurations/keys outside Git; do not confuse Python evaluation `SOORIN_*` settings with Utopia Rust Workspace Settings.
-
-## License and upstream attribution
-
-The underlying Utopia implementation is distributed under the repository's bundled **Apache-2.0 [LICENSE](LICENSE)**. Retain required copyright and license notices. The Soorin repository has an independent Git history, but this does **not** remove upstream attribution obligations. Original documentation is retained in [README.upstream.md](README.upstream.md); its package/binary names remain accurate for the upstream-based runtime until an intentional rebranding and rebuild.
+The Utopia-derived implementation is distributed under the bundled
+[Apache-2.0 license](LICENSE). Preserve upstream copyright and license notices.
+The original documentation remains in [README.upstream.md](README.upstream.md).
 
 ---
 

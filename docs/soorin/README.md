@@ -14,6 +14,8 @@ This is the documentation entry point for the **Soorin Temporal Knowledge Graph*
 | Exact implementation and test evidence | [Sprint 1 implementation report](SPRINT1_IMPLEMENTATION_REPORT.md) |
 | Isolated development environment | [Local development](LOCAL_DEVELOPMENT.md) |
 | Reproducible test commands | [Testing and evaluation](TESTING_AND_EVALUATION.md) |
+| Exact static/source-build release gates | [Pre-build validation](PREBUILD_VALIDATION.md) |
+| Synthetic isolated acceptance harness | [Local E2E validation](LOCAL_E2E_VALIDATION.md) |
 
 ## SOC domain and data
 
@@ -28,6 +30,8 @@ This is the documentation entry point for the **Soorin Temporal Knowledge Graph*
 ## Models, retrieval and operations
 
 - [Model configuration, including runtime versus Python-only settings](MODEL_CONFIGURATION.md)
+- [Outbound model privacy and gateway attestation boundary](OUTBOUND_PRIVACY.md)
+- [Optional local CPU cybersecurity NER](CPU_CYBER_NER.md)
 - [BM25/vector search, reranking and known history limitations](RETRIEVAL_AND_RERANKING.md)
 - [Existing SOC lab smoke test](local-smoke.md)
 - [Upstream maintenance and remotes](upstream-sync.md)
@@ -45,4 +49,7 @@ The existing rc9 UI on `127.0.0.1:1516` and its lab KB must not be reset. The is
 
 The Sprint 1 source contracts, identity utilities, extraction and adapters are offline-tested. **Do not merge to `main` or claim SOC integration readiness** until the P0 gaps and the isolated live ontology/Statements history experiments are resolved and Rust checks pass. External model endpoints must be assessed for SOC privacy before sending organizational content.
 
-The previous synthetic mock (9 records, 122 statements) and the new synthetic `llm_payload` corpus (10 scenarios) are regression inputs, not production data.
+The baseline mock (9 records), `llm_payload` corpus (10 scenarios), and isolated
+E2E lifecycle fixture are explicitly synthetic regression inputs, not production
+data. The E2E fixture includes an offline cross-tenant assertion; live mode
+pushes only the isolated `tenant-blue` rows.
