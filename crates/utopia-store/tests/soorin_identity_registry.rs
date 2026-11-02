@@ -60,7 +60,9 @@ async fn concurrent_authority_registration_is_idempotent_and_conflicts_are_audit
             identity_id,
             authority_id,
         } => (identity_id, authority_id),
-        RegistrationOutcome::Conflict { .. } => panic!("equal concurrent registrations cannot conflict"),
+        RegistrationOutcome::Conflict { .. } => {
+            panic!("equal concurrent registrations cannot conflict")
+        }
     });
     assert_eq!(ids[0], ids[1]);
 
@@ -82,19 +84,22 @@ async fn concurrent_authority_registration_is_idempotent_and_conflicts_are_audit
     .await?;
     assert_eq!(status, "ambiguous");
 
-    let other_tenant = soorin_identity::register(&pool, Registration {
-        kb_id: kb,
-        tenant_id: "tenant-b",
-        entity_type: "SplunkNotable",
-        source_system: "splunk",
-        source_instance: "prod",
-        source_identifier: "NOTABLE-TENANT-B",
-        canonical_key: "soorin:splunknotable:tenant-b",
-        status: "active",
-        source_revision_id: Some("1"),
-        observed_at: Utc::now(),
-        provenance: &provenance,
-    })
+    let other_tenant = soorin_identity::register(
+        &pool,
+        Registration {    
+            kb_id: kb,
+            tenant_id: "tenant-b",
+            entity_type: "SplunkNotable",
+            source_system: "splunk",
+            source_instance: "prod",
+            source_identifier: "NOTABLE-TENANT-B",
+            canonical_key: "soorin:splunknotable:tenant-b",
+            status: "active",
+            source_revision_id: Some("1"),
+            observed_at: Utc::now(),
+            provenance: &provenance,
+        },
+    )
     .await?;
     let other_tenant_id = match other_tenant {
         RegistrationOutcome::Resolved { identity_id, .. } => identity_id,
@@ -140,19 +145,22 @@ async fn alias_history_is_append_only_and_exact_replay_is_counted() -> anyhow::R
     let pool = PgPool::connect(&url).await?;
     let (org, kb) = seed(&pool).await?;
     let provenance = serde_json::json!({"evidence_id":"splunk:NOTABLE-2"});
-    let outcome = soorin_identity::register(&pool, Registration {
-        kb_id: kb,
-        tenant_id: "tenant-a",
-        entity_type: "Host",
-        source_system: "splunk",
-        source_instance: "prod",
-        source_identifier: "dc01",
-        canonical_key: "soorin:host:dc01",
-        status: "active",
-        source_revision_id: Some("1"),
-        observed_at: Utc::now(),
-        provenance: &provenance,
-    })
+    let outcome = soorin_identity::register(
+        &pool,
+        Registration {    
+            kb_id: kb,
+            tenant_id: "tenant-a",
+            entity_type: "Host",
+            source_system: "splunk",
+            source_instance: "prod",
+            source_identifier: "dc01",
+            canonical_key: "soorin:host:dc01",
+            status: "active",
+            source_revision_id: Some("1"),
+            observed_at: Utc::now(),
+            provenance: &provenance,
+        },
+    )
     .await?;
     let identity_id = match outcome {
         RegistrationOutcome::Resolved { identity_id, .. } => identity_id,
@@ -211,14 +219,14 @@ async fn alias_history_is_append_only_and_exact_replay_is_counted() -> anyhow::R
     assert_eq!(rows[0].2, provenance);
 
     let (other_org, other_kb) = seed(&pool).await?;
-    assert!(sqlx::query(
-        "UPDATE soorin_identity_authorities SET kb_id=$1 WHERE identity_id=$2",
-    )
-    .bind(other_kb)
-    .bind(identity_id)
-    .execute(&pool)
-    .await
-    .is_err());
+    assert!(
+        sqlx::query("UPDATE soorin_identity_authorities SET kb_id=$1 WHERE identity_id=$2",)
+            .bind(other_kb)
+            .bind(identity_id)
+            .execute(&pool)
+            .await
+            .is_err()
+    );
     assert!(soorin_identity::record_alias(
         &pool,
         other_kb,
@@ -251,19 +259,22 @@ async fn utopia_entity_link_is_same_kb_compare_and_set() -> anyhow::Result<()> {
     let (org, kb) = seed(&pool).await?;
     let (other_org, other_kb) = seed(&pool).await?;
     let provenance = serde_json::json!({"evidence_id":"splunk:NOTABLE-4"});
-    let outcome = soorin_identity::register(&pool, Registration {
-        kb_id: kb,
-        tenant_id: "tenant-a",
-        entity_type: "Host",
-        source_system: "splunk",
-        source_instance: "prod",
-        source_identifier: "dc02",
-        canonical_key: "soorin:host:dc02",
-        status: "active",
-        source_revision_id: Some("1"),
-        observed_at: Utc::now(),
-        provenance: &provenance,
-    })
+    let outcome = soorin_identity::register(
+        &pool,
+        Registration {    
+            kb_id: kb,
+            tenant_id: "tenant-a",
+            entity_type: "Host",
+            source_system: "splunk",
+            source_instance: "prod",
+            source_identifier: "dc02",
+            canonical_key: "soorin:host:dc02",
+            status: "active",
+            source_revision_id: Some("1"),
+            observed_at: Utc::now(),
+            provenance: &provenance,
+        },
+    )
     .await?;
     let identity_id = match outcome {
         RegistrationOutcome::Resolved { identity_id, .. } => identity_id,
