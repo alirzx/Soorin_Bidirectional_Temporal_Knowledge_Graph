@@ -58,7 +58,10 @@ pub async fn register(pool: &PgPool, item: Registration<'_>) -> AppResult<Regist
     ] {
         required(value, field)?;
     }
-    if !matches!(item.status, "active" | "provisional" | "ambiguous" | "retired") {
+    if !matches!(
+        item.status,
+        "active" | "provisional" | "ambiguous" | "retired"
+    ) {
         return Err(AppError::Validation("invalid identity status".into()));
     }
 
@@ -221,8 +224,13 @@ pub async fn record_alias(
 ) -> AppResult<Uuid> {
     required(alias, "alias")?;
     required(normalized_alias, "normalized_alias")?;
-    if valid_from.zip(valid_to).is_some_and(|(start, end)| end < start) {
-        return Err(AppError::Validation("alias valid_to precedes valid_from".into()));
+    if valid_from
+        .zip(valid_to)
+        .is_some_and(|(start, end)| end < start)
+    {
+        return Err(AppError::Validation(
+            "alias valid_to precedes valid_from".into(),
+        ));
     }
     let (id,): (Uuid,) = sqlx::query_as(
         "INSERT INTO soorin_identity_aliases
@@ -230,11 +238,12 @@ pub async fn record_alias(
               provenance_hash,first_seen_at,last_seen_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,
                  sha256(convert_to(
-                     $4 || chr(0) || $5 || chr(0)
-                     || COALESCE($6::timestamptz::text, '') || chr(0)
-                     || COALESCE($7::timestamptz::text, '') || chr(0)
-                     || $9::jsonb::text,
-                     'UTF8'
+                     jsonb_build_array(
+                         $4::text, $5::text,
+                         to_char($6::timestamptz AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS'),
+                         to_char($7::timestamptz AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS'),
+                         $9::jsonb
+                     )::text, 'UTF8'
                  )),$8,$8)
          ON CONFLICT (identity_id, normalized_alias, valid_from, provenance_hash)
          DO UPDATE SET last_seen_at=GREATEST(soorin_identity_aliases.last_seen_at, EXCLUDED.last_seen_at),
