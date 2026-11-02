@@ -1,0 +1,4 @@
+# Optional local CPU enrichment; never installed in the base Rust runtime image.
+transformers>=4.35,<5
+torch>=2.1,<3
+safetensors>=0.4,<1
