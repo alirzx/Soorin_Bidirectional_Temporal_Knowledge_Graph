@@ -8,6 +8,8 @@ The running Utopia Rust API persists Chat and Embedding settings through its **a
 
 Use the Workspace Settings **connection test**, then inspect `align_types` and `embed_ontology` jobs. The service appends `/chat/completions` or `/embeddings` to the configured OpenAI-compatible base URL. Never enter the full endpoint as the base URL.
 
+The Rust flow is direct and authoritative: `settings_routes` authorizes workspace administrators and persists `llm_settings`; `llm_util::chat_client` and `embed_client` construct live clients from that record; document ingestion, ontology alignment, chat tools, and hybrid retrieval read those clients. Changing the Python profile does not enter this flow.
+
 **Important:** Merely adding `SOORIN_CHAT_ENABLED=true` or `SOORIN_EMBED_ENABLED=true` to a Compose `.env` **does not configure Utopia's live model clients**. The existing `docker-compose.soorin-dev.yml` does not wire those variables into Rust. Do not claim runtime activation from Python profile checks alone.
 
 ## Python model evaluation profiles
@@ -22,6 +24,15 @@ Use the Workspace Settings **connection test**, then inspect `align_types` and `
 
 Profiles default to disabled; no secrets, live URLs or provider access are included in Git. `BAAI/bge-m3` with 1024-dimensional dense vectors is an **evaluation candidate**, not an installed/validated service.
 
+| Variable family | Classification | Effect |
+|---|---|---|
+| Utopia Workspace Settings fields | Runtime-active | Live Rust Chat, embeddings, indexing, alignment, and retrieval |
+| `SOORIN_CHAT_*` | Python-only / development | Health/evaluation adapter |
+| `SOORIN_EMBED_*` | Python-only / development | Offline SDK/evaluation embeddings and bounded cache |
+| `SOORIN_RERANK_*` | Python-only / future integration | Offline reranker; not connected to Rust retrieval |
+| `SOORIN_OUTBOUND_*`, `SOORIN_SYNTHETIC_MODE` | Python-only policy | Does not configure a production Privacy Gateway |
+| Compose `UTOPIA_*`, ports, database variables | Docker/runtime | Container image, API/database wiring, and secrets as documented by Compose |
+
 Configuration precedence `environment defaults → authorized workspace overrides` exists in the Python `SoorinModelConfig.with_workspace()` adapter **only**. It is not a general precedence rule implemented inside Utopia's production Rust process.
 
 ## Model acceptance checklist
@@ -33,10 +44,16 @@ Configuration precedence `environment defaults → authorized workspace override
 5. Keep reranking **disabled** until it is connected to native retrieval, protected by authentication and tenant scope, and benchmarked.
 6. For remote embeddings, enforce the approved privacy boundary. Removing obvious secret *keys* does not remove sensitive IPs, usernames, hostnames or identifiers embedded within free text.
 
+### Embedding model migration warning
+
+Utopia records model identity for ontology/type vectors and re-embeds those indexes when their model changes. Document `chunks.embedding`, however, does not currently carry an embedding-model column, and `chunks_pending_embedding` selects only rows whose vector is null. Changing the workspace model or vector dimension is therefore **not** a proven full document reindex. Before such a change, use an isolated copy to define a controlled re-embedding/index-rebuild procedure and verify pgvector dimensions; do not mix old and new document vectors in place.
+
 ## Python configuration and example file
 
 The exact example variables are maintained at [`soorin/config/soorin.example.env`](../../soorin/config/soorin.example.env). Never print or paste actual API secrets into logs or documentation.
 
 Inside Docker, `localhost` addresses the **container**. Use an approved reachable network address for host-model services; do not expose inference endpoints publicly by accident.
+
+See [Outbound privacy](OUTBOUND_PRIVACY.md) for local/external trust, test-mode gating, and the future gateway-verifier interface.
 
 For offline unit tests, see [Testing and evaluation](TESTING_AND_EVALUATION.md). Live provider verification was **not** performed during Sprint 1.

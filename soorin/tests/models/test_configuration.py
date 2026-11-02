@@ -17,6 +17,16 @@ class ConfigurationTests(unittest.TestCase):
         self.assertFalse(config.embedding.enabled)
         self.assertFalse(config.reranker.enabled)
 
+    def test_privacy_environment_has_no_caller_approved_route_bypass(self):
+        config = SoorinModelConfig.from_env({
+            "SOORIN_OUTBOUND_ENDPOINT_TRUST": "external",
+            "SOORIN_OUTBOUND_TEST_MODE": "true",
+            "SOORIN_OUTBOUND_PRIVACY_ROUTE_APPROVED": "true",
+        })
+        self.assertEqual(config.embedding.endpoint_trust, "external")
+        self.assertTrue(config.embedding.test_mode)
+        self.assertFalse(hasattr(config.embedding, "privacy_route_approved"))
+
     def test_workspace_overrides_environment_and_keys_are_redacted(self):
         config = SoorinModelConfig.from_env({
             "SOORIN_CHAT_ENABLED":"true", "SOORIN_CHAT_BASE_URL":"https://env.example/v1", "SOORIN_CHAT_MODEL":"env-model", "SOORIN_CHAT_API_KEY":"secret",
