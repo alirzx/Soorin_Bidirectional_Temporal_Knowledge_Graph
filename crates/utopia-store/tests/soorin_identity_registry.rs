@@ -82,6 +82,39 @@ async fn concurrent_authority_registration_is_idempotent_and_conflicts_are_audit
     .await?;
     assert_eq!(status, "ambiguous");
 
+    let other_tenant = soorin_identity::register(&pool, Registration {
+        kb_id: kb,
+        tenant_id: "tenant-b",
+        entity_type: "SplunkNotable",
+        source_system: "splunk",
+        source_instance: "prod",
+        source_identifier: "NOTABLE-TENANT-B",
+        canonical_key: "soorin:splunknotable:tenant-b",
+        status: "active",
+        source_revision_id: Some("1"),
+        observed_at: Utc::now(),
+        provenance: &provenance,
+    })
+    .await?;
+    let other_tenant_id = match other_tenant {
+        RegistrationOutcome::Resolved { identity_id, .. } => identity_id,
+        RegistrationOutcome::Conflict { .. } => panic!("new tenant authority cannot conflict"),
+    };
+    assert!(sqlx::query(
+        "INSERT INTO soorin_identity_conflicts
+             (id,kb_id,authority_id,existing_identity_id,candidate_identity_id,
+              tenant_id,entity_type,reason,provenance,first_seen_at,last_seen_at)
+         VALUES ($1,$2,$3,$4,$5,'tenant-a','SplunkNotable','test-cross-tenant','{}',now(),now())",
+    )
+    .bind(Uuid::now_v7())
+    .bind(kb)
+    .bind(ids[0].1)
+    .bind(ids[0].0)
+    .bind(other_tenant_id)
+    .execute(&pool)
+    .await
+    .is_err());
+
     let (observations, occurrences): (i64, i64) = sqlx::query_as(
         "SELECT count(*), sum(occurrence_count)::bigint
            FROM soorin_identity_observations WHERE kb_id=$1",
@@ -89,7 +122,7 @@ async fn concurrent_authority_registration_is_idempotent_and_conflicts_are_audit
     .bind(kb)
     .fetch_one(&pool)
     .await?;
-    assert_eq!((observations, occurrences), (1, 2));
+    assert_eq!((observations, occurrences), (2, 3));
 
     sqlx::query("DELETE FROM organizations WHERE id=$1")
         .bind(org)

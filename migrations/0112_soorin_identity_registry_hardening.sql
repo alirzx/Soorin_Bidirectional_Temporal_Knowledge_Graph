@@ -9,6 +9,8 @@ ALTER TABLE soorin_canonical_identities
 
 ALTER TABLE soorin_identity_authorities
     DROP CONSTRAINT IF EXISTS soorin_identity_authorities_identity_id_fkey,
+    ADD CONSTRAINT soorin_identity_authorities_scope_key
+        UNIQUE (kb_id, id, tenant_id, entity_type),
     ADD CONSTRAINT soorin_identity_authorities_identity_scope_fkey
         FOREIGN KEY (kb_id, identity_id, tenant_id, entity_type)
         REFERENCES soorin_canonical_identities (kb_id, id, tenant_id, entity_type)
@@ -47,18 +49,30 @@ ALTER TABLE soorin_identity_aliases
         CHECK (last_seen_at >= first_seen_at);
 
 ALTER TABLE soorin_identity_conflicts
+    ADD COLUMN tenant_id TEXT,
+    ADD COLUMN entity_type TEXT;
+
+UPDATE soorin_identity_conflicts c
+SET tenant_id = a.tenant_id,
+    entity_type = a.entity_type
+FROM soorin_identity_authorities a
+WHERE a.kb_id = c.kb_id AND a.id = c.authority_id;
+
+ALTER TABLE soorin_identity_conflicts
+    ALTER COLUMN tenant_id SET NOT NULL,
+    ALTER COLUMN entity_type SET NOT NULL,
     DROP CONSTRAINT IF EXISTS soorin_identity_conflicts_authority_id_fkey,
     DROP CONSTRAINT IF EXISTS soorin_identity_conflicts_existing_identity_id_fkey,
     DROP CONSTRAINT IF EXISTS soorin_identity_conflicts_candidate_identity_id_fkey,
-    ADD CONSTRAINT soorin_identity_conflicts_authority_kb_fkey
-        FOREIGN KEY (kb_id, authority_id)
-        REFERENCES soorin_identity_authorities (kb_id, id)
+    ADD CONSTRAINT soorin_identity_conflicts_authority_scope_fkey
+        FOREIGN KEY (kb_id, authority_id, tenant_id, entity_type)
+        REFERENCES soorin_identity_authorities (kb_id, id, tenant_id, entity_type)
         ON DELETE CASCADE,
-    ADD CONSTRAINT soorin_identity_conflicts_existing_identity_kb_fkey
-        FOREIGN KEY (kb_id, existing_identity_id)
-        REFERENCES soorin_canonical_identities (kb_id, id)
+    ADD CONSTRAINT soorin_identity_conflicts_existing_identity_scope_fkey
+        FOREIGN KEY (kb_id, existing_identity_id, tenant_id, entity_type)
+        REFERENCES soorin_canonical_identities (kb_id, id, tenant_id, entity_type)
         ON DELETE CASCADE,
-    ADD CONSTRAINT soorin_identity_conflicts_candidate_identity_kb_fkey
-        FOREIGN KEY (kb_id, candidate_identity_id)
-        REFERENCES soorin_canonical_identities (kb_id, id)
+    ADD CONSTRAINT soorin_identity_conflicts_candidate_identity_scope_fkey
+        FOREIGN KEY (kb_id, candidate_identity_id, tenant_id, entity_type)
+        REFERENCES soorin_canonical_identities (kb_id, id, tenant_id, entity_type)
         ON DELETE CASCADE;

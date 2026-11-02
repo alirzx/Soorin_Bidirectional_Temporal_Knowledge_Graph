@@ -130,9 +130,9 @@ pub async fn register(pool: &PgPool, item: Registration<'_>) -> AppResult<Regist
         let proposed_conflict_id = Uuid::now_v7();
         let (conflict_id,): (Uuid,) = sqlx::query_as(
             "INSERT INTO soorin_identity_conflicts
-                 (id, kb_id, authority_id, existing_identity_id, candidate_identity_id, reason,
-                  provenance, first_seen_at, last_seen_at)
-             VALUES ($1,$2,$3,$4,$5,'authority_tuple_already_bound',$6,$7,$7)
+                 (id, kb_id, authority_id, existing_identity_id, candidate_identity_id,
+                  tenant_id, entity_type, reason, provenance, first_seen_at, last_seen_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,'authority_tuple_already_bound',$8,$9,$9)
              ON CONFLICT (authority_id, candidate_identity_id) WHERE resolved_at IS NULL
              DO UPDATE SET last_seen_at=GREATEST(soorin_identity_conflicts.last_seen_at, EXCLUDED.last_seen_at),
                            occurrence_count=soorin_identity_conflicts.occurrence_count+1
@@ -143,6 +143,8 @@ pub async fn register(pool: &PgPool, item: Registration<'_>) -> AppResult<Regist
         .bind(authority_id)
         .bind(existing_identity_id)
         .bind(candidate_identity_id)
+        .bind(item.tenant_id)
+        .bind(item.entity_type)
         .bind(item.provenance)
         .bind(item.observed_at)
         .fetch_one(&mut *tx)
