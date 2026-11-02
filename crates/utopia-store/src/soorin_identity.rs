@@ -296,9 +296,15 @@ pub async fn link_utopia_entity(
         match found {
             None => return Err(AppError::NotFound),
             Some((Some(other),)) if other != entity_id => {
-                return Err(AppError::Conflict("identity is already linked to another Utopia entity".into()));
+                return Err(AppError::Conflict(
+                    "identity is already linked to another Utopia entity".into(),
+                ));
             }
-            _ => return Err(AppError::Validation("Utopia entity does not belong to this knowledge base".into())),
+            _ => {
+                return Err(AppError::Validation(
+                    "Utopia entity does not belong to this knowledge base".into(),
+                ))
+            }
         }
     }
     Ok(())
