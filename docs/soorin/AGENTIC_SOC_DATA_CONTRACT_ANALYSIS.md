@@ -7,6 +7,8 @@
 
 The privacy branch changes LLM egress boundaries and related callers; it does not establish a TKG ingestion contract. This sprint made no changes to Agentic SOC.
 
+The final pre-build audit re-read both local refs on 2026-11-02. The active Agentic checkout was clean on the privacy feature at the hash above; no fetch, checkout, edit, test mutation, or write was performed there.
+
 ## Implemented source flow
 
 ```text
@@ -42,6 +44,8 @@ Primary source files:
 
 Agentic SOC's `RawAlert.fingerprint()` prefers sorted vendor source-event IDs plus tenant and source. Without vendor IDs it falls back to rule/title/entities. `deterministic_id()` derives a UUIDv5 from tenant plus that fingerprint. The TKG preserves those decisions as source provenance but uses its own stable canonical key namespace.
 
+The current connector query computes `notable_id` from `source_guid`, `source_event_id`, `event_id`, then `orig_sid@@orig_rid`; its curated `llm_payload.alert_id` is that notable ID. Fusion separately places OCSF `finding.uid` in `source_event_ids` and refuses to reuse it as `rule_id`. The fused worker chooses the durable SOC row as `message.alert_row_id`, then `message.id`, then `alert.id`. These are distinct authorities and the Soorin normalizer preserves each in its own entity/evidence field.
+
 ## Current alert and lifecycle shape
 
 `RawAlert` includes tenant, source, title/description, severity/status, IOC/entity fields, MITRE fields, raw event, curated payload, tags/risk, connector provenance, source-event IDs, OCSF class, rule ID/name, created time, and event time. `FusedAlert` adds fusion decision and incident/correlation results.
@@ -61,3 +65,5 @@ Alert statuses include `new`, `acknowledged`, `in_progress`, `resolved`, `suppre
 ## Privacy branch relevance
 
 The privacy feature centralizes remote LLM handling, canonical tenant context, TLS/fail-closed behavior, and egress inventory. Sprint 1 model adapters are compatible with a future protected base URL but do not call or modify that gateway. Production-sensitive documents must not be sent to an external endpoint until an approved privacy route and policy exist.
+
+The Auto-Triage path continues to treat the curated payload as untrusted data, not instructions. Risk scores, current rule/macro configuration, and `investigation_hint` retain their caveats. A future TKG connector must consume a durable, versioned Agentic envelope at an authenticated boundary; it must not scrape prompt context or infer authority from the privacy branch.
