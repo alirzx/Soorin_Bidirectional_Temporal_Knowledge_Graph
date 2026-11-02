@@ -211,6 +211,7 @@ pub async fn register(pool: &PgPool, item: Registration<'_>) -> AppResult<Regist
 }
 
 /// Record a time-bounded alias without changing authority ownership.
+#[allow(clippy::too_many_arguments)]
 pub async fn record_alias(
     pool: &PgPool,
     kb_id: Uuid,
