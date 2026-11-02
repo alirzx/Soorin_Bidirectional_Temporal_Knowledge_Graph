@@ -22,23 +22,49 @@ ALTER TABLE soorin_identity_aliases
     ADD COLUMN last_seen_at TIMESTAMPTZ,
     ADD COLUMN occurrence_count BIGINT NOT NULL DEFAULT 1 CHECK (occurrence_count > 0);
 
+-- PostgreSQL text cannot contain NUL. Hash a canonical JSONB tuple,
+-- normalizing valid-time timestamps to UTC so sessions use the same hash.
+-- The Rust record_alias INSERT must use the identical expression.
 UPDATE soorin_identity_aliases
 SET provenance_hash = sha256(convert_to(
-        alias || chr(0) || normalized_alias || chr(0)
-        || COALESCE(valid_from::text, '') || chr(0)
-        || COALESCE(valid_to::text, '') || chr(0)
-        || provenance::text,
-        'UTF8'
+        jsonb_build_array(
+            alias, normalized_alias,
+            to_char(valid_from AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS'),
+            to_char(valid_to AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS'),
+            provenance
+        )::text, 'UTF8'
     )),
     first_seen_at = recorded_at,
     last_seen_at = recorded_at;
+
+-- 0111 declared an unnamed UNIQUE constraint. PostgreSQL truncates generated
+-- identifiers to 63 bytes, so a guessed DROP CONSTRAINT name silently fails.
+-- Locate the exact unique key by ordered columns before replacing it.
+DO $
+DECLARE legacy_unique name;
+BEGIN
+    SELECT con.conname INTO legacy_unique
+    FROM pg_constraint AS con
+    WHERE con.conrelid = 'soorin_identity_aliases'::regclass
+      AND con.contype = 'u'
+      AND (
+          SELECT array_agg(att.attname ORDER BY col.ordinality)
+          FROM unnest(con.conkey) WITH ORDINALITY AS col(attnum, ordinality)
+          JOIN pg_attribute AS att
+            ON att.attrelid = con.conrelid AND att.attnum = col.attnum
+      ) = ARRAY['identity_id', 'normalized_alias', 'valid_from']::name[];
+
+    IF legacy_unique IS NULL THEN
+        RAISE EXCEPTION 'Legacy Soorin alias uniqueness constraint not found';
+    END IF;
+    EXECUTE format('ALTER TABLE soorin_identity_aliases DROP CONSTRAINT %I', legacy_unique);
+END $;
 
 ALTER TABLE soorin_identity_aliases
     ALTER COLUMN provenance_hash SET NOT NULL,
     ALTER COLUMN first_seen_at SET NOT NULL,
     ALTER COLUMN last_seen_at SET NOT NULL,
     DROP CONSTRAINT IF EXISTS soorin_identity_aliases_identity_id_fkey,
-    DROP CONSTRAINT IF EXISTS soorin_identity_aliases_identity_id_normalized_alias_valid_from_key,
     ADD CONSTRAINT soorin_identity_aliases_identity_kb_fkey
         FOREIGN KEY (kb_id, identity_id)
         REFERENCES soorin_canonical_identities (kb_id, id)
