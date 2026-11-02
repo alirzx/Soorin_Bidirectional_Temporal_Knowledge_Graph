@@ -120,7 +120,7 @@ class StatementsAdapter:
                 "has source system": evidence.source_system or event.source_system,
                 "has source instance": evidence.source_instance or event.source_instance,
                 "has source record id": evidence.source_record_id,
-                "has source event ids": list(evidence.source_event_ids),
+                "has source event ids": sorted(set(evidence.source_event_ids)),
                 "has source revision id": evidence.source_revision_id,
                 "has source field path": evidence.field_path,
                 "has source URI": evidence.source_uri,

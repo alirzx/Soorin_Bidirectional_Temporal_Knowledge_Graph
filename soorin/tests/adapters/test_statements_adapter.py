@@ -106,6 +106,48 @@ class StatementsTests(unittest.TestCase):
         self.assertEqual(relation_row[5]["evidence_id"], "ev-1")
         self.assertEqual(relation_row[5]["evidence_ids"], '["ev-1","ev-2"]')
 
+    def test_source_event_ids_are_order_independent(self):
+        base = knowledge_event()
+        left_evidence = replace(base.evidence[0], source_event_ids=("EVENT-2", "EVENT-1"))
+        right_evidence = replace(base.evidence[0], source_event_ids=("EVENT-1", "EVENT-2"))
+        left = replace(base, evidence=(left_evidence,), content_checksum=None)
+        right = replace(base, evidence=(right_evidence,), content_checksum=None)
+        adapter = StatementsAdapter()
+        self.assertEqual(adapter.dumps(adapter.render(left)), adapter.dumps(adapter.render(right)))
+
+    def test_shared_evidence_and_revision_specific_evidence_remain_distinct(self):
+        base = knowledge_event()
+        shared = base.evidence[0]
+        other = EvidenceReference("ev-2", "A-100")
+        second_relation = KnowledgeRelation(
+            "rel-2", "CORRELATED_WITH", "alert-key", "host-key", evidence_ids=("ev-1",),
+        )
+        with_shared = replace(
+            base, relations=(*base.relations, second_relation), content_checksum=None,
+        )
+        rows = [row for row in StatementsAdapter().render(with_shared)["s"] if row[2] in {"observed on", "correlated with"}]
+        self.assertEqual({row[5]["evidence_ids"] for row in rows}, {'["ev-1"]'})
+
+        revised_relation = replace(base.relations[0], evidence_ids=("ev-2",))
+        revised = replace(
+            base, relations=(revised_relation,), evidence=(shared, other,),
+            source_revision_id="2", content_checksum=None,
+        )
+        self.assertNotEqual(base.content_checksum, revised.content_checksum)
+        row = next(row for row in StatementsAdapter().render(revised)["s"] if row[2] == "observed on")
+        self.assertEqual(row[5]["evidence_ids"], '["ev-2"]')
+
+    def test_missing_optional_evidence_metadata_is_omitted(self):
+        base = knowledge_event()
+        minimal = EvidenceReference("ev-1", "A-100")
+        changed = replace(base, evidence=(minimal,), content_checksum=None)
+        payload = StatementsAdapter().render(changed)
+        evidence_entity = next(row[0] for row in payload["e"] if row[1] == "EvidenceReference")
+        phrases = {row[2] for row in payload["s"] if row[1] == evidence_entity}
+        self.assertNotIn("has source field path", phrases)
+        self.assertNotIn("has source URI", phrases)
+        self.assertNotIn("has source checksum", phrases)
+
     def test_v1_external_identity_uses_exact_historical_pipe_hash(self):
         event = knowledge_event()
         expected = "soorin-soc-v1:tenant-a:" + __import__("hashlib").sha256(
