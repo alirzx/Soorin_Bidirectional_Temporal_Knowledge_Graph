@@ -12,6 +12,9 @@ RUN pnpm build
 # 编出的二进制便要求 GLIBC_2.38，而 bookworm 只有 2.36——镜像构建照样成功，
 # 容器一启动就 "version `GLIBC_2.38' not found"。
 FROM rust:1-slim-bookworm AS build
+# Limit concurrent rustc processes on resource-constrained development hosts.
+# Override via SOORIN_BUILD_JOBS in the isolated Compose file.
+ARG CARGO_BUILD_JOBS=1
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
