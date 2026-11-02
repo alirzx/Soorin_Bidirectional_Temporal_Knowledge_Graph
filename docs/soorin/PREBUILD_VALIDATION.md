@@ -7,7 +7,12 @@ This checklist separates lightweight static checks from the next local source-bu
 ```bash
 python3 -m compileall -q soorin
 python3 -m unittest discover -s soorin/tests -p 'test_*.py' -v
+python3 -m unittest discover -s soorin/tests/mock_splunk/tests -v
 python3 soorin/tests/mock_splunk/scripts/soc_mock.py validate
+python3 -m soorin.evaluation.graph_integrity soorin/tests/fixtures/soc_llm_payload_scenarios_v1.json
+python3 -m soorin.evaluation.temporal_cases
+python3 -m soorin.evaluation.retrieval_benchmark
+python3 -m soorin.e2e.local_validation --report /tmp/soorin-e2e-offline.json
 docker compose -f docker-compose.soorin-dev.yml config --quiet
 docker compose -f docker-compose.yml -f docker-compose.build.yml --profile app config --quiet
 git diff --check
@@ -26,7 +31,7 @@ pnpm build
 Use a disposable PostgreSQL 16 + pgvector database. These commands are required before merge; unavailable tools are `NOT RUN`, never a pass.
 
 ```bash
-cargo fmt --all --check
+cargo fmt --all -- --check
 cargo check --workspace --all-targets
 export UTOPIA_DATABASE_URL='postgres://utopia:utopia@127.0.0.1:2517/utopia'
 export UTOPIA_TEST_REQUIRE_DB=1
