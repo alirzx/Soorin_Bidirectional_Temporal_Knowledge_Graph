@@ -40,7 +40,7 @@ SET provenance_hash = sha256(convert_to(
 -- 0111 declared an unnamed UNIQUE constraint. PostgreSQL truncates generated
 -- identifiers to 63 bytes, so a guessed DROP CONSTRAINT name silently fails.
 -- Locate the exact unique key by ordered columns before replacing it.
-DO $
+DO $soorin_alias_unique$
 DECLARE legacy_unique name;
 BEGIN
     SELECT con.conname INTO legacy_unique
@@ -58,7 +58,7 @@ BEGIN
         RAISE EXCEPTION 'Legacy Soorin alias uniqueness constraint not found';
     END IF;
     EXECUTE format('ALTER TABLE soorin_identity_aliases DROP CONSTRAINT %I', legacy_unique);
-END $;
+END $soorin_alias_unique$;
 
 ALTER TABLE soorin_identity_aliases
     ALTER COLUMN provenance_hash SET NOT NULL,
