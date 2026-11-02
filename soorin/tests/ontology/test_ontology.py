@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import tempfile
 import unittest
 
 from soorin.ontology.importer import OntologyError, OntologyImporter, load_and_validate
 
 ONTOLOGY = Path(__file__).resolve().parents[2] / "ontology" / "soc_ontology_v1.yaml"
+
+
+def load_and_validate_from_data(data):
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "ontology.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return load_and_validate(path)
 
 
 class FakeApi:
@@ -40,9 +49,34 @@ class FakeApi:
 class OntologyTests(unittest.TestCase):
     def test_ontology_validates_and_has_complete_signatures(self):
         ontology = load_and_validate(ONTOLOGY)
-        self.assertGreaterEqual(len(ontology["entity_types"]), 17)
-        self.assertGreaterEqual(len(ontology["relation_types"]), 15)
+        self.assertEqual(len(ontology["entity_types"]), 17)
+        self.assertEqual(len(ontology["relation_types"]), 15)
         self.assertTrue(all(item["required_provenance"] for item in ontology["relation_types"]))
+        relations = {item["key"]: item for item in ontology["relation_types"]}
+        for key, relation in relations.items():
+            inverse = relation.get("inverse")
+            if inverse:
+                self.assertEqual(relations[inverse]["inverse"], key)
+
+    def test_statement_relation_vocabulary_matches_ontology_labels(self):
+        ontology = load_and_validate(ONTOLOGY)
+        labels = {item["label"].casefold() for item in ontology["relation_types"]}
+        emitted = {
+            "OBSERVED_ON", "ORIGINATED_FROM", "INVOLVES_USER", "DETECTED_BY",
+            "CORRELATED_WITH", "MAPPED_TO_TECHNIQUE", "SUPPORTED_BY", "PART_OF_CASE",
+            "TRACKED_BY_TICKET", "HAD_IP", "SUPERSEDES",
+        }
+        self.assertEqual({value.replace("_", " ").casefold() for value in emitted} - labels, set())
+
+    def test_nonreciprocal_inverse_and_count_drift_are_rejected(self):
+        ontology = load_and_validate(ONTOLOGY)
+        ontology["relation_types"][1]["inverse"] = None
+        with self.assertRaisesRegex(OntologyError, "not reciprocal"):
+            load_and_validate_from_data(ontology)
+        ontology = load_and_validate(ONTOLOGY)
+        ontology["entity_types"].pop()
+        with self.assertRaisesRegex(OntologyError, "exactly 17"):
+            load_and_validate_from_data(ontology)
 
     def test_preview_is_dry_run(self):
         ontology = load_and_validate(ONTOLOGY)

@@ -46,6 +46,17 @@ class StatementsTests(unittest.TestCase):
         self.assertEqual(facts["has source checksum"], "abc123")
         self.assertTrue(any(row[1] == "alert-key" and row[2] == "supported by" and row[3] == evidence_entity for row in payload["s"]))
 
+    def test_evidence_anchor_is_semantic_not_lexicographically_first(self):
+        base = knowledge_event()
+        alert = replace(base.entities[0], entity_id="z-alert")
+        host = replace(base.entities[1], entity_id="a-host")
+        relation = replace(base.relations[0], subject_entity_id="z-alert", object_entity_id="a-host")
+        changed = replace(base, entities=(host, alert), relations=(relation,), content_checksum=None)
+        payload = StatementsAdapter().render(changed)
+        evidence_entity = next(row[0] for row in payload["e"] if row[1] == "EvidenceReference")
+        support = next(row for row in payload["s"] if row[2] == "supported by" and row[3] == evidence_entity)
+        self.assertEqual(support[1], "z-alert")
+
     def test_replay_and_changed_revision_keep_external_id(self):
         adapter = StatementsAdapter()
         self.assertEqual(adapter.render(knowledge_event())["external_id"], adapter.render(knowledge_event("closed"))["external_id"])

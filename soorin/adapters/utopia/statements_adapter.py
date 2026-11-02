@@ -107,7 +107,7 @@ class StatementsAdapter:
 
         if not entities:
             raise StatementsError("missing_entities", "the Statements contract requires at least one subject entity")
-        subject = ordered_entities[0].entity_id
+        subject = _evidence_subject(ordered_entities)
         for evidence in ordered_evidence:
             evidence_entity = evidence_entities[evidence.evidence_id]
             qualifiers = _qualifiers(event, evidence=(evidence.evidence_id,))
@@ -214,6 +214,14 @@ def _literal(value: Any) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _evidence_subject(entities: Sequence[Any]) -> str:
+    priority = {
+        "SecurityAlert": 0, "SplunkNotable": 1, "SecurityEvent": 2,
+        "Incident": 3, "SOCCase": 4, "TriageDecision": 5, "Report": 6,
+    }
+    return min(entities, key=lambda item: (priority.get(item.entity_type, 100), item.entity_id)).entity_id
 
 
 Transport = Callable[[urllib.request.Request, float], Mapping[str, Any]]

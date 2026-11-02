@@ -13,11 +13,19 @@ import getpass
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Callable, Mapping
 import urllib.error
 import urllib.request
 
 ONTOLOGY_VERSION = "soorin.soc.ontology.v1"
+EXPECTED_ENTITY_TYPES = 17
+EXPECTED_RELATION_TYPES = 15
+KEY_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+CARDINALITIES = {
+    "many_to_many", "many_to_one", "many_to_one_at_time", "one_to_many",
+    "many_to_many_over_time",
+}
 
 
 class OntologyError(ValueError):
@@ -35,8 +43,19 @@ def load_and_validate(path: Path) -> dict[str, Any]:
     relations = data.get("relation_types")
     if not isinstance(entities, list) or not entities or not isinstance(relations, list) or not relations:
         raise OntologyError("entity_types and relation_types must be nonempty arrays")
+    if len(entities) != EXPECTED_ENTITY_TYPES or len(relations) != EXPECTED_RELATION_TYPES:
+        raise OntologyError(
+            f"ontology must declare exactly {EXPECTED_ENTITY_TYPES} entity types and "
+            f"{EXPECTED_RELATION_TYPES} relation types"
+        )
     entity_keys = _unique_keys(entities, "entity type")
     relation_keys = _unique_keys(relations, "relation type")
+    by_relation = {item["key"]: item for item in relations}
+    for entity in entities:
+        for side in ("parents", "disjoint"):
+            values = entity.get(side, [])
+            if not isinstance(values, list) or set(values) - entity_keys:
+                raise OntologyError(f"{entity.get('key')} has invalid {side}: {values!r}")
     for relation in relations:
         for side in ("domains", "ranges"):
             values = relation.get(side)
@@ -44,9 +63,18 @@ def load_and_validate(path: Path) -> dict[str, Any]:
                 raise OntologyError(f"{relation.get('key')} has invalid {side}: {values!r}")
         if relation.get("temporal") not in {"event", "state"}:
             raise OntologyError(f"{relation.get('key')} has invalid temporal behavior")
+        if relation.get("cardinality") not in CARDINALITIES:
+            raise OntologyError(f"{relation.get('key')} has invalid cardinality")
+        if not isinstance(relation.get("confidence_policy"), str) or not relation["confidence_policy"].strip():
+            raise OntologyError(f"{relation.get('key')} must declare confidence_policy")
+        attributes = relation.get("attributes")
+        if not isinstance(attributes, list) or not all(isinstance(value, str) and value for value in attributes):
+            raise OntologyError(f"{relation.get('key')} has invalid attributes")
         inverse = relation.get("inverse")
         if inverse is not None and inverse not in relation_keys:
             raise OntologyError(f"{relation.get('key')} references unknown inverse {inverse}")
+        if inverse is not None and by_relation[inverse].get("inverse") != relation["key"]:
+            raise OntologyError(f"{relation.get('key')} inverse {inverse} is not reciprocal")
         if relation.get("required_provenance") is not True:
             raise OntologyError(f"{relation.get('key')} must require provenance")
     return data
@@ -56,7 +84,11 @@ def _unique_keys(items: list[Mapping[str, Any]], kind: str) -> set[str]:
     keys: list[str] = []
     for item in items:
         key = item.get("key")
-        if not isinstance(key, str) or not key or not isinstance(item.get("label"), str) or not item.get("description"):
+        if (
+            not isinstance(key, str) or not KEY_RE.fullmatch(key)
+            or not isinstance(item.get("label"), str) or not item["label"].strip()
+            or not isinstance(item.get("description"), str) or not item["description"].strip()
+        ):
             raise OntologyError(f"every {kind} needs key, label and description")
         keys.append(key)
     if len(keys) != len(set(keys)):
