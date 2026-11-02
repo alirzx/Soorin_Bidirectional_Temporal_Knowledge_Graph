@@ -37,6 +37,13 @@ class OpenAIChatHealthClient:
 
     config: ChatConfig
     transport: Transport | None = None
+    privacy_policy: OutboundDataPolicy | None = None
+
+    def __post_init__(self) -> None:
+        if self.privacy_policy is None:
+            self.privacy_policy = OutboundDataPolicy(
+                self.config.privacy_mode, self.config.endpoint_trust, self.config.test_mode,
+            )
 
     def health(self) -> dict[str, Any]:
         started = time.perf_counter()
@@ -53,6 +60,17 @@ class OpenAIChatHealthClient:
         }
         if self.config.reasoning_effort:
             body["reasoning_effort"] = self.config.reasoning_effort
+        try:
+            assert self.privacy_policy is not None
+            self.privacy_policy.require_allowed(
+                [message["content"] for message in body["messages"]], purpose="chat_health",
+                synthetic=self.config.test_mode,
+            )
+        except OutboundPolicyError as exc:
+            return {
+                "status": "unavailable", "model": self.config.model,
+                "error_code": exc.code, "live": False,
+            }
         error: Exception | None = None
         for attempt in range(self.config.retries + 1):
             try:
@@ -103,7 +121,9 @@ class OpenAIEmbeddingClient:
 
     def __post_init__(self) -> None:
         if self.privacy_policy is None:
-            self.privacy_policy = OutboundDataPolicy(self.config.privacy_mode)
+            self.privacy_policy = OutboundDataPolicy(
+                self.config.privacy_mode, self.config.endpoint_trust, self.config.test_mode,
+            )
 
     @property
     def model(self) -> str | None:
@@ -165,7 +185,6 @@ class OpenAIEmbeddingClient:
             assert self.privacy_policy is not None
             self.privacy_policy.require_allowed(
                 texts, purpose="embedding", synthetic=self.config.synthetic_mode,
-                approved_privacy_route=self.config.privacy_route_approved,
             )
         except OutboundPolicyError as exc:
             raise ProviderError(exc.code, str(exc)) from exc
@@ -204,7 +223,7 @@ class OpenAIEmbeddingClient:
                 error = exc
                 if attempt < self.config.retries:
                     _backoff(attempt)
-        raise ProviderError("unavailable", str(error))
+        raise ProviderError("unavailable", "embedding provider request failed")
 
     def _validate_vector(self, vector: list[Any]) -> list[float]:
         if not vector or not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in vector):
@@ -276,9 +295,8 @@ def _http_json(
         with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
             value = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read(2048).decode("utf-8", errors="replace")
         code = "rate_limited" if exc.code == 429 else "authentication_failed" if exc.code in {401, 403} else "provider_error"
-        raise ProviderError(code, f"HTTP {exc.code}: {detail}") from exc
+        raise ProviderError(code, f"HTTP {exc.code}") from exc
     if not isinstance(value, Mapping):
         raise ProviderError("malformed_response", "response must be an object")
     return value

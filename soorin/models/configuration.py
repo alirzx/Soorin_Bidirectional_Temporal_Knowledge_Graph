@@ -66,6 +66,9 @@ class ChatConfig:
     max_output_tokens: int = 4096
     structured_output: str = "json_schema"
     tls_verify: bool = True
+    privacy_mode: str = "block_sensitive"
+    endpoint_trust: str = "external"
+    test_mode: bool = False
 
     def validate(self) -> "ChatConfig":
         _url(self.base_url, self.enabled)
@@ -77,6 +80,7 @@ class ChatConfig:
             raise ConfigurationError("unsupported reasoning_effort")
         if self.structured_output not in {"json_schema", "json_object", "prompt_only", "disabled"}:
             raise ConfigurationError("unsupported structured_output behavior")
+        _validate_privacy(self.privacy_mode, self.endpoint_trust)
         return self
 
     def public_dict(self) -> dict[str, Any]:
@@ -99,7 +103,8 @@ class EmbeddingConfig:
     cache_enabled: bool = True
     cache_capacity: int = 4096
     privacy_mode: str = "block_sensitive"
-    privacy_route_approved: bool = False
+    endpoint_trust: str = "external"
+    test_mode: bool = False
     synthetic_mode: bool = False
 
     def validate(self) -> "EmbeddingConfig":
@@ -112,8 +117,7 @@ class EmbeddingConfig:
             raise ConfigurationError("embedding dimension must be 1..65536")
         if not 1 <= self.cache_capacity <= 1_000_000:
             raise ConfigurationError("embedding cache capacity must be 1..1000000")
-        if self.privacy_mode not in {"block_sensitive", "block_all", "allow"}:
-            raise ConfigurationError("unsupported outbound privacy mode")
+        _validate_privacy(self.privacy_mode, self.endpoint_trust)
         return self
 
     def public_dict(self) -> dict[str, Any]:
@@ -134,7 +138,8 @@ class RerankerConfig:
     fallback_enabled: bool = True
     max_document_chars: int = 8000
     privacy_mode: str = "block_sensitive"
-    privacy_route_approved: bool = False
+    endpoint_trust: str = "external"
+    test_mode: bool = False
     synthetic_mode: bool = False
 
     def validate(self) -> "RerankerConfig":
@@ -143,8 +148,7 @@ class RerankerConfig:
             raise ConfigurationError("enabled reranker requires model")
         if self.provider not in {"cohere_v2", "jina_v1", "tei"}:
             raise ConfigurationError("unsupported reranker provider")
-        if self.privacy_mode not in {"block_sensitive", "block_all", "allow"}:
-            raise ConfigurationError("unsupported outbound privacy mode")
+        _validate_privacy(self.privacy_mode, self.endpoint_trust)
         return self
 
     def public_dict(self) -> dict[str, Any]:
@@ -170,6 +174,9 @@ class SoorinModelConfig:
             max_output_tokens=_int(e.get("SOORIN_CHAT_MAX_OUTPUT_TOKENS"), 4096, minimum=1, maximum=262144),
             structured_output=e.get("SOORIN_CHAT_STRUCTURED_OUTPUT", "json_schema"),
             tls_verify=_bool(e.get("SOORIN_CHAT_TLS_VERIFY"), True),
+            privacy_mode=e.get("SOORIN_OUTBOUND_PRIVACY_MODE", "block_sensitive"),
+            endpoint_trust=e.get("SOORIN_OUTBOUND_ENDPOINT_TRUST", "external"),
+            test_mode=_bool(e.get("SOORIN_OUTBOUND_TEST_MODE"), False),
         ).validate()
         dim = e.get("SOORIN_EMBED_DIM")
         embedding = EmbeddingConfig(
@@ -183,7 +190,8 @@ class SoorinModelConfig:
             normalize=_bool(e.get("SOORIN_EMBED_NORMALIZE"), True), cache_enabled=_bool(e.get("SOORIN_EMBED_CACHE_ENABLED"), True),
             cache_capacity=_int(e.get("SOORIN_EMBED_CACHE_CAPACITY"), 4096, minimum=1, maximum=1_000_000),
             privacy_mode=e.get("SOORIN_OUTBOUND_PRIVACY_MODE", "block_sensitive"),
-            privacy_route_approved=_bool(e.get("SOORIN_OUTBOUND_PRIVACY_ROUTE_APPROVED"), False),
+            endpoint_trust=e.get("SOORIN_OUTBOUND_ENDPOINT_TRUST", "external"),
+            test_mode=_bool(e.get("SOORIN_OUTBOUND_TEST_MODE"), False),
             synthetic_mode=_bool(e.get("SOORIN_SYNTHETIC_MODE"), False),
         ).validate()
         reranker = RerankerConfig(
@@ -196,7 +204,8 @@ class SoorinModelConfig:
             fallback_enabled=_bool(e.get("SOORIN_RERANK_FALLBACK_ENABLED"), True),
             max_document_chars=_int(e.get("SOORIN_RERANK_MAX_DOCUMENT_CHARS"), 8000, minimum=128, maximum=100000),
             privacy_mode=e.get("SOORIN_OUTBOUND_PRIVACY_MODE", "block_sensitive"),
-            privacy_route_approved=_bool(e.get("SOORIN_OUTBOUND_PRIVACY_ROUTE_APPROVED"), False),
+            endpoint_trust=e.get("SOORIN_OUTBOUND_ENDPOINT_TRUST", "external"),
+            test_mode=_bool(e.get("SOORIN_OUTBOUND_TEST_MODE"), False),
             synthetic_mode=_bool(e.get("SOORIN_SYNTHETIC_MODE"), False),
         ).validate()
         return cls(chat, embedding, reranker)
@@ -216,3 +225,10 @@ class SoorinModelConfig:
         chat = replace(self.chat, **chat_updates, enabled=bool((chat_updates.get("base_url") or self.chat.base_url) and (chat_updates.get("model") or self.chat.model))).validate()
         embedding = replace(self.embedding, **embed_updates, enabled=bool((embed_updates.get("base_url") or self.embedding.base_url) and (embed_updates.get("model") or self.embedding.model))).validate()
         return SoorinModelConfig(chat, embedding, self.reranker)
+
+
+def _validate_privacy(mode: str, endpoint_trust: str) -> None:
+    if mode not in {"block_sensitive", "block_all"}:
+        raise ConfigurationError("unsupported outbound privacy mode")
+    if endpoint_trust not in {"external", "local_trusted"}:
+        raise ConfigurationError("unsupported endpoint trust classification")

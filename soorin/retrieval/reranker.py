@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 
 from soorin.models.configuration import RerankerConfig
+from soorin.privacy import OutboundDataPolicy, OutboundPolicyError
 
 
 class RerankerError(RuntimeError):
@@ -71,11 +72,16 @@ class HttpReranker:
     post_json: PostJson | None = None
     provider: str = field(init=False)
     model: str | None = field(init=False)
+    privacy_policy: OutboundDataPolicy | None = None
 
     def __post_init__(self) -> None:
         self.config.validate()
         self.provider = self.config.provider
         self.model = self.config.model
+        if self.privacy_policy is None:
+            self.privacy_policy = OutboundDataPolicy(
+                self.config.privacy_mode, self.config.endpoint_trust, self.config.test_mode,
+            )
 
     def rerank(self, query: str, candidates: Sequence[Candidate], top_n: int) -> list[tuple[str, float]]:
         if not self.config.enabled:
@@ -83,6 +89,13 @@ class HttpReranker:
         if not candidates:
             return []
         documents = [candidate.text[:self.config.max_document_chars] for candidate in candidates]
+        try:
+            assert self.privacy_policy is not None
+            self.privacy_policy.require_allowed(
+                [query, *documents], purpose="reranker", synthetic=self.config.synthetic_mode,
+            )
+        except OutboundPolicyError as exc:
+            raise RerankerError(exc.code, str(exc)) from exc
         if self.config.provider in {"cohere_v2", "jina_v1"}:
             path = "/v2/rerank" if self.config.provider == "cohere_v2" else "/v1/rerank"
             body = {"model": self.config.model, "query": query, "documents": documents, "top_n": top_n}
@@ -144,7 +157,7 @@ def rerank_with_fallback(
     except (RerankerError, TimeoutError, urllib.error.URLError) as exc:
         code = exc.code if isinstance(exc, RerankerError) else "timeout" if isinstance(exc, TimeoutError) else "unavailable"
         if not fallback_enabled:
-            raise RerankerError(code, str(exc)) from exc
+            raise RerankerError(code, "reranker request failed") from exc
         rows = tuple(ScoredCandidate(candidate, None, index) for index, candidate in enumerate(unique[:top_n]))
         return RerankOutcome(rows, "fallback", provider.provider, getattr(provider, "model", None), (time.perf_counter() - started) * 1000, duplicates, code)
 
@@ -166,6 +179,5 @@ def _post_json(url: str, headers: Mapping[str, str], body: Mapping[str, Any], ti
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read(2048).decode("utf-8", errors="replace")
         code = "rate_limited" if exc.code == 429 else "authentication_failed" if exc.code in {401, 403} else "provider_error"
-        raise RerankerError(code, f"HTTP {exc.code}: {detail}") from exc
+        raise RerankerError(code, f"HTTP {exc.code}") from exc
