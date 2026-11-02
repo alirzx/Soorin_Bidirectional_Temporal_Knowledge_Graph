@@ -56,8 +56,14 @@ async fn concurrent_authority_registration_is_idempotent_and_conflicts_are_audit
     }
 
     let (left, right) = tokio::join!(
-        soorin_identity::register(&pool, make_registration(kb, &provenance, "soorin:splunknotable:one")),
-        soorin_identity::register(&pool, make_registration(kb, &provenance, "soorin:splunknotable:one")),
+        soorin_identity::register(
+            &pool,
+            make_registration(kb, &provenance, "soorin:splunknotable:one")
+        ),
+        soorin_identity::register(
+            &pool,
+            make_registration(kb, &provenance, "soorin:splunknotable:one")
+        ),
     );
     let left = left?;
     let right = right?;
@@ -72,7 +78,11 @@ async fn concurrent_authority_registration_is_idempotent_and_conflicts_are_audit
     });
     assert_eq!(ids[0], ids[1]);
 
-    let conflict = soorin_identity::register(&pool, make_registration(kb, &provenance, "soorin:splunknotable:different")).await?;
+    let conflict = soorin_identity::register(
+        &pool,
+        make_registration(kb, &provenance, "soorin:splunknotable:different"),
+    )
+    .await?;
     assert!(matches!(conflict, RegistrationOutcome::Conflict { .. }));
     let (count,): (i64,) = sqlx::query_as(
         "SELECT count(*) FROM soorin_identity_conflicts WHERE kb_id=$1 AND resolved_at IS NULL",
