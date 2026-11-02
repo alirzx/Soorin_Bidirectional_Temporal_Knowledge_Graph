@@ -26,7 +26,9 @@ services:
       UTOPIA_BIND_ADDR: 0.0.0.0:1516
       UTOPIA_WEB_DIST: /app/web-dist
       UTOPIA_DATA_DIR: /app/data
-      UTOPIA_OPEN_REGISTRATION: "true"
+      # False still permits the first bootstrap account, then keeps public
+      # registration closed. The port remains loopback-only as a second guard.
+      UTOPIA_OPEN_REGISTRATION: "false"
     ports:
       - "${SOORIN_DEV_APP_BIND:-127.0.0.1:2516}:1516"
     volumes:
@@ -34,6 +36,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:1516/api/v1/health >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
 
 volumes:
   soorin_sprint1_db:
