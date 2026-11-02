@@ -8,7 +8,7 @@ which already contained the 30 Sprint 1 and follow-up commits after Soorin
 `main` baseline `4bf6a2cb5b98919fe910ba43da7698f7d1b670b9`.
 Those commits were inspected and retained; none was amended or rewritten.
 
-The final pre-build series through `18e2ac5` contains 14 commits after
+The final pre-build series through `5c8fd6e` contains 16 commits after
 `9ec66ef`, separated by responsibility:
 
 | Commit | Outcome |
@@ -27,6 +27,8 @@ The final pre-build series through `18e2ac5` contains 14 commits after
 | `b0a4a8e` | Product README, current gap register and five architecture diagrams |
 | `34f8b68` | Current validation evidence, Graphify audit and release gates |
 | `18e2ac5` | Conflict-row tenant/entity-type constraints found in final manual registry review |
+| `93a4d3c` | Final Graphify counts synchronized after the registry scope correction |
+| `5c8fd6e` | Live E2E polling waits for real assertions and exits nonzero on blocked live gates |
 
 The final graph-count synchronization commit that contains this wording is
 documentation-only; `git log` is authoritative for its resulting hash.
