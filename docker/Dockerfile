@@ -26,7 +26,16 @@ COPY web/src/docs/ web/src/docs/
 # utopia-store::palette compiles the UI palette into backend validation tests
 # and runtime helpers; copying only the documentation leaves this include out.
 COPY web/src/palette.ts web/src/palette.ts
-RUN cargo build --release -p utopia-server
+# RUN cargo build --release -p utopia-server
+# More tolerant Cargo networking for slow or unstable connections.
+ENV CARGO_HTTP_TIMEOUT=180 \
+    CARGO_HTTP_LOW_SPEED_LIMIT=1 \
+    CARGO_NET_RETRY=6 \
+    CARGO_HTTP_MULTIPLEXING=false
+
+# Preserve downloaded Rust dependencies between failed/retried builds.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    cargo build --locked --release -p utopia-server
 
 # ---- 运行 ----
 FROM debian:bookworm-slim
