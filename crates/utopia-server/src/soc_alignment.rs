@@ -122,7 +122,8 @@ pub async fn phrases(pool: &PgPool, kb_id: Uuid) -> anyhow::Result<bool> {
         let Some(prop) = props.iter().find(|p| {
             p.key == row["key"].as_str().unwrap()
                 && (p.label == row["label"].as_str().unwrap()
-                    || p.label == utopia_store::ontology::lower_camel(row["label"].as_str().unwrap()))
+                    || p.label
+                        == utopia_store::ontology::lower_camel(row["label"].as_str().unwrap()))
                 && p.temporal == row["temporal"].as_str().unwrap()
                 && p.domains.contains(&sig.subject_type_id.unwrap())
                 && p.ranges.contains(&sig.object_type_id.unwrap())

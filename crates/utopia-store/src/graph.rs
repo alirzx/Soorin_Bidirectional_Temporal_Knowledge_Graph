@@ -1632,18 +1632,33 @@ pub async fn entity_node(
     entity_id: Uuid,
     as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<Option<GraphNode>> {
-    entity_node_scoped(pool,kb_id,entity_id,as_of,false).await
+    entity_node_scoped(pool, kb_id, entity_id, as_of, false).await
 }
 
-pub async fn entity_node_visible(pool:&PgPool,kb_id:Uuid,entity_id:Uuid,as_of:Option<chrono::DateTime<chrono::Utc>>)->AppResult<Option<GraphNode>> {
-    entity_node_scoped(pool,kb_id,entity_id,as_of,true).await
+pub async fn entity_node_visible(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
+) -> AppResult<Option<GraphNode>> {
+    entity_node_scoped(pool, kb_id, entity_id, as_of, true).await
 }
 
-async fn entity_node_scoped(pool:&PgPool,kb_id:Uuid,entity_id:Uuid,as_of:Option<chrono::DateTime<chrono::Utc>>,visible:bool)->AppResult<Option<GraphNode>> {
+async fn entity_node_scoped(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
+    visible: bool,
+) -> AppResult<Option<GraphNode>> {
     Ok(sqlx::query_as(&format!(
         "{} WHERE e.kb_id = $1 AND e.id = $2 AND {}",
         node_sql(as_of.map(|_| 3), as_of.map(|_| 3)),
-        if visible {crate::record_axis::entity_visible_at("e", as_of.map(|_| 3))}else{"true".into()}
+        if visible {
+            crate::record_axis::entity_visible_at("e", as_of.map(|_| 3))
+        } else {
+            "true".into()
+        }
     ))
     .bind(kb_id)
     .bind(entity_id)

@@ -86,7 +86,7 @@ pub async fn context(
             node.name = node.id.to_string();
             node.type_key = None;
             node.type_label = None;
-                node.disambiguator = None;
+            node.disambiguator = None;
         }
         resolved.push(node);
         for mut fact in rows.into_iter().take(limit - facts.len()) {
@@ -110,7 +110,9 @@ pub async fn context(
                 fact.closed_by = None;
                 fact.correction_note = None;
                 fact.attested_by = None;
-                for qualifier in &mut fact.qualifiers {qualifier.entity_name=qualifier.entity_id.map(|id|id.to_string());}
+                for qualifier in &mut fact.qualifiers {
+                    qualifier.entity_name = qualifier.entity_id.map(|id| id.to_string());
+                }
             }
             // The ledger selected the fact using both axes. Evidence document
             // versions are returned explicitly; never present current text as old.
@@ -118,7 +120,8 @@ pub async fn context(
                 if as_of.is_some() {
                     reference.stale = false;
                     reference.document_deleted = false;
-                    reference.filename=format!("{}-v{}",reference.document_id,reference.doc_version);
+                    reference.filename =
+                        format!("{}-v{}", reference.document_id, reference.doc_version);
                 }
                 evidence.push(json!({"fact_id":fact.id,"source":reference}));
             }
