@@ -10,6 +10,17 @@ FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "soc_llm_payload_sc
 
 
 class SplunkNormalizerTests(unittest.TestCase):
+    def test_same_address_in_distinct_fields_preserves_network_scope(self):
+        event = normalize_llm_payload(None, tenant_id="t", source_instance="s", raw_record={
+            "alert_row_id": "A1", "case_id": "C1", "_time": "2026-01-01T00:00:00Z",
+            "src_ip": "10.0.0.1", "dest_ip": "10.0.0.1",
+            "network_scopes": {"src_ip": "vpc-a", "dest_ip": "vpc-b"},
+        }).event
+        ips = [entity for entity in event.entities if entity.entity_type == "IPAddress"]
+        self.assertEqual({entity.scope for entity in ips}, {"vpc-a", "vpc-b"})
+        self.assertEqual(len({entity.entity_id for entity in ips}), 2)
+        self.assertIn("PART_OF_CASE", {relation.relation_type for relation in event.relations})
+
     @classmethod
     def setUpClass(cls):
         cls.dataset = json.loads(FIXTURE.read_text(encoding="utf-8"))

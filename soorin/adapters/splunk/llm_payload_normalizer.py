@@ -186,11 +186,11 @@ def normalize_llm_payload(
     extracted = extract_entities(merged, source_record_reference=source_record_id, timestamp_context=event_time)
     warnings.extend(f"extraction:{error}" for error in extracted.errors)
     entity_rows: list[CanonicalEntity] = []
-    entity_by_pair: dict[tuple[str, str], CanonicalEntity] = {}
+    entity_by_pair: dict[tuple[str, str, str | None], CanonicalEntity] = {}
 
     def add_entity(entity_type: str, identifier: str, authority_name: str) -> CanonicalEntity:
         decision = resolve_identity(IdentityInput(tenant_id, "splunk", source_instance, entity_type, identifier, identifier))
-        pair = entity_type, decision.normalized_value
+        pair = entity_type, decision.normalized_value, None
         if pair in entity_by_pair:
             return entity_by_pair[pair]
         entity = CanonicalEntity(
@@ -223,7 +223,15 @@ def normalize_llm_payload(
         "soc_case_id", "investigation_run_id", "run_id", "report_id", "ticket_id", "jira_key",
     }
     for result in extracted.entities:
-        pair = result.entity_type, result.normalized_value
+        scopes = raw.get("network_scopes", {})
+        scope = None
+        if result.entity_type == "IPAddress":
+            if isinstance(scopes, Mapping):
+                scope = scopes.get(result.source_field) or scopes.get(result.source_field.rsplit(".", 1)[-1])
+            scope = scope or _first(raw, "network_scope", "network_id", "vpc_id", "subnet_id")
+            if scope is not None and not isinstance(scope, str):
+                raise NormalizationError("invalid_network_scope", "network scope must be a string")
+        pair = result.entity_type, result.normalized_value, scope
         if pair in entity_by_pair:
             continue
         leaf = result.source_field.rsplit(".", 1)[-1].casefold()
@@ -232,7 +240,6 @@ def normalize_llm_payload(
         if leaf == "alert_id":
             continue
         authoritative = result.original_value if leaf in authoritative_fields else None
-        scope = _first(raw, "network_scope", "network_id", "vpc_id", "subnet_id") if result.entity_type == "IPAddress" else None
         decision = resolve_identity(IdentityInput(
             tenant_id, "splunk", source_instance, result.entity_type, result.normalized_value, authoritative, scope,
         ))
@@ -261,10 +268,13 @@ def normalize_llm_payload(
     notable = explicit.get("SplunkNotable")
     if anchor.entity_type == "SecurityAlert" and notable:
         relate(anchor, "CORRELATED_WITH", notable)
+    case = explicit.get("SOCCase")
+    if case and anchor.entity_type in {"SecurityAlert", "SplunkNotable", "InvestigationRun", "Report"}:
+        relate(anchor, "PART_OF_CASE", case)
     evidence_anchor = anchor if anchor.entity_type in {"SecurityAlert", "SplunkNotable"} else (notable or anchor)
     for source_event in event_entities:
         relate(evidence_anchor, "SUPPORTED_BY", source_event)
-    if explicit.get("DetectionRule"):
+    if explicit.get("DetectionRule") and evidence_anchor.entity_type in {"SecurityAlert", "SplunkNotable"}:
         relate(evidence_anchor, "DETECTED_BY", explicit["DetectionRule"])
     relation_map = {
         "Host": "OBSERVED_ON", "IPAddress": "ORIGINATED_FROM", "UserAccount": "INVOLVES_USER",

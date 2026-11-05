@@ -88,7 +88,7 @@ def extract_entities(
     data: Mapping[str, Any], *, source_record_reference: str,
     timestamp_context: str | None = None, include_unstructured: bool = True,
 ) -> ExtractionBatch:
-    found: dict[tuple[str, str], ExtractionResult] = {}
+    found: dict[tuple[str, str, str], ExtractionResult] = {}
     errors: list[str] = []
 
     def add(entity_type: str, raw: str, field: str, method: str, confidence: str) -> None:
@@ -97,7 +97,11 @@ def extract_entities(
         except (IdentityNormalizationError, ValueError) as exc:
             errors.append(f"{field}: {exc}")
             return
-        key = entity_type, normalized
+        # An address in two fields may belong to two network scopes. Preserve
+        # field provenance until the normalizer has resolved scope.
+        if method == "validated_regex" and any(kind == entity_type and value == normalized for kind, value, _ in found):
+            return
+        key = entity_type, normalized, field if entity_type == "IPAddress" else ""
         found.setdefault(key, ExtractionResult(
             entity_type=entity_type,
             normalized_value=normalized,
