@@ -7,6 +7,8 @@ pub fn trusted(base: &str, origins: &str) -> bool {
     if !matches!(url.scheme(), "http" | "https")
         || !url.username().is_empty()
         || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
     {
         return false;
     }
@@ -53,12 +55,54 @@ impl Gateway {
         provider_key: Option<&str>,
     ) -> anyhow::Result<serde_json::Value> {
         let allowed = std::env::var("UTOPIA_PRIVACY_PROVIDER_ORIGINS").unwrap_or_default();
+        self.exchange_with(
+            payload,
+            provider_url,
+            provider_key,
+            &allowed,
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .map_err(|error| {
+            if error.chain().any(|e| e.is::<reqwest::Error>()) {
+                anyhow::anyhow!("privacy_transport_or_json_failure")
+            } else {
+                error
+            }
+        })
+    }
+
+    async fn exchange_with(
+        &self,
+        payload: &serde_json::Value,
+        provider_url: &str,
+        provider_key: Option<&str>,
+        allowed: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<serde_json::Value> {
         anyhow::ensure!(
-            trusted(provider_url, &allowed),
+            uuid::Uuid::parse_str(&self.tenant_id).is_ok_and(|id| id.to_string() == self.tenant_id),
+            "privacy_canonical_tenant_required"
+        );
+        let gateway_url = reqwest::Url::parse(&self.base_url)?;
+        anyhow::ensure!(
+            matches!(gateway_url.scheme(), "http" | "https")
+                && gateway_url.username().is_empty()
+                && gateway_url.password().is_none()
+                && gateway_url.query().is_none()
+                && gateway_url.fragment().is_none(),
+            "privacy_gateway_url_invalid"
+        );
+        anyhow::ensure!(
+            !self.api_key.is_empty() && !self.profile.is_empty(),
+            "privacy_configuration_missing"
+        );
+        anyhow::ensure!(
+            trusted(provider_url, allowed),
             "privacy_provider_origin_not_approved"
         );
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let response = http.post(format!("{}/v1/contexts", self.base_url.trim_end_matches('/')))
@@ -68,32 +112,34 @@ impl Gateway {
             "privacy_context_rejected"
         );
         let context: serde_json::Value = response.json().await?;
-        anyhow::ensure!(
-            context["tenant_id"].as_str() == Some(self.tenant_id.as_str())
-                && context["profile"].as_str() == Some(self.profile.as_str()),
-            "privacy_context_binding_invalid"
-        );
         let id = context["context_id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("privacy_context_invalid"))?;
         anyhow::ensure!(
-            id.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')),
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')),
             "privacy_context_invalid"
         );
-        let _cleanup = Cleanup {
+        let mut cleanup = Cleanup {
             http: http.clone(),
             url: format!("{}/v1/contexts/{id}", self.base_url.trim_end_matches('/')),
             key: self.api_key.clone(),
         };
         let encoded = async {
+            anyhow::ensure!(context["tenant_id"].as_str()==Some(self.tenant_id.as_str()) && context["profile"].as_str()==Some(self.profile.as_str()),"privacy_context_binding_invalid");
+            let expires=expiry(&context)?;
+            let policy=context["policy_version"].as_str().filter(|s| !s.is_empty()).ok_or_else(||anyhow::anyhow!("privacy_policy_missing"))?;
             let response = http.post(format!("{}/v1/encode", self.base_url.trim_end_matches('/'))).bearer_auth(&self.api_key)
                 .json(&serde_json::json!({"tenant_id":self.tenant_id,"context_id":id,"profile":self.profile,"purpose":"llm-egress","format":"json","payload":payload,"registrations":[]})).send().await?;
             anyhow::ensure!(response.status().as_u16() == 200, "privacy_encode_rejected");
             let body: serde_json::Value = response.json().await?;
             anyhow::ensure!(body["context_id"].as_str() == Some(id) && body["format"] == "json", "privacy_encode_binding_invalid");
+            anyhow::ensure!(expiry(&body)?<=expires && body["policy_version"].as_str()==Some(policy),"privacy_encode_policy_or_expiry_invalid");
             let encoded=body.get("payload").cloned().ok_or_else(|| anyhow::anyhow!("privacy_payload_missing"))?;
-            anyhow::ensure!(encoded.is_object() && encoded["model"]==payload["model"],"privacy_provider_contract_changed");
+            anyhow::ensure!(encoded.is_object() && compatible(payload,&encoded,None),"privacy_provider_contract_changed");
             let mut provider=http.post(provider_url).json(&encoded);
             if let Some(key)=provider_key {provider=provider.bearer_auth(key);}
             let response=provider.send().await.map_err(|_|anyhow::anyhow!("protected_provider_unavailable"))?;
@@ -106,14 +152,18 @@ impl Gateway {
             anyhow::ensure!(decoded["context_id"].as_str()==Some(id) && decoded["format"]=="json" && decoded["stats"]["unknown_aliases"].as_u64()==Some(0),"privacy_decode_binding_or_alias_failure");
             decoded.get("payload").cloned().ok_or_else(||anyhow::anyhow!("privacy_decode_payload_missing"))
         }.await;
-        let _ = http
+        if http
             .delete(format!(
                 "{}/v1/contexts/{id}",
                 self.base_url.trim_end_matches('/')
             ))
             .bearer_auth(&self.api_key)
             .send()
-            .await;
+            .await
+            .is_ok_and(|response| response.status().as_u16() == 204)
+        {
+            cleanup.key.clear();
+        }
         encoded
     }
 }
@@ -125,12 +175,50 @@ struct Cleanup {
 }
 impl Drop for Cleanup {
     fn drop(&mut self) {
+        if self.key.is_empty() {
+            return;
+        }
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let (http, url, key) = (self.http.clone(), self.url.clone(), self.key.clone());
             runtime.spawn(async move {
                 let _ = http.delete(url).bearer_auth(key).send().await;
             });
         }
+    }
+}
+
+fn expiry(value: &serde_json::Value) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
+    let expiry = value["expires_at"]
+        .as_str()
+        .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+        .ok_or_else(|| anyhow::anyhow!("privacy_expiry_missing_or_invalid"))?
+        .to_utc();
+    anyhow::ensure!(expiry > chrono::Utc::now(), "privacy_context_expired");
+    Ok(expiry)
+}
+
+fn compatible(
+    original: &serde_json::Value,
+    encoded: &serde_json::Value,
+    key: Option<&str>,
+) -> bool {
+    use serde_json::Value;
+    match (original, encoded) {
+        (Value::Object(a), Value::Object(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(k, v)| b.get(k).is_some_and(|other| compatible(v, other, Some(k))))
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| compatible(a, b, key))
+        }
+        (Value::String(_), Value::String(_)) => {
+            !matches!(
+                key,
+                Some("model" | "role" | "name" | "tool_call_id" | "id" | "type")
+            ) || original == encoded
+        }
+        _ => original == encoded,
     }
 }
 
@@ -152,3 +240,7 @@ mod tests {
         assert!(!trusted("https://external.test", ""));
     }
 }
+
+#[cfg(test)]
+#[path = "egress_tests.rs"]
+mod gateway_tests;

@@ -23,6 +23,12 @@ use crate::state::AppState;
 
 pub mod ark_ocr;
 
+fn model_http() -> anyhow::Result<reqwest::Client> {
+    Ok(crate::query_engine::http_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?)
+}
+
 /// 多久问一次。一页扫描件在 GPU 上一两秒，十秒问一次，几十页的文件问几次就好
 const POLL: Duration = Duration::from_secs(10);
 
@@ -79,10 +85,11 @@ impl<'a> Ocr<'a> {
 
     /// 连通性测试：服务活着就回它报的版本
     pub async fn health(&self) -> anyhow::Result<Value> {
+        utopia_llm::egress::require(self.base)?;
         if let Some(ark) = &self.ark {
             return ark.health().await;
         }
-        let client = crate::query_engine::http()?;
+        let client = model_http()?;
         let resp = self
             .request(&client, reqwest::Method::GET, "health")
             .send()
@@ -103,6 +110,7 @@ impl<'a> Ocr<'a> {
         doc: &Document,
         bytes: Vec<u8>,
     ) -> anyhow::Result<Reading> {
+        utopia_llm::egress::require(self.base)?;
         if let Some(ark) = &self.ark {
             return ark.read(&bytes).await;
         }
@@ -131,7 +139,7 @@ impl<'a> Ocr<'a> {
         };
 
         let task_id = task["task_id"].as_str().unwrap_or_default();
-        let client = crate::query_engine::http()?;
+        let client = model_http()?;
         let resp = self
             .request(&client, reqwest::Method::GET, &format!("tasks/{task_id}"))
             .send()
@@ -153,10 +161,7 @@ impl<'a> Ocr<'a> {
             Some("failed") => {
                 // 清掉任务号，普通重试会重交一次：显存不够、服务过载这类失败，下一次未必还失败
                 utopia_store::documents::clear_reader_task(pool, doc.id).await?;
-                return Err(anyhow!(
-                    "The OCR service could not read this file: {}",
-                    status["error"].as_str().unwrap_or("no reason given")
-                ));
+                return Err(anyhow!("The OCR service could not read this file"));
             }
             _ => {
                 let submitted = task["submitted_at"]
@@ -209,7 +214,7 @@ impl<'a> Ocr<'a> {
     }
 
     async fn submit(&self, filename: &str, bytes: Vec<u8>) -> anyhow::Result<String> {
-        let client = crate::query_engine::http()?;
+        let client = model_http()?;
         let part = reqwest::multipart::Part::bytes(bytes)
             .file_name(filename.to_string())
             .mime_str("application/octet-stream")?;
@@ -229,11 +234,7 @@ impl<'a> Ocr<'a> {
             .context("the OCR service is unreachable")?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "The OCR service refused this file ({status}): {}",
-                body.chars().take(300).collect::<String>()
-            ));
+            return Err(anyhow!("The OCR service refused this file ({status})"));
         }
         let v: Value = resp.json().await?;
         v["task_id"]
@@ -269,7 +270,8 @@ impl<'a> Transcriber<'a> {
         bytes: Vec<u8>,
         timeout: Duration,
     ) -> anyhow::Result<Value> {
-        let client = crate::query_engine::http()?;
+        utopia_llm::egress::require(self.base)?;
+        let client = model_http()?;
         let part = reqwest::multipart::Part::bytes(bytes)
             .file_name(filename.to_string())
             .mime_str("application/octet-stream")?;
@@ -292,10 +294,8 @@ impl<'a> Transcriber<'a> {
             .context("the transcription model is unreachable")?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
             return Err(anyhow!(
-                "The transcription model refused this recording ({status}): {}",
-                body.chars().take(300).collect::<String>()
+                "The transcription model refused this recording ({status})"
             ));
         }
         resp.json()

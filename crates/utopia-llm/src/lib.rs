@@ -125,9 +125,15 @@ pub enum ToolStreamItem {
 ///
 /// 有类型而不是匹配错误文本：调用链上任何一层加一句 context 都会改文本，
 /// 而 `anyhow` 的 source 链让 `downcast_ref` 一路都认得出来。
-#[derive(Debug, thiserror::Error)]
-#[error("LLM endpoint gave no usable answer: {0}")]
-pub struct Unreachable(#[from] pub reqwest::Error);
+#[derive(thiserror::Error)]
+#[error("LLM endpoint gave no usable answer")]
+pub struct Unreachable(pub reqwest::Error);
+
+impl From<reqwest::Error> for Unreachable {
+    fn from(error: reqwest::Error) -> Self {
+        Self(error)
+    }
+}
 
 /// anyhow 错误链里有没有 [`Unreachable`]。
 pub fn is_unreachable(err: &anyhow::Error) -> bool {
@@ -139,8 +145,8 @@ pub fn is_unreachable(err: &anyhow::Error) -> bool {
 ///
 /// 限流与其他 4xx 的区别是**它会自己好**。密钥错了重试一万次还是错，配额满了
 /// 等一分钟就过去——两者混在一起，重试预算就会花在永远不会好的那一类上。
-#[derive(Debug, thiserror::Error)]
-#[error("LLM endpoint is rate limiting ({status}): {detail}")]
+#[derive(thiserror::Error)]
+#[error("LLM endpoint is rate limiting ({status})")]
 pub struct RateLimited {
     pub status: u16,
     /// **常常是 `None`。** 多数厂商的 429 不带 `Retry-After`（实测 SiliconFlow
@@ -196,8 +202,8 @@ pub struct Interrupted {
 /// 混在 [`Rejected`] 里的代价实测过：本地代理对上游的一次 `fetch failed` 回 502，
 /// 32 块的一篇文档里随机几块就此报废，整篇抽取失败重来——一次调用 5% 的失败率，
 /// 一篇长文档第一遍几乎必失败（1 − 0.95³² ≈ 81%），而任务只重试三次。
-#[derive(Debug, thiserror::Error)]
-#[error("LLM endpoint is unavailable ({status}): {detail}")]
+#[derive(thiserror::Error)]
+#[error("LLM endpoint is unavailable ({status})")]
 pub struct Unavailable {
     pub status: u16,
     /// 端点给的 `Retry-After`（有则更准，多数不给）
@@ -218,8 +224,8 @@ pub fn unavailable(err: &anyhow::Error) -> Option<&Unavailable> {
 ///
 /// 实测：一次跑测里 14 篇文档因为它整篇失败，而当时它跟普通失败走同一条路，
 /// 唯一能知道原因的办法是去数据库里翻 `graph_error`。
-#[derive(Debug, thiserror::Error)]
-#[error("LLM account cannot pay for this request ({status}): {detail}")]
+#[derive(thiserror::Error)]
+#[error("LLM account cannot pay for this request ({status})")]
 pub struct OutOfCredit {
     pub status: u16,
     pub detail: String,
@@ -237,8 +243,8 @@ pub fn out_of_credit(err: &anyhow::Error) -> Option<&OutOfCredit> {
 /// RAG 还能答，后者退了也答不了。从前这一类只剩一段文本，状态码埋在字符串里，
 /// 于是循环把**任何**首轮错误都当成不支持工具——一次网络抖动就退成了 RAG，
 /// 然后 RAG 也死在同一个抖动上。
-#[derive(Debug, thiserror::Error)]
-#[error("{kind} request failed ({reason}): {detail}")]
+#[derive(thiserror::Error)]
+#[error("{kind} request failed ({reason})")]
 pub struct Rejected {
     /// 哪一类请求（`LLM` / `Embedding`），只进错误文本
     pub kind: String,
@@ -257,8 +263,8 @@ pub fn rejected(err: &anyhow::Error) -> Option<&Rejected> {
 ///
 /// 文字保持中性并带着状态码：`failure` 是抽取、治理和对话共用的，一个超长的 chunk
 /// 不是「对话太长」；对话自己的那句话在界面文案里（错误码 `context_too_long`）
-#[derive(Debug, thiserror::Error)]
-#[error("LLM request failed ({reason}): the prompt exceeds the model's context window: {detail}")]
+#[derive(thiserror::Error)]
+#[error("LLM request failed ({reason}): the prompt exceeds the model's context window")]
 pub struct ContextTooLong {
     pub status: u16,
     /// 状态码带原因短语，同 `Rejected`
@@ -282,6 +288,20 @@ const MIN_CONTEXT_WINDOW_TOKENS: u32 = 1024;
 pub fn context_too_long(err: &anyhow::Error) -> Option<&ContextTooLong> {
     err.chain().find_map(|e| e.downcast_ref::<ContextTooLong>())
 }
+
+macro_rules! redacted_error_debug {
+    ($($name:ty),+) => { $(impl std::fmt::Debug for $name {
+        fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {std::fmt::Display::fmt(self,f)}
+    })+ };
+}
+redacted_error_debug!(
+    Unreachable,
+    RateLimited,
+    Unavailable,
+    OutOfCredit,
+    Rejected,
+    ContextTooLong
+);
 
 /// `Retry-After` 的整数秒形态。
 ///
@@ -1578,7 +1598,7 @@ mod tests {
             assert!(rejected(&err).is_none());
             assert!(transient(&err).is_none());
             assert!(
-                err.root_cause().to_string().starts_with("LLM request failed (400 Bad Request): the prompt exceeds the model's context window: "),
+                err.root_cause().to_string()=="LLM request failed (400 Bad Request): the prompt exceeds the model's context window",
                 "{err:#}"
             );
             let client = LlmClient::new("http://unused", None, "m");
@@ -2036,7 +2056,9 @@ mod tests {
             Err(error) => error,
         };
         assert!(!is_unreachable(&error));
-        assert!(error.to_string().contains(diagnosis), "{error:#}");
+        assert!(unavailable(&error).unwrap().detail.contains(diagnosis));
+        assert!(!format!("{error:#}").contains(diagnosis));
+        assert!(!format!("{:?}", unavailable(&error).unwrap()).contains(diagnosis));
     }
 
     #[tokio::test]
@@ -2446,7 +2468,8 @@ data: {\"choices\":[{\"delta\":{\"content\":\"tail\"},\"finish_reason\":\"stop\"
         request.await.unwrap();
 
         let err = failed.expect_err("an unrelated 400 must reach the caller");
-        assert!(err.to_string().contains("temperature"), "{err}");
+        assert!(rejected(&err).unwrap().detail.contains("temperature"));
+        assert!(!err.to_string().contains("temperature"));
     }
 
     /// 上限归我们，被截断这件事说得出来（#760）。
@@ -2542,10 +2565,8 @@ data: [DONE]
             let hit = crate::unavailable(&err)
                 .unwrap_or_else(|| panic!("{status} 该是会自己好的那一类：{err:#}"));
             assert_eq!(hit.status, status[..3].parse::<u16>().unwrap());
-            assert!(
-                format!("{err:#}").contains("upstream hiccup"),
-                "原话要带出来：{err:#}"
-            );
+            assert!(hit.detail.contains("upstream hiccup"));
+            assert!(!format!("{err:#}").contains("upstream hiccup"));
         }
 
         // 请求根本没送到（连不上）：也是会自己好的一类

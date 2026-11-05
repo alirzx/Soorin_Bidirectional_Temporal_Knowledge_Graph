@@ -24,11 +24,38 @@ const PROVIDER: &str = "utopia";
 pub struct RigModel {
     client: LlmClient,
     context: super::chat_context::Context,
+    // Protocol state lives only in this chat execution, outside persisted/UI
+    // messages, tool results, debug output and generated answer content.
+    reasoning: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
 }
 
 impl RigModel {
     pub(super) fn with_context(client: LlmClient, context: super::chat_context::Context) -> Self {
-        Self { client, context }
+        Self {
+            client,
+            context,
+            reasoning: Default::default(),
+        }
+    }
+
+    fn messages(&self, wire: &Wire) -> Vec<Value> {
+        let mut messages = self.context.apply(&wire.messages);
+        let memo = self.reasoning.lock().unwrap();
+        for message in &mut messages {
+            if message["role"] != "assistant" {
+                continue;
+            }
+            if let Some(reasoning) = message["tool_calls"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|call| call["id"].as_str())
+                .find_map(|id| memo.get(id))
+            {
+                message["reasoning_content"] = json!(reasoning);
+            }
+        }
+        messages
     }
 
     /// 开一条流。**端点不接受 `tool_choice` 时去掉它重发一次**：`required` 不在
@@ -41,7 +68,7 @@ impl RigModel {
     {
         let mut choice = w.tool_choice.as_ref();
         loop {
-            let messages = self.context.apply(&w.messages);
+            let messages = self.messages(w);
             match self
                 .client
                 .chat_tools_stream_with(&messages, w.tools.as_ref(), choice)
@@ -67,7 +94,7 @@ impl CompletionModel for RigModel {
         let w = wire(&request);
         let mut choice = w.tool_choice.as_ref();
         let turn = loop {
-            let messages = self.context.apply(&w.messages);
+            let messages = self.messages(&w);
             match self
                 .client
                 .chat_tools_with(&messages, w.tools.as_ref(), choice)
@@ -82,6 +109,7 @@ impl CompletionModel for RigModel {
                 Err(e) => return Err(completion_error(e)),
             }
         };
+        remember_reasoning(&self.reasoning, &turn);
         Ok(
             CompletionResponse::new(choice_of(&turn), Usage::new(), PROVIDER)
                 .with_optional_finish_reason(turn.finish_reason.as_deref().map(finish_reason)),
@@ -96,10 +124,12 @@ impl CompletionModel for RigModel {
         let source = self.open_stream(&w).await?;
         // `LlmClient` 的流已经把工具调用按 index 归并好、放在流末的 `Turn` 里；
         // rig 只要每个调用一条 `ToolCall`，再一条 `FinalResponse` 收尾
-        let inner = source.flat_map(|item| {
+        let memo = self.reasoning.clone();
+        let inner = source.flat_map(move |item| {
             let items: Vec<Result<RawStreamingChoice, CompletionError>> = match item {
                 Ok(ToolStreamItem::Delta(text)) => vec![Ok(RawStreamingChoice::Message(text))],
                 Ok(ToolStreamItem::Turn(turn)) => {
+                    remember_reasoning(&memo, &turn);
                     let mut v: Vec<_> = turn
                         .tool_calls
                         .iter()
@@ -129,6 +159,20 @@ impl CompletionModel for RigModel {
             PROVIDER,
             Box::pin(inner),
         ))
+    }
+}
+
+fn remember_reasoning(
+    memo: &std::sync::Mutex<std::collections::HashMap<String, String>>,
+    turn: &AssistantTurn,
+) {
+    if let Some(reasoning) = &turn.reasoning_content {
+        let mut memo = memo.lock().unwrap();
+        for call in &turn.tool_calls {
+            if !call.id.is_empty() {
+                memo.insert(call.id.clone(), reasoning.clone());
+            }
+        }
     }
 }
 
@@ -395,6 +439,44 @@ fn choice_of(turn: &AssistantTurn) -> Vec<AssistantContent> {
 mod tests {
     use super::*;
     use rig_core::completion::{Document, ToolDefinition};
+
+    #[test]
+    fn provider_reasoning_round_trips_privately_through_rig_tool_continuation() {
+        let model = RigModel::with_context(
+            LlmClient::new("http://127.0.0.1:1", None, "deepseek-synthetic"),
+            super::super::chat_context::Context::new(vec![], vec![], 32000),
+        );
+        let turn = AssistantTurn {
+            content: None,
+            finish_reason: Some("tool_calls".into()),
+            reasoning_content: Some("PRIVATE_PROTOCOL_STATE".into()),
+            tool_calls: vec![utopia_llm::ToolCall {
+                id: "call-1".into(),
+                name: "search_chunks".into(),
+                arguments: "{}".into(),
+                extra_content: None,
+            }],
+        };
+        remember_reasoning(&model.reasoning, &turn);
+        let choice = choice_of(&turn);
+        assert!(!serde_json::to_string(&choice)
+            .unwrap()
+            .contains("PRIVATE_PROTOCOL_STATE"));
+        let w = Wire {
+            messages: vec![
+                json!({"role":"user","content":"q"}),
+                json!({"role":"assistant","tool_calls":[{"id":"call-1"}]}),
+            ],
+            tools: None,
+            tool_choice: None,
+        };
+        assert_eq!(
+            model.messages(&w)[1]["reasoning_content"],
+            "PRIVATE_PROTOCOL_STATE"
+        );
+        assert!(w.messages[1].get("reasoning_content").is_none());
+        assert!(!format!("{turn:?}").contains("PRIVATE_PROTOCOL_STATE"));
+    }
 
     fn req(history: Vec<Message>) -> CompletionRequest {
         CompletionRequest {
