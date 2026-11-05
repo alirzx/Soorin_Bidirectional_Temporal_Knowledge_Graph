@@ -14,26 +14,19 @@ profiles do not affect basic application health or deterministic SOC alignment.
 Compose prefixes volumes with the project name. These are separate from the
 validation-only `soorin_master_*` caches. Never delete caches to repair startup.
 
-## Download once, then start offline
+## Prepare artifacts, then serve in a separate acceptance phase
 
-Run one profile at a time on a constrained host. Each profile has 2 CPUs, a
-4 GiB memory limit, one inference slot, batches <=16, and bounded request text.
-The runtime user is 65532. Initialization deliberately uses root to populate
-the initially root-owned named volume; cached runtime reads it without writes.
+Use [Artifact management](MODEL_ARTIFACT_MANAGEMENT.md) for bounded `download`
+and offline `verify-artifacts` commands. `init` is a compatibility alias for
+**download only**. It never loads a model. Production caches are read-only;
+artifact preparation must explicitly mount the selected cache read-write.
 
-```bash
-docker compose -p soorin-sprint1 -f docker-compose.soorin-dev.yml -f docker-compose.models.yml --profile ner build ner
-docker compose -p soorin-sprint1 -f docker-compose.soorin-dev.yml -f docker-compose.models.yml --profile ner run --rm --no-deps --user 0 -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 ner init --role ner
-docker compose -p soorin-sprint1 -f docker-compose.soorin-dev.yml -f docker-compose.models.yml --profile ner up -d ner
-python3 -m soorin.ops.models smoke --role ner --base-url http://127.0.0.1:2813
-```
-
-Replace `ner` with `embedding` (port 2811) or `reranker` (2812) for the other
-roles, including the profile, service and `--role` arguments. Model startup
-sets HF_HUB_OFFLINE=1 and TRANSFORMERS_OFFLINE=1. A missing pinned snapshot
-fails readiness; startup never downloads weights implicitly. Repeating the
-explicit init command resumes an interrupted download from the same cache.
-No runtime needs GPU, CUDA, or a model-provider API key.
+Each model profile has 2 CPUs, 4 GiB memory, UID/GID 65532, one inference slot,
+batches <=16, and bounded request text. `serve` loads pinned local files only;
+missing artifacts fail startup. `soorin.ops.models smoke` performs real inference
+and must only run in a separately authorized model acceptance phase. Development
+ports are loopback 2811/2812/2813. Production overlay publishes no model ports.
+No GPU or provider key is needed for local CPU execution.
 
 Embedding and reranking inspect the first 512 tokens, with input bounded by
 16,000 characters. Native reranking additionally bounds query/text to 4,000 /

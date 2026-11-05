@@ -71,3 +71,15 @@ model smoke commands and native API tests. Record model revisions, hardware,
 latency, fallback rate, recall/MRR/nDCG and citations when running a larger held-out
 SOC evaluation. External DeepSeek/gateway tests must never be counted as PASS
 without actual successful protected calls.
+
+## Final hardening additions
+
+KnowledgeContext returns `bounds` with conservative truncation/has-more metadata,
+returned count, candidate lower-bound indicator and explicit limits. Truncation
+forces partial status; extractive answers preserve partial status. Each fact's
+evidence fetch is SQL-bounded to 65 rows (64 examined plus sentinel), with at most
+8 eligible references returned. This can omit later eligible citations when the
+first candidates are ineligible; the result remains explicitly partial, not exhaustive.
+`model_versions` reports `usage=none` / `deterministic_graph_lookup` because this
+endpoint does not invoke embeddings, reranking or an LLM. Search model lineage
+remains a separate native retrieval concern.
