@@ -34,6 +34,10 @@ DEFAULT_FIXTURE = ROOT / "tests" / "fixtures" / "soc_e2e_scenarios_v1.json"
 DEFAULT_BASE_URL = "http://127.0.0.1:2516"
 STATUSES = {"PASS", "FAIL", "SKIPPED", "BLOCKED", "NOT RUN"}
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
 
 def progress(stage: str, **values: Any) -> None:
     """Content-free progress on stderr; stdout remains one JSON report."""
@@ -234,7 +238,7 @@ def _request_json(
         headers["Authorization"] = "Bearer " + token
     request = urllib.request.Request(base_url + path, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout) as response:
             value = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raise ValidationError(f"HTTP {exc.code} for {method} {path.split('?')[0]}") from exc
@@ -418,10 +422,13 @@ def _live_checks(
             )
             rows = result.get("results")
             ok = isinstance(rows, list) and bool(rows)
+            diagnostics = result.get("retrieval", {})
+            executed = diagnostics.get("dense_executed") is True
             checks.append(_check(
-                "semantic_search", "BLOCKED" if ok else "FAIL",
-                "hybrid hits alone cannot prove the semantic channel executed; channel diagnostics are required",
+                "semantic_search", "PASS" if ok and executed else "BLOCKED" if ok else "FAIL",
+                "native retrieval channel diagnostics checked",
                 result_count=len(rows) if isinstance(rows, list) else None,
+                dense_executed=executed, reranker_status=diagnostics.get("reranker_status", "unknown"),
             ))
         except ValidationError as exc:
             checks.append(_check("semantic_search", "BLOCKED", str(exc)))
@@ -429,7 +436,7 @@ def _live_checks(
         checks.append(_check("semantic_search", "SKIPPED", "embedding availability was not declared with --semantic-enabled"))
     checks.append(_check(
         "live_identity_conflict", "BLOCKED",
-        "registry materialization is not active in the Foundation ingestion path; use the migration-backed Rust tests",
+        "this legacy Statements harness does not submit native knowledge-events receipts; native DB/API tests exercise registry activation and conflicts",
     ))
     return checks
 

@@ -750,7 +750,8 @@ async fn a_failed_read_is_retried_from_a_fresh_submission() -> anyhow::Result<()
     assert!(row
         .error
         .as_deref()
-        .is_some_and(|e| e.contains("CUDA out of memory")));
+        .is_some_and(|e| e.contains("OCR service could not read this file")));
+    assert!(!row.error.as_deref().unwrap().contains("CUDA out of memory"));
     assert_eq!(reader_task(&f, doc).await?, None);
     let err = super::process_document(&f.state, doc)
         .await
