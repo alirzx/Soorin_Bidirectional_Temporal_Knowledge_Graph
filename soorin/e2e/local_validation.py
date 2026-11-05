@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
+import sys
 import time
 from typing import Any, Mapping
 import urllib.error
@@ -32,6 +33,11 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIXTURE = ROOT / "tests" / "fixtures" / "soc_e2e_scenarios_v1.json"
 DEFAULT_BASE_URL = "http://127.0.0.1:2516"
 STATUSES = {"PASS", "FAIL", "SKIPPED", "BLOCKED", "NOT RUN"}
+
+
+def progress(stage: str, **values: Any) -> None:
+    """Content-free progress on stderr; stdout remains one JSON report."""
+    print(json.dumps({"stage": stage, **values}, sort_keys=True), file=sys.stderr, flush=True)
 REQUIRED_ENTITY_TYPES = {
     "SecurityAlert", "SplunkNotable", "SecurityEvent", "DetectionRule", "Host",
     "IPAddress", "UserAccount", "MITRETechnique", "EvidenceReference", "SOCCase", "Ticket",
@@ -250,18 +256,19 @@ def _graph_assertions(graph: Mapping[str, Any]) -> Check:
         str(node.get("type_key", "")).casefold()
         for node in nodes if isinstance(node, Mapping) and node.get("type_key")
     }
+    # Open graph labels/said_as do not establish a typed ontology binding.
     relation_text = {
         str(value).casefold()
         for edge in edges if isinstance(edge, Mapping)
-        for value in (edge.get("predicate"), edge.get("label"), edge.get("said_as"))
-        if value
+        for value in (edge.get("predicate"),)
+        if value and edge.get("inferred") is False and not edge.get("derived", False)
     }
     expected_type_keys = {
         "security_alert", "splunk_notable", "security_event", "detection_rule", "host",
         "ip_address", "user_account", "mitre_technique", "evidence_reference", "soc_case", "ticket",
     }
     missing_types = sorted(expected_type_keys - type_keys)
-    missing_relations = sorted(EXPECTED_LIVE_RELATIONS - relation_text)
+    missing_relations = sorted({word.replace(" ", "_") for word in EXPECTED_LIVE_RELATIONS} - relation_text)
     status = "PASS" if not missing_types and not missing_relations else "FAIL"
     return _check(
         "graph_assertions", status,
@@ -284,13 +291,23 @@ def _live_checks(
     timeout: float,
     poll_seconds: float,
     semantic_enabled: bool,
+    journal: list[Check] | None = None,
 ) -> list[Check]:
-    checks: list[Check] = []
+    checks: list[Check] = journal if journal is not None else []
     try:
         health = _request_json(base_url, "/api/v1/health", timeout=timeout)
         checks.append(_check("api_health", "PASS", "isolated API returned JSON health", keys=sorted(health)))
         before_graph = _request_json(base_url, f"/api/v1/kbs/{kb_id}/graph/overview?limit=1000", token=session_token, timeout=timeout)
         before_failed = _request_json(base_url, f"/api/v1/kbs/{kb_id}/jobs/failed", token=session_token, timeout=timeout)
+        inventory = _request_json(base_url, f"/api/v1/kbs/{kb_id}/sources", token=session_token, timeout=timeout)
+        sources = inventory.get("sources", [])
+        selected = next((row for row in sources if row.get("id") == source_id), None)
+        if selected is None or selected.get("kind") != "statements":
+            checks.append(_check("source_preflight", "BLOCKED", "selected source must belong to this KB and have kind=statements"))
+            return checks
+        documents = _request_json(base_url, f"/api/v1/kbs/{kb_id}/documents?source={source_id}&limit=200", token=session_token, timeout=timeout)
+        checks.append(_check("source_preflight", "PASS", "Statements source inventoried before mutation", source_name=selected.get("name"), documents=documents.get("total")))
+        progress("source_preflight", documents=documents.get("total"), source_kind=selected.get("kind"))
         checks.append(_check("session_credentials", "PASS", "session credential can read the selected knowledge base"))
     except ValidationError as exc:
         checks.append(_check("session_credentials", "FAIL", str(exc)))
@@ -302,9 +319,11 @@ def _live_checks(
         "late_arriving_event", "same_host_second_alert", "same_ip_scope_a", "same_ip_scope_b",
     ]
     actions: list[tuple[str, str]] = []
+    knowledge_before = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     try:
         for scenario in push_order:
             actions.append((scenario, client.push(rendered[scenario])))
+            progress("statements_push", scenario=scenario, action=actions[-1][1])
     except StatementsError as exc:
         checks.append(_check("statements_push", "FAIL", f"{exc.code}: Statements push failed"))
         return checks
@@ -319,11 +338,15 @@ def _live_checks(
     graph = before_graph
     poll_error: str | None = None
     fetched_after_push = False
+    attempts = 0
     while True:
+        attempts += 1
         try:
             graph = _request_json(base_url, f"/api/v1/kbs/{kb_id}/graph/overview?limit=1000", token=session_token, timeout=timeout)
             fetched_after_push = True
-            if _graph_assertions(graph).status == "PASS":
+            assertion = _graph_assertions(graph)
+            progress("materialization", attempt=attempts, remaining_seconds=round(max(0, deadline-time.monotonic()), 1), **dict(assertion.evidence or {}))
+            if assertion.status == "PASS":
                 break
         except (ValidationError, TypeError, ValueError) as exc:
             poll_error = str(exc)
@@ -334,10 +357,11 @@ def _live_checks(
         after_failed = _request_json(base_url, f"/api/v1/kbs/{kb_id}/jobs/failed", token=session_token, timeout=timeout)
         before_count = int(before_failed.get("failed", 0))
         after_count = int(after_failed.get("failed", 0))
-        status = "PASS" if after_count <= before_count else "FAIL"
+        # A stable failed count is not completion and existing failures matter.
+        status = "PASS" if after_count == 0 else "BLOCKED"
         checks.append(_check(
             "background_jobs", status,
-            "no increase in KB-wide failed jobs; Statements API does not return per-push job IDs",
+            "KB-wide failed-job inventory; per-document completion is checked separately",
             failed_before=before_count, failed_after=after_count,
         ))
     except (ValidationError, TypeError, ValueError) as exc:
@@ -350,18 +374,22 @@ def _live_checks(
             total_nodes=graph.get("total_nodes"), total_edges=graph.get("total_edges"),
         ))
         checks.append(_graph_assertions(graph))
+        docs = _request_json(base_url, f"/api/v1/kbs/{kb_id}/documents?source={source_id}&limit=200", token=session_token, timeout=timeout)
+        rows = docs.get("docs", [])
+        states = Counter(str(row.get("graph_status")) for row in rows)
+        checks.append(_check("document_completion", "PASS" if rows and all(row.get("graph_status") == "done" for row in rows) else "BLOCKED", "source document graph completion", states=dict(states), total=docs.get("total")))
 
     try:
         at = urllib.parse.quote("2026-10-20T10:00:00Z")
-        as_of = urllib.parse.quote("2026-11-02T00:00:00Z")
+        # Use actual run knowledge time; fixture event dates are world time.
+        as_of = urllib.parse.quote(knowledge_before)
         historical = _request_json(
             base_url, f"/api/v1/kbs/{kb_id}/graph/overview?limit=1000&at={at}&as_of={as_of}",
             token=session_token, timeout=timeout,
         )
-        valid_shape = isinstance(historical.get("nodes"), list) and isinstance(historical.get("edges"), list)
         checks.append(_check(
-            "temporal_historical_query", "PASS" if valid_shape else "FAIL",
-            "graph endpoint evaluated both world-time at and record-time as_of",
+            "temporal_historical_query", "BLOCKED",
+            "historical response captured at actual pre-ingest knowledge time; lifecycle fact/value assertions require an isolated clean source",
             total_nodes=historical.get("total_nodes"), total_edges=historical.get("total_edges"),
         ))
     except ValidationError as exc:
@@ -391,8 +419,8 @@ def _live_checks(
             rows = result.get("results")
             ok = isinstance(rows, list) and bool(rows)
             checks.append(_check(
-                "semantic_search", "PASS" if ok else "FAIL",
-                "operator-declared embedding configuration returned hybrid results; the API does not expose channel attribution",
+                "semantic_search", "BLOCKED" if ok else "FAIL",
+                "hybrid hits alone cannot prove the semantic channel executed; channel diagnostics are required",
                 result_count=len(rows) if isinstance(rows, list) else None,
             ))
         except ValidationError as exc:
@@ -438,10 +466,19 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             ))
         else:
             checks.append(_check("credential_presence", "PASS", "required credential variables are present and identifiers are UUIDs"))
-            checks.extend(_live_checks(
-                base_url, kb_id, source_id, ingest_token, session_token, events, rendered,
-                timeout=args.timeout, poll_seconds=args.poll_seconds, semantic_enabled=args.semantic_enabled,
-            ))
+            live_journal: list[Check] = []
+            try:
+                _live_checks(
+                    base_url, kb_id, source_id, ingest_token, session_token, events, rendered,
+                    timeout=args.timeout, poll_seconds=args.poll_seconds, semantic_enabled=args.semantic_enabled,
+                    journal=live_journal,
+                )
+            except KeyboardInterrupt:
+                checks.append(_check("interrupted", "BLOCKED", "operator interrupted live execution; partial ingestion may have succeeded; inventory before retry"))
+            except (ValidationError, TimeoutError) as exc:
+                checks.append(_check("live_transport", "BLOCKED", str(exc)))
+            finally:
+                checks.extend(live_journal)
     elif not args.execute:
         for name in (
             "credential_presence", "api_health", "session_credentials", "statements_push", "background_jobs",

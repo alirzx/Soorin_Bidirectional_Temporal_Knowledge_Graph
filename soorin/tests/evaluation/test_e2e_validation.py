@@ -3,10 +3,17 @@ from __future__ import annotations
 import argparse
 import unittest
 
-from soorin.e2e.local_validation import DEFAULT_FIXTURE, build_report, select_isolated_api
+from soorin.e2e.local_validation import DEFAULT_FIXTURE, _graph_assertions, build_report, select_isolated_api
 
 
 class E2EValidationTests(unittest.TestCase):
+    def test_open_edge_wording_is_not_typed_materialization(self):
+        check = _graph_assertions({"nodes": [], "edges": [
+            {"predicate": "observed_on", "inferred": True, "label": "observed on"},
+        ]})
+        self.assertEqual(check.status, "FAIL")
+        self.assertIn("observed_on", check.evidence["missing_relations"])
+
     def test_only_isolated_loopback_api_is_allowed(self):
         self.assertEqual(select_isolated_api("http://127.0.0.1:2516"), "http://127.0.0.1:2516")
         for url in (
