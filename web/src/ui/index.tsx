@@ -12,6 +12,7 @@ import type {
   TextareaHTMLAttributes,
 } from "react";
 import {
+  ArrowUpRight,
   Check,
   ChevronDown,
   ChevronLeft,

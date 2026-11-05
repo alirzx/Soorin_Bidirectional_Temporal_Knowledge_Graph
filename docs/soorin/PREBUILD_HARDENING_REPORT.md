@@ -17,7 +17,8 @@ asset and an identical bundled frontend asset. Main is unchanged at
 
 Existing containers were not stopped/restarted/recreated. No model was downloaded,
 initialized or executed. No application image/full application build, new stack,
-live backfill, database migration or production deployment was run. Tool-only
+live backfill, local database migration or production deployment was run. Standard remote CI
+subsequently exercised its disposable migration/test database. Tool-only
 ephemeral containers used cached Rust tooling; the stopped older formatter
 container was read only to copy executables. Agentic_SOC and other projects were
 not modified. No new SQL migration, ontology change or canonical key change was made.
@@ -102,6 +103,11 @@ No independent redistribution right for the footage is asserted.
 
 A first tool mount invoked the formatter incorrectly; corrected executable paths
 passed formatting. No assertions were weakened. Rust test timeout is not a pass.
+The first remote CI run (`42094002467`, head `1df866a`) passed Rust build,
+formatting, Clippy, workspace tests, Python and migrations, but caught a missing shared
+`ArrowUpRight` icon import after branding. The import was restored; direct local
+TypeScript execution passed after the correction. The corrected head must pass
+CI before feature integration; the earlier frontend failure is not treated as green.
 Logs/reports are local temporary artifacts, excluded from Git.
 
 Graphify's bounded AST-only refresh completed with 12,042 nodes, 31,908 edges
