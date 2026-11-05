@@ -32,6 +32,7 @@ services:
       # registration closed. The port remains loopback-only as a second guard.
       UTOPIA_OPEN_REGISTRATION: "false"
       UTOPIA_DB_MAX_CONNECTIONS: ${SOORIN_DEV_DB_MAX_CONNECTIONS:-8}
+      UTOPIA_MODEL_TRUSTED_ORIGINS: ${UTOPIA_MODEL_TRUSTED_ORIGINS:-http://embedding:8080,http://reranker:8080,http://ner:8080}
     ports:
       - "${SOORIN_DEV_APP_BIND:-127.0.0.1:2516}:1516"
     volumes:

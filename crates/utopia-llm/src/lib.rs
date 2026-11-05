@@ -5,6 +5,7 @@ use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
+pub mod egress;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -27,8 +28,9 @@ pub struct ToolCall {
 }
 
 /// 工具对话的一个 assistant 回合：文本与工具调用至少其一。
-#[derive(Debug)]
 pub struct AssistantTurn {
+    /// Protocol-only state for thinking tool rounds; never emit to the UI/logs.
+    pub reasoning_content: Option<String>,
     /// Preserve the provider value; absent is not an implicit `stop`.
     pub finish_reason: Option<String>,
     pub content: Option<String>,
@@ -39,6 +41,9 @@ impl AssistantTurn {
     /// 还原为 OpenAI 协议的 assistant 消息（回灌对话历史用）。
     pub fn to_message(&self) -> serde_json::Value {
         let mut msg = json!({ "role": "assistant", "content": self.content });
+        if let Some(reasoning) = &self.reasoning_content {
+            msg["reasoning_content"] = json!(reasoning);
+        }
         if !self.tool_calls.is_empty() {
             msg["tool_calls"] = json!(self
                 .tool_calls
@@ -57,6 +62,15 @@ impl AssistantTurn {
                 .collect::<Vec<_>>());
         }
         msg
+    }
+}
+
+impl std::fmt::Debug for AssistantTurn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AssistantTurn")
+            .field("finish_reason", &self.finish_reason)
+            .field("tool_call_count", &self.tool_calls.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -520,7 +534,11 @@ impl LlmClient {
 
     fn with_effort(&self, mut body: serde_json::Value) -> serde_json::Value {
         if let Some(e) = &self.reasoning_effort {
-            body["reasoning_effort"] = json!(e);
+            if self.model.starts_with("deepseek") && e == "none" {
+                body["thinking"] = json!({"type":"disabled"});
+            } else {
+                body["reasoning_effort"] = json!(e);
+            }
         }
         body
     }
@@ -536,6 +554,7 @@ impl LlmClient {
     ) -> Self {
         Self {
             http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(connect)
                 .read_timeout(read)
                 .build()
@@ -575,12 +594,13 @@ impl LlmClient {
         }
     }
 
-    fn request(&self, path: &str) -> reqwest::RequestBuilder {
+    fn request(&self, path: &str) -> anyhow::Result<reqwest::RequestBuilder> {
+        egress::require(&self.base_url)?;
         let mut req = self.http.post(format!("{}{path}", self.base_url));
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        req
+        Ok(req)
     }
 
     /// 非流式对话（连通性测试等轻量场景）。不传温度：请求体与从前一字不变，端点用它的缺省
@@ -601,7 +621,7 @@ impl LlmClient {
             body["temperature"] = json!(t);
         }
         let resp = self
-            .request("/chat/completions")
+            .request("/chat/completions")?
             .json(&body)
             .send()
             .await
@@ -661,7 +681,7 @@ impl LlmClient {
         let resp = loop {
             body["max_tokens"] = json!(ceiling);
             let resp = self
-                .request("/chat/completions")
+                .request("/chat/completions")?
                 .json(&body)
                 .send()
                 .await
@@ -845,7 +865,7 @@ impl LlmClient {
         tool_choice: Option<&serde_json::Value>,
     ) -> anyhow::Result<AssistantTurn> {
         let resp = self
-            .request("/chat/completions")
+            .request("/chat/completions")?
             .json(&self.tools_body(messages, tools, tool_choice, false))
             .send()
             .await
@@ -884,6 +904,7 @@ impl LlmClient {
             })
             .unwrap_or_default();
         Ok(AssistantTurn {
+            reasoning_content: msg["reasoning_content"].as_str().map(String::from),
             content,
             tool_calls,
             finish_reason: body["choices"][0]["finish_reason"]
@@ -911,7 +932,7 @@ impl LlmClient {
         tool_choice: Option<&serde_json::Value>,
     ) -> anyhow::Result<impl Stream<Item = anyhow::Result<ToolStreamItem>> + Send + use<>> {
         let resp = self
-            .request("/chat/completions")
+            .request("/chat/completions")?
             .json(&self.tools_body(messages, tools, tool_choice, true))
             .send()
             .await
@@ -927,6 +948,7 @@ impl LlmClient {
             let mut buf = SseBuffer::default();
             let mut content = String::new();
             let mut calls: Vec<ToolCall> = Vec::new();
+            let mut reasoning = String::new();
             let mut finish_reason = None;
             let mut done = false;
             'outer: while let Some(part) = bytes.next().await {
@@ -950,6 +972,9 @@ impl LlmClient {
                             done = true;
                         }
                         let delta = &v["choices"][0]["delta"];
+                        if let Some(text) = delta["reasoning_content"].as_str() {
+                            reasoning.push_str(text);
+                        }
                         if let Some(text) = delta["content"].as_str() {
                             if !text.is_empty() {
                                 content.push_str(text);
@@ -992,7 +1017,7 @@ impl LlmClient {
             }
             calls.retain(|c| !c.name.is_empty());
             let content = if content.is_empty() { None } else { Some(content) };
-            yield ToolStreamItem::Turn(AssistantTurn { content, tool_calls: calls, finish_reason });
+            yield ToolStreamItem::Turn(AssistantTurn { content, tool_calls: calls, finish_reason, reasoning_content: if reasoning.is_empty() { None } else { Some(reasoning) } });
         };
         Ok(stream)
     }
@@ -1015,7 +1040,7 @@ impl LlmClient {
         messages: &[serde_json::Value],
     ) -> anyhow::Result<impl Stream<Item = anyhow::Result<String>> + Send + use<>> {
         let resp =
-            self.request("/chat/completions")
+            self.request("/chat/completions")?
                 .json(&self.with_effort(
                     json!({ "model": self.model, "messages": messages, "stream": true }),
                 ))
@@ -1070,7 +1095,7 @@ impl LlmClient {
     /// 批量 embedding。
     pub async fn embed(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
         let resp = self
-            .request("/embeddings")
+            .request("/embeddings")?
             .json(&json!({ "model": self.model, "input": texts }))
             .send()
             .await

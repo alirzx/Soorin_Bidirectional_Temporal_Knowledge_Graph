@@ -516,6 +516,7 @@ mod tests {
     #[test]
     fn a_turn_becomes_text_then_tool_calls() {
         let turn = AssistantTurn {
+            reasoning_content: None,
             finish_reason: None,
             content: Some("hm".into()),
             tool_calls: vec![utopia_llm::ToolCall {
@@ -544,6 +545,7 @@ mod tests {
     fn a_tool_call_carries_its_extra_content_from_turn_to_wire() {
         let extra = json!({"google": {"thought_signature": "Eq0CCqoC"}});
         let turn = AssistantTurn {
+            reasoning_content: None,
             finish_reason: Some("stop".into()),
             content: None,
             tool_calls: vec![utopia_llm::ToolCall {
