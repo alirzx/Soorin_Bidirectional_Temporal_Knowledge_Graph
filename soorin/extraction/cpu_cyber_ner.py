@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
+from numbers import Real
 from typing import Any, Callable
 
 from .ner import DisabledNer, NerProposal
@@ -77,7 +78,9 @@ class CpuCyberNer:
         if UNSUPPORTED_SCRIPT_RE.search(text):
             return []
         classifier = self._load()
-        rows = classifier(text[:self.max_chars], truncation=True)
+        # TokenClassificationPipeline handles model-length truncation internally;
+        # transformers 4.51 does not accept a public `truncation` call argument.
+        rows = classifier(text[:self.max_chars])
         if not isinstance(rows, list):
             raise ValueError("NER provider returned invalid result")
         proposals: dict[tuple[str, str, str], NerProposal] = {}
@@ -92,7 +95,7 @@ class CpuCyberNer:
             score = row.get("score", 0.0)
             if kind is None or not isinstance(value, str) or not value.strip():
                 continue
-            if isinstance(score, bool) or not isinstance(score, (float, int)):
+            if isinstance(score, bool) or not isinstance(score, Real):
                 raise ValueError(f"NER provider row {index} has an invalid score")
             score = float(score)
             if not 0.0 <= score <= 1.0:

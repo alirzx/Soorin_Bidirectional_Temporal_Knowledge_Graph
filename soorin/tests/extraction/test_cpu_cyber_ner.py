@@ -30,7 +30,13 @@ class CpuCyberNerTests(unittest.TestCase):
                          [("Indicator", "ExampleThreat")])
         self.assertEqual(result[0].source_label, "MALWARE")
         self.assertTrue(result[0].review_required)
-        self.assertEqual(captured[0][1]["truncation"], True)
+        self.assertEqual(captured[0][1], {})
+
+    def test_real_scalar_scores_are_supported_without_pipeline_keyword_arguments(self):
+        from fractions import Fraction
+        def classifier(text):
+            return [{"entity_group":"MALWARE","word":"SyntheticThreat","score":Fraction(9,10)}]
+        self.assertEqual(CpuCyberNer(classifier=classifier).extract("synthetic")[0].score, 0.9)
 
     def test_input_limit_and_bad_configuration(self):
         with self.assertRaises(ValueError):
