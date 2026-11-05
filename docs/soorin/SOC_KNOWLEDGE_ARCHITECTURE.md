@@ -40,3 +40,8 @@ clock. See [Temporal model](TEMPORAL_MODEL.md).
 
 Agentic_SOC is an optional producer/consumer. There is no write-back action or
 automatic containment in this integration. See [Integration v1](AGENTIC_SOC_INTEGRATION_V1.md).
+
+Native relation validation now rejects unknown keys, invalid domains/ranges and
+missing required evidence before persistence; older incompatible queued receipts
+are retained in quarantine. No ontology or receipt-state expansion was introduced.
+See [current hardening evidence](PREBUILD_HARDENING_REPORT.md).

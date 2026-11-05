@@ -93,3 +93,15 @@ checksum versions. Additive response metadata is compatible. Normalizer minimiza
 changes newly produced content/checksums; rehearse upgrades on a dedicated source
 before resuming an older producer. Never mix legacy Statements and native ingestion
 on one source or silently rewrite existing IDs/history.
+
+### Small hardening profile corrections
+
+Native relations must match reviewed vocabulary/domain/range and carry declared
+source evidence; unknown relations are rejected before persistence. Earlier queued
+incompatible events are quarantined as `stored_event_requires_review`, not silently
+marked bound. A notable ticket association uses an explicit case/alert; otherwise
+it is retained with a review warning without broadening the ontology.
+Source update timestamps can advance `observed_at` while original `event_time`
+stays stable. The event/checksum version and identity keys are unchanged. Producer
+projection corrections can change newly generated content checksums; replay the
+same serialized canonical event when retrying an already accepted delivery.

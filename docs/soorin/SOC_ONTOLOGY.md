@@ -58,3 +58,18 @@ The importer compares every Utopia field it actually projects. A policy-only fie
 3. Preview and apply to a disposable KB using a protected token.
 4. Verify persisted entity and relation types via authenticated Utopia API.
 5. Ingest a synthetic event, run alignment jobs and verify **typed graph materialization**, not merely an import acknowledgment.
+
+## Native pre-build relation enforcement
+
+Native admission now requires a reviewed relation key/spelling, matching entity
+endpoint kinds, the declared domain/range and nonempty resolvable evidence IDs.
+The general canonical v1 contract remains usable for historical/proposal tools;
+`validate_native_event` is its stricter native admission profile. No ontology or
+checksum algorithm was changed. Older queued events that fail the current profile
+are retained as `quarantined` with `stored_event_requires_review`.
+
+The normalizer links a ticket through an explicit SOCCase or SecurityAlert.
+SplunkNotable is not a valid `tracked_by_ticket` subject. If no allowed subject
+exists, the ticket remains an entity and an explicit normalization warning retains
+the unmappable association for review. Correlation, MITRE mapping and case links
+are attributed assertions; they do not become independently observed facts.

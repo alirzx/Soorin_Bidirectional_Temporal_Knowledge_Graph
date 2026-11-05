@@ -41,3 +41,15 @@ PostgreSQL `simple` tokenization with OR terms. Phrase, stemming and Persian
 segmentation behavior differ. Neither identical numeric scores nor full historic
 vector coverage is promised. Repeated database correction/deletion/restoration
 and historical citation experiments remain required release gates.
+
+### Explicit source update clocks
+
+The Splunk normalizer now prefers source `source_updated_at`, `updated_at` or
+`last_modified` (raw envelope first, then curated payload) for `observed_at`.
+Occurrence `event_time` remains unchanged. It does not use the adapter's delivery
+`observed_at` argument or server processing time as a replacement source clock.
+Without an explicit update clock, equal-clock changed revisions remain quarantined;
+opaque revision IDs do not establish order. No new event field, key algorithm,
+checksum version or migration was introduced. Newly normalized content may differ
+because a real source revision clock is now represented correctly; rehearse producer
+upgrades on a dedicated source before resuming an older producer.

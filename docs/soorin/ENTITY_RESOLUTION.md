@@ -33,3 +33,21 @@ or quarantine override is implemented.
 Concurrent registration and cross-KB constraints have database tests. Runtime
 crash/recovery, alias history across revisions, and source-to-typed-graph behavior
 must be repeated for the final built artifact in the controlled acceptance phase.
+
+### Provisional v1 compatibility characterization
+
+Established v1 provisional keys omit source system/instance when authority is
+absent. Thus Tenant A / Splunk / host-01 and Tenant A / EDR / host-01 can share a
+provisional key; Tenant B differs. This is a known compatibility limit, not a
+registry authority merge: provisional rows have no authority registration and the
+resolver's `automatic` flag is false. Trusted aliases can propose candidates but
+cannot supply missing authority.
+
+Native ingestion uses an immutable KB tenant/source-system/source-instance binding,
+so different source namespaces cannot enter the same native KB. The prepared API
+regression rejects attempted rebinding with 409. Existing authority tuples and
+network scopes remain distinct. Legacy direct Statements ingestion does not enforce
+this native admission boundary; mixed-source provisional data requires separate
+KBs or explicit review. Do not claim global collision-free provisional identities
+or silently change keys to fix this limitation. Any future versioned key migration
+must reconcile existing documents, aliases, registry links and historical evidence.
