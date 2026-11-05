@@ -43,9 +43,23 @@ pub async fn context(
     }
     let at = super::graph_routes::parse_instant("at", query.at.as_deref())?;
     let as_of = super::graph_routes::parse_instant("as_of", query.as_of.as_deref())?;
+    if as_of.is_some() && (query.entity.parse::<Uuid>().is_err() || query.entity_type.is_some()) {
+        return Err(utopia_core::AppError::Validation(
+            "historical context requires an entity UUID and no current-type filter".into(),
+        )
+        .into());
+    }
     let limit = query.limit.unwrap_or(40).clamp(1, 100);
-    let (nodes, _) =
-        utopia_store::graph::search_entities(&state.pool, kb, &query.entity, 20, 0, as_of).await?;
+    let nodes = if let Ok(id) = query.entity.parse::<Uuid>() {
+        utopia_store::graph::entity_node_visible(&state.pool, kb, id, as_of)
+            .await?
+            .into_iter()
+            .collect()
+    } else {
+        utopia_store::graph::search_entities(&state.pool, kb, &query.entity, 20, 0, as_of)
+            .await?
+            .0
+    };
     let nodes: Vec<_> = nodes
         .into_iter()
         .filter(|n| {
@@ -59,11 +73,25 @@ pub async fn context(
     let mut evidence = Vec::new();
     let mut resolved = Vec::new();
     for node in nodes.into_iter().take(5) {
-        let (node, rows) =
-            utopia_store::graph::entity_detail(&state.pool, kb, node.id, at, as_of).await?;
+        let (mut node, rows) = utopia_store::graph::entity_detail_bounded(
+            &state.pool,
+            kb,
+            node.id,
+            at,
+            as_of,
+            Some((limit + 1) as i64),
+        )
+        .await?;
+        if as_of.is_some() {
+            node.name = node.id.to_string();
+            node.type_key = None;
+            node.type_label = None;
+                node.disambiguator = None;
+        }
         resolved.push(node);
         for mut fact in rows.into_iter().take(limit - facts.len()) {
-            let references = utopia_store::graph::fact_evidence(&state.pool, fact.id).await?;
+            let references =
+                utopia_store::graph::fact_evidence_at(&state.pool, fact.id, as_of).await?;
             let ids: Vec<_> = references.iter().map(|r| r.chunk_id).collect();
             let eligible =
                 utopia_store::documents::chunks_by_ids(&state.pool, kb, &ids, as_of).await?;
@@ -77,10 +105,21 @@ pub async fn context(
             fact.evidence_count = references.len() as i64;
             if as_of.is_some() {
                 fact.last_evidence_time = None;
+                fact.other_name = fact.other_id.map(|id| id.to_string());
+                fact.other_type = None;
+                fact.closed_by = None;
+                fact.correction_note = None;
+                fact.attested_by = None;
+                for qualifier in &mut fact.qualifiers {qualifier.entity_name=qualifier.entity_id.map(|id|id.to_string());}
             }
             // The ledger selected the fact using both axes. Evidence document
             // versions are returned explicitly; never present current text as old.
-            for reference in references {
+            for mut reference in references {
+                if as_of.is_some() {
+                    reference.stale = false;
+                    reference.document_deleted = false;
+                    reference.filename=format!("{}-v{}",reference.document_id,reference.doc_version);
+                }
                 evidence.push(json!({"fact_id":fact.id,"source":reference}));
             }
             facts.push(fact);
@@ -90,13 +129,14 @@ pub async fn context(
         }
     }
     let conflicts: Vec<_> = facts.iter().filter_map(|f| f.contested.as_ref()).collect();
+    let partial = facts.iter().any(|f| f.evidence_count == 0) || !conflicts.is_empty();
     Ok(Json(json!({
         "schema_version":"soorin.knowledge-context.v2", "query_id":Uuid::now_v7(),
         "tenant_id":query.tenant_id,"knowledge_base_id":kb,"requested_entity":query.entity,
         "resolved_entities":resolved,"facts":facts,"evidence_references":evidence,
         "valid_time":at,"knowledge_time":as_of,"retrieval_methods":["entity_lookup","temporal_graph","fact_evidence"],
-        "retrieval_status":if resolved.is_empty(){"unavailable"}else{"complete"},
+        "retrieval_status":if resolved.is_empty(){"unavailable"}else if partial{"partial"}else{"complete"},
         "conflicts":conflicts,"model_versions":{},"latency_ms":started.elapsed().as_millis(),
-        "limitations":["bounded to five entity candidates and 100 facts","open facts have inferred=true","no generated claim is approved by this endpoint"]
+        "limitations":["bounded to five entity candidates and 100 facts","open facts have inferred=true; this describes alignment, not security confidence","historical evidence excludes legacy links with unknown attachment time","no generated claim is approved by this endpoint"]
     })))
 }

@@ -12,11 +12,14 @@ class GroundedContextTests(unittest.TestCase):
             self.assertEqual(row.review_status, "pending")
 
     def test_missing_evidence_and_unknown_claims_are_rejected(self):
-        context = {"schema_version": "soorin.knowledge-context.v2", "facts": [{"id": "f1"}], "evidence_references": []}
+        context = {"schema_version": "soorin.knowledge-context.v2", "facts": [{"id": "f1", "predicate_label":"observed on", "object_value":None, "other_name":"synthetic host"}], "evidence_references": []}
         with self.assertRaises(ValueError):
             validate_claims(context, [GroundedClaim("x", ("f1",))])
-        context["evidence_references"] = [{"fact_id": "f1"}]
-        validate_claims(context, [GroundedClaim("x", ("f1",))])
+        context["evidence_references"] = [{"fact_id": "f1", "source":{"chunk_id":"c1","document_id":"d1","doc_version":1}}]
+        validate_claims(context, [GroundedClaim("observed on: synthetic host", ("f1",))])
+        with self.assertRaises(ValueError):
+            validate_claims(context, [GroundedClaim("the host is malicious", ("f1",))])
+        self.assertEqual(extractive_answer(context)["claims"][0]["object"],"synthetic host")
         self.assertFalse(extractive_answer(context)["generated"])
         context["facts"][0]["contested"] = {"kind": "conflict"}
         with self.assertRaises(ValueError):
