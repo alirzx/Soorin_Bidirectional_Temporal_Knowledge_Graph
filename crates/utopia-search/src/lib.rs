@@ -62,7 +62,13 @@ impl SearchIndex {
             .register(JIEBA, tantivy_jieba::JiebaTokenizer::new());
 
         let writer = index.writer(WRITER_HEAP)?;
-        let reader = index.reader()?;
+        // Backport of upstream 7baecc9d2a15a676729b3c54e24f62f5fdb0691b.
+        // The sole writer commits and reloads while holding its mutex. An
+        // automatic asynchronous reload could otherwise install an older view.
+        let reader = index
+            .reader_builder()
+            .reload_policy(tantivy::ReloadPolicy::Manual)
+            .try_into()?;
         let analyzer = index
             .tokenizers()
             .get(JIEBA)
@@ -252,5 +258,60 @@ mod rrf_tests {
             assert_eq!(rrf_fuse(&lists, 3), ids(&["b", "c", "a"]));
             assert_eq!(rrf_fuse(&lists, 1), ids(&["b"]));
         }
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::SearchIndex;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    #[test]
+    fn committed_replacements_remain_visible_during_concurrent_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = Arc::new(SearchIndex::open(dir.path()).unwrap());
+        index
+            .reindex_document(
+                "kb",
+                "document",
+                &[("initial".into(), "persistent synthetic evidence".into())],
+            )
+            .unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let index = index.clone();
+            let done = done.clone();
+            std::thread::spawn(move || {
+                while !done.load(Ordering::Acquire) {
+                    // One persistent chunk must survive every committed snapshot.
+                    let hits = index.search("kb", "persistent", 10).unwrap();
+                    assert_eq!(hits.len(), 1);
+                }
+            })
+        };
+        for generation in 0..8 {
+            let id = format!("chunk-{generation}");
+            index
+                .reindex_document(
+                    "kb",
+                    "document",
+                    &[(id.clone(), "persistent synthetic evidence".into())],
+                )
+                .unwrap();
+            for _ in 0..4 {
+                let hits = index.search("kb", "persistent", 10).unwrap();
+                assert_eq!(hits.len(), 1);
+                assert_eq!(hits[0].chunk_id, id);
+                std::thread::yield_now();
+            }
+        }
+        done.store(true, Ordering::Release);
+        reader.join().unwrap();
+        index.delete_document("document").unwrap();
+        assert!(index.search("kb", "persistent", 10).unwrap().is_empty());
+        drop(index);
+        assert!(SearchIndex::open(dir.path()).unwrap().is_empty());
     }
 }
