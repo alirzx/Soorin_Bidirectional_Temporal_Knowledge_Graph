@@ -646,12 +646,7 @@ impl LlmClient {
                 .connect_timeout(connect)
                 .read_timeout(read)
                 .build()
-                // 只在 TLS 后端起不来时失败，那种情况下退回默认客户端也没有意义，
-                // 但也不该让整个进程崩在这里
-                .unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "HTTP 客户端建不起来，退回无超时的默认客户端");
-                    reqwest::Client::new()
-                }),
+                .expect("secure model HTTP transport initialization failed"),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.map(String::from),
             model: model.to_string(),

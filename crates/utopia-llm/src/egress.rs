@@ -25,7 +25,9 @@ pub fn require(base: &str) -> anyhow::Result<()> {
     }
     // Unit tests use private loopback mock servers. Production must explicitly
     // trust even loopback endpoints; localhost is not a DLP attestation.
-    if (cfg!(test) || std::env::var("UTOPIA_MODEL_TEST_MODE").as_deref() == Ok("1"))
+    if (cfg!(test)
+        || (cfg!(debug_assertions)
+            && std::env::var("UTOPIA_MODEL_TEST_MODE").as_deref() == Ok("1")))
         && reqwest::Url::parse(base)
             .ok()
             .is_some_and(|u| matches!(u.host_str(), Some("127.0.0.1" | "localhost")))
