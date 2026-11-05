@@ -1,6 +1,6 @@
 """Download-once CPU models and bounded OpenAI/TEI-compatible inference.
 
-Run `python -m soorin.services.cpu_models init --role embedding` explicitly.
+Run `python -m soorin.services.cpu_models download --role embedding` explicitly.
 Normal `serve` startup is offline and fails if that exact snapshot is missing.
 """
 from __future__ import annotations
@@ -97,14 +97,9 @@ class Engine:
 
 
 def initialize(role: str, cache: str) -> str:
-    from huggingface_hub import snapshot_download
-    model, revision = MODELS[role]
-    path = snapshot_download(model, revision=revision, cache_dir=cache,
-        allow_patterns=["*.json", "*.safetensors", "*.bin", "*.model", "*.txt"],
-        ignore_patterns=["onnx/*", "imgs/*", "*.pt"])
-    # Eager offline load validates both artifact completeness and dependency compatibility.
-    Engine(role, cache).load()
-    return str(path)
+    # Compatibility alias: artifact preparation must never load weights.
+    from .artifacts import download
+    return download(role, cache)["cache"]
 
 
 def serve(engine: Engine, host: str, port: int) -> None:
@@ -125,7 +120,9 @@ def serve(engine: Engine, host: str, port: int) -> None:
             self.wfile.write(raw)
 
         def do_GET(self) -> None:
-            if self.path in {"/health", "/ready", "/v1/models"}:
+            if self.path == "/v1/models":
+                self.respond(200, {"object": "list", "data": [{"id": engine.name, "object": "model", "owned_by": "soorin-local"}]})
+            elif self.path in {"/health", "/ready"}:
                 self.respond(200, {"ready": True, "role": engine.role, "model": engine.name,
                     "device": "cpu", "dimension": 1024 if engine.role == "embedding" else None,
                     "max_batch": MAX_BATCH, "max_tokens": 512,
@@ -165,14 +162,20 @@ def serve(engine: Engine, host: str, port: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["init", "serve"])
+    parser.add_argument("command", choices=["init", "download", "verify-artifacts", "serve"])
     parser.add_argument("--role", choices=list(MODELS), required=True)
     parser.add_argument("--cache", default=os.environ.get("HF_HOME", "/models"))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--hashes", action="store_true", help="Verify available SHA256 checksums without loading weights")
     args = parser.parse_args()
-    if args.command == "init":
-        print(initialize(args.role, args.cache))
+    if args.command in {"init", "download", "verify-artifacts"}:
+        from .artifacts import download, verify
+        result = (verify(args.role, args.cache, hashes=args.hashes)
+                  if args.command == "verify-artifacts" else download(args.role, args.cache))
+        print(json.dumps(result, indent=2))
+        if result["status"] != "PASS":
+            raise SystemExit(2)
     else:
         serve(Engine(args.role, args.cache), args.host, args.port)
 
