@@ -802,6 +802,9 @@ export const en = {
     dangerZone: "Danger zone",
   },
   search: {
+    hybrid: "Lexical and semantic retrieval executed",
+    lexicalOnly: "Lexical retrieval only",
+    rerankerFallback: "Reranker unavailable; original ranking retained",
     placeholder: "Search the knowledge base… (keyword + semantic)",
     button: "Search",
     searching: "Searching…",
