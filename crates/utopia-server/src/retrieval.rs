@@ -52,33 +52,36 @@ pub async fn hybrid_detailed(
     as_of: Option<chrono::DateTime<chrono::Utc>>,
     embeddings: Option<&mut llm_util::EmbedCache>,
 ) -> AppResult<Retrieval> {
-    let bm25 = {
+    let lexical = async {
+        if let Some(when) = as_of {
+            return utopia_store::documents::historical_lexical(
+                &state.pool,
+                kb_id,
+                query,
+                when,
+                RECALL_PER_CHANNEL as i64,
+            )
+            .await;
+        }
         let search = state.search.clone();
         let kb = kb_id.to_string();
         let query = query.to_string();
-        tokio::task::spawn_blocking(move || search.search(&kb, &query, RECALL_PER_CHANNEL))
+        let hits =
+            tokio::task::spawn_blocking(move || search.search(&kb, &query, RECALL_PER_CHANNEL))
+                .await
+                .map_err(|_| {
+                    utopia_core::AppError::Other(anyhow::anyhow!("lexical_worker_unavailable"))
+                })?
+                .map_err(utopia_core::AppError::Other)?;
+        Ok(hits.into_iter().map(|h| h.chunk_id).collect())
     };
     // `join!` 不是 `try_join!`：向量那一路失败是降级不是错误（见 vector_channel），
     // `try_join!` 会把模型故障变成检索报错
-    let (bm25, vector) = tokio::join!(
-        bm25,
+    let (lexical, vector) = tokio::join!(
+        lexical,
         vector_channel(state, kb_id, workspace_id, query, as_of, embeddings)
     );
-    let bm25 = bm25
-        .map_err(|e| utopia_core::AppError::Other(anyhow::anyhow!("BM25 检索线程退出：{e}")))?
-        .map_err(utopia_core::AppError::Other)?;
-    let lexical = if let Some(when) = as_of {
-        utopia_store::documents::historical_lexical(
-            &state.pool,
-            kb_id,
-            query,
-            when,
-            RECALL_PER_CHANNEL as i64,
-        )
-        .await?
-    } else {
-        bm25.into_iter().map(|h| h.chunk_id).collect()
-    };
+    let lexical = lexical?;
     let vector = vector?;
     let dense_executed = vector.is_some();
     let lists = channel_lists(lexical, vector);

@@ -56,17 +56,24 @@ pub async fn apply(
     if !cfg.enabled || chunks.is_empty() {
         return Ok("disabled");
     }
-    chunks.truncate(16);
     let result = async {
         utopia_llm::egress::require(&cfg.base_url)?;
-        let texts: Vec<String> = chunks.iter().map(|row| row.text.chars().take(8000).collect()).collect();
         let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none()).build()?;
-        let response = http.post(format!("{}/rerank",cfg.base_url.trim_end_matches('/')))
-            .json(&serde_json::json!({"query":query.chars().take(4000).collect::<String>(),"texts":texts,"model":cfg.model})).send().await?;
-        anyhow::ensure!(response.status().is_success(), "rerank_provider_rejected");
-        let rows: serde_json::Value = response.json().await?;
-        ordered(&rows, chunks.len())
+        // The native recall bound is 48. Score in service-sized batches without
+        // dropping tail candidates; compare the same raw cross-encoder score.
+        anyhow::ensure!(chunks.len()<=48,"rerank_candidate_bound_exceeded");
+        let mut scores=Vec::new();
+        for (batch, rows) in chunks.chunks(16).enumerate() {
+            let texts:Vec<String>=rows.iter().map(|row|row.text.chars().take(8000).collect()).collect();
+            let response=http.post(format!("{}/rerank",cfg.base_url.trim_end_matches('/')))
+                .json(&serde_json::json!({"query":query.chars().take(4000).collect::<String>(),"texts":texts,"model":cfg.model})).send().await?;
+            anyhow::ensure!(response.status().is_success(),"rerank_provider_rejected");
+            let response:serde_json::Value=response.json().await?;
+            ordered(&response,rows.len())?;
+            for row in response.as_array().unwrap() { scores.push(serde_json::json!({"index":batch*16+row["index"].as_u64().unwrap() as usize,"score":row["score"]})); }
+        }
+        ordered(&serde_json::Value::Array(scores),chunks.len())
     }.await;
     match result {
         Ok(order) => {

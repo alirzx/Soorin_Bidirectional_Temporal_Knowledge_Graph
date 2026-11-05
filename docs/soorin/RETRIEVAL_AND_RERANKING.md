@@ -1,31 +1,73 @@
-# Retrieval and reranking
+# Native retrieval, historical search and grounded context
 
-## Utopia baseline
+Utopia remains the only graph/search engine. PostgreSQL is authoritative.
+Current text search uses Tantivy BM25; dense pgvector results use the configured
+embedding fingerprint. Each channel recalls up to 24 candidates, then RRF
+deduplicates IDs. KB and record-time filters run during database reload before
+reranking and final top_k. The recall ceiling is 48, independent of a larger
+requested top_k.
 
-`crates/utopia-server/src/retrieval.rs` runs Tantivy BM25 and pgvector in parallel, fuses up to 24 candidates per channel using deterministic RRF, then reloads eligible chunks. Missing embeddings/provider failures degrade to BM25; database/vector-query failures remain errors.
+Historical queries use PostgreSQL versioned lexical recall over chunks/documents
+live at as_of, not today's Tantivy index. Terms use the simple text-search
+configuration, OR recall, ts_rank_cd ranking, and stable UUID tie breaking.
+This is not BM25 and has no promised phrase/operator/score equivalence to
+Tantivy. Persian Unicode terms are retained by simple configuration; neither
+route promises stemming equivalence across languages. Empty/punctuation-only
+historical terms return no matches. Future records cannot consume historical
+candidate limits.
 
-## SOC foundation
+Native optional TEI reranking scores all eligible candidates in batches <=16,
+validates complete unique indices and finite scores, and sorts by raw relevance
+score then original candidate order. It retains candidates beyond 16. With
+fallback=true, any failed batch preserves the entire original RRF list.
+With fallback=false, provider failure is explicit. Relevance is not maliciousness
+probability. Reranking cannot introduce candidates.
 
-`soorin/retrieval/foundation.py` is an **offline Python evaluation layer**, not a competing production path. Utopia's Rust retrieval remains authoritative. The evaluator provides:
+Search responses include retrieval metadata: dense_executed, lexical method,
+reranker_status, candidate_count and returned. Dense failures fall back to
+lexical search; SQL failures remain errors. The UI exposes lexical-only and
+reranker-fallback state. A nonempty hybrid result alone does not prove dense
+inference or reranker execution.
 
-1. Tenant/time filtering.
-2. Exact identifier lookup before scoring.
-3. BM25 keyword ranking.
-4. Dense cosine ranking through a configurable embedder.
-5. Reciprocal rank fusion and ID deduplication.
-6. Optional cross-encoder reranking.
-7. Provenance/evidence preservation and explicit status metadata.
+## KnowledgeContext v2
 
-Tenant, entity-type, and temporal filters run before candidate construction. Exact lookup can use `(entity_type, identifier)` pairs to prevent equal strings in different entity kinds from colliding. Keyword/fusion candidates default to a hard limit of 100 and dense evaluation to 64 documents. Dense vectors may be supplied on `SearchDocument`; missing vectors are computed only for the bounded candidate set and retained in a bounded namespaced LRU. The evaluator never embeds the full eligible corpus implicitly.
+POST `/api/v1/kbs/{kb}/knowledge/context` accepts an authenticated Utopia session
+or supported reader PAT, the KB's bound tenant_id, entity name/current UUID,
+optional entity_type, at, as_of and limit. KB membership is checked before
+tenant lookup. The source/tenant binding is administrator-owned and immutable.
 
-Statuses are `complete`, `partial`, `fallback`, and `unavailable`. Metadata includes query ID, methods/models, score type, candidate/returned count, temporal filters, latency, and provider failure codes. Scores are ranking signals, never the probability an alert is malicious.
+The response contains query/KB/tenant IDs, resolved entities, ledger facts,
+versioned source/chunk citations, both temporal axes, methods, conflicts, model
+metadata, latency and limitations. SQL limits each entity timeline before
+loading evidence. Results are bounded to five entity candidates and 100 facts;
+each fact has at most eight eligible evidence references.
 
-Exact matches bypass reranking. Reranker inputs are bounded; duplicate candidates retain the first stable candidate; ties use original rank then ID. Provider timeout/malformed/missing output preserves original RRF order only when fallback is enabled. The evaluator reads that decision from `RerankerConfig.fallback_enabled` unless explicitly overridden; it no longer forces fallback on. Reranking is disabled by default until a live benchmark demonstrates a useful quality/latency tradeoff.
+For as_of queries, use an entity UUID and omit the current-type filter.
+Historical display names/types are not reconstructed from current projections;
+the context returns UUID names. Evidence must belong to a document/chunk live at
+the requested record time and have been attached by then. New evidence links
+have recorded_at; legacy attachment times are unknown and excluded from
+historical citations. Missing/contested evidence makes the context partial.
+Current queries still expose legacy evidence. Migration 10002 never invents
+attachment timestamps for old links.
 
-## Historical limitation
+```bash
+python3 -m soorin.ops.context --kb "$UTOPIA_KB_ID" --tenant tenant-blue --entity A1
+python3 -m soorin.ops.context --kb "$UTOPIA_KB_ID" --tenant tenant-blue --entity "$ENTITY_UUID" --at 2026-10-20T10:00:00Z --as-of 2026-11-05T10:00:00Z --extractive
+```
 
-Tantivy stores current chunks. An `as_of` query filters current hits to avoid false historical hits but cannot recall a chunk that existed then and was later replaced. Full historical BM25 correctness is not claimed. Fixing it requires a versioned full-text index and is outside this sprint.
+The extractive answer helper cites only eligible document/chunk/version
+references and rejects unsupported prose or contested facts. It certifies exact
+ledger statements, not arbitrary generated conclusions. Open-vs-typed alignment
+is separate from observed/asserted/inferred security confidence.
+The service triggers no response, ticketing, containment or AutoTriage actions.
 
-## Offline benchmark
+## Evaluation boundary
 
-`python3 -m soorin.evaluation.retrieval_benchmark` compares BM25, BM25+dense+RRF, and BM25+dense+RRF+reranker. It emits Recall@K, MRR, nDCG@K, p50/p95 latency, failure rate, synthetic dataset/version metadata, and Python/platform reproducibility metadata. The tiny deterministic fixture is a regression comparator, not evidence of production quality improvement.
+`python3 -m soorin.evaluation.retrieval_benchmark` is a reproducible tiny synthetic
+contract benchmark (4 documents / 3 queries), not evidence of production quality
+or a real BGE improvement. Runtime dense/reranker results require the optional
+model smoke commands and native API tests. Record model revisions, hardware,
+latency, fallback rate, recall/MRR/nDCG and citations when running a larger held-out
+SOC evaluation. External DeepSeek/gateway tests must never be counted as PASS
+without actual successful protected calls.
