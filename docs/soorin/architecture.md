@@ -1,5 +1,7 @@
 # Soorin TKG: architecture baseline (October 2026)
 
+> Historical checkpoint. Current behavior and evidence are in [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) and [Production architecture](PRODUCTION_ARCHITECTURE.md).
+
 ## Stage 0: verified local topology
 
 ```text

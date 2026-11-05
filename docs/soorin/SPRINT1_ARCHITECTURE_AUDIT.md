@@ -1,5 +1,7 @@
 # Sprint 1 architecture audit
 
+> Historical checkpoint. Current behavior and evidence are in [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) and [Production architecture](PRODUCTION_ARCHITECTURE.md).
+
 ## Audited revisions and method
 
 - Soorin TKG: final pre-build review on `feature/soc-knowledge-foundation-v1`, starting from recorded hardening head `9ec66ef7c13fc743752f3d81276a11b36931fd6e`; independent `main` remained `4bf6a2cb5b98919fe910ba43da7698f7d1b670b9`.

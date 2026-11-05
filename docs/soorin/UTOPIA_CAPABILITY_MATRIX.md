@@ -1,5 +1,7 @@
 # Utopia capability matrix for the SOC foundation
 
+> Historical checkpoint. Current behavior and evidence are in [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) and [Production architecture](PRODUCTION_ARCHITECTURE.md).
+
 | Capability | Existing Utopia implementation | Sprint 1 decision |
 |---|---|---|
 | Source authentication | Source ingest token in `sources_routes.rs`; workspace/KB RBAC in store access | Reuse unchanged |
