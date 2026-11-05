@@ -25,9 +25,9 @@ pub(crate) mod rule_routes;
 mod search_routes;
 mod settings_routes;
 pub(crate) mod soc_ingestion;
+mod soc_knowledge;
 #[cfg(test)]
 mod soc_runtime_tests;
-mod soc_knowledge;
 mod soc_settings;
 mod sources_routes;
 #[cfg(test)]

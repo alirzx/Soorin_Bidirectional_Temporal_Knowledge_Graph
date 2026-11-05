@@ -157,37 +157,125 @@ pub async fn phrases(pool: &PgPool, kb_id: Uuid) -> anyhow::Result<bool> {
 mod tests {
     use super::*;
     #[tokio::test]
-    async fn exact_soc_vocabulary_materializes_without_chat_and_keeps_unknown_open()->anyhow::Result<()> {
-        let Some(url)=utopia_store::test_db::url() else{return Ok(());};
-        let pool=sqlx::PgPool::connect(&url).await?;
-        let (org,ws,kb,alert,host,unknown,relation,chunk)=(Uuid::now_v7(),Uuid::now_v7(),Uuid::now_v7(),Uuid::now_v7(),Uuid::now_v7(),Uuid::now_v7(),Uuid::now_v7(),Uuid::now_v7());
+    async fn exact_soc_vocabulary_materializes_without_chat_and_keeps_unknown_open(
+    ) -> anyhow::Result<()> {
+        let Some(url) = utopia_store::test_db::url() else {
+            return Ok(());
+        };
+        let pool = sqlx::PgPool::connect(&url).await?;
+        let (org, ws, kb, alert, host, unknown, relation, chunk) = (
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
         sqlx::raw_sql(&format!("INSERT INTO organizations(id,name) VALUES('{org}','soc-alignment-test');
           INSERT INTO workspaces(id,org_id,name) VALUES('{ws}','{org}','soc-alignment-test');
           INSERT INTO knowledge_bases(id,workspace_id,name) VALUES('{kb}','{ws}','soc-alignment-test');" )).execute(&pool).await?;
         for row in vocabulary()["entity_types"].as_array().unwrap() {
-            sqlx::query("INSERT INTO entity_types(id,kb_id,key,label,description) VALUES($1,$2,$3,$4,$5)").bind(Uuid::now_v7()).bind(kb).bind(row["key"].as_str()).bind(row["label"].as_str()).bind(row["description"].as_str()).execute(&pool).await?;
+            sqlx::query(
+                "INSERT INTO entity_types(id,kb_id,key,label,description) VALUES($1,$2,$3,$4,$5)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(kb)
+            .bind(row["key"].as_str())
+            .bind(row["label"].as_str())
+            .bind(row["description"].as_str())
+            .execute(&pool)
+            .await?;
         }
-        for (id,name,kind) in [(alert,"A1","SecurityAlert"),(host,"host.synthetic.example","Host"),(unknown,"unclassified","System")] {
-            sqlx::query("INSERT INTO entities(id,kb_id,canonical_name,specific_type) VALUES($1,$2,$3,$4)").bind(id).bind(kb).bind(name).bind(kind).execute(&pool).await?;
+        for (id, name, kind) in [
+            (alert, "A1", "SecurityAlert"),
+            (host, "host.synthetic.example", "Host"),
+            (unknown, "unclassified", "System"),
+        ] {
+            sqlx::query(
+                "INSERT INTO entities(id,kb_id,canonical_name,specific_type) VALUES($1,$2,$3,$4)",
+            )
+            .bind(id)
+            .bind(kb)
+            .bind(name)
+            .bind(kind)
+            .execute(&pool)
+            .await?;
         }
-        assert!(types(&pool,kb).await?);
-        let (host_type,): (Uuid,)=sqlx::query_as("SELECT type_id FROM entities WHERE id=$1").bind(host).fetch_one(&pool).await?;
-        let (alert_type,):(Uuid,)=sqlx::query_as("SELECT type_id FROM entities WHERE id=$1").bind(alert).fetch_one(&pool).await?;
-        let unknown_type:Option<Uuid>=sqlx::query_scalar("SELECT type_id FROM entities WHERE id=$1").bind(unknown).fetch_one(&pool).await?;
+        assert!(types(&pool, kb).await?);
+        let (host_type,): (Uuid,) = sqlx::query_as("SELECT type_id FROM entities WHERE id=$1")
+            .bind(host)
+            .fetch_one(&pool)
+            .await?;
+        let (alert_type,): (Uuid,) = sqlx::query_as("SELECT type_id FROM entities WHERE id=$1")
+            .bind(alert)
+            .fetch_one(&pool)
+            .await?;
+        let unknown_type: Option<Uuid> =
+            sqlx::query_scalar("SELECT type_id FROM entities WHERE id=$1")
+                .bind(unknown)
+                .fetch_one(&pool)
+                .await?;
         assert!(unknown_type.is_none());
         sqlx::query("INSERT INTO relation_types(id,kb_id,key,label,temporal) VALUES($1,$2,'observed_on','observed on','event')").bind(relation).bind(kb).execute(&pool).await?;
-        sqlx::query("INSERT INTO relation_type_domains(relation_type_id,entity_type_id) VALUES($1,$2)").bind(relation).bind(alert_type).execute(&pool).await?;
-        sqlx::query("INSERT INTO relation_type_ranges(relation_type_id,entity_type_id) VALUES($1,$2)").bind(relation).bind(host_type).execute(&pool).await?;
-        let doc=utopia_store::documents::create(&pool,kb,"synthetic.txt","text/plain",1,&Uuid::now_v7().to_string(),None,None,None).await?;
+        sqlx::query(
+            "INSERT INTO relation_type_domains(relation_type_id,entity_type_id) VALUES($1,$2)",
+        )
+        .bind(relation)
+        .bind(alert_type)
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO relation_type_ranges(relation_type_id,entity_type_id) VALUES($1,$2)",
+        )
+        .bind(relation)
+        .bind(host_type)
+        .execute(&pool)
+        .await?;
+        let doc = utopia_store::documents::create(
+            &pool,
+            kb,
+            "synthetic.txt",
+            "text/plain",
+            1,
+            &Uuid::now_v7().to_string(),
+            None,
+            None,
+            None,
+        )
+        .await?;
         sqlx::query("INSERT INTO chunks(id,kb_id,document_id,seq,text) VALUES($1,$2,$3,0,'A1 observed on host')").bind(chunk).bind(kb).bind(doc.id).execute(&pool).await?;
-        let (fact,_)=utopia_store::graph::insert_open_statement(&pool,kb,alert,"observed on",utopia_store::graph::FactObject::Entity(host),None,1.0).await?;
-        utopia_store::graph::add_evidence(&pool,fact,chunk,Some("A1 observed on host"),Some("observed on")).await?;
-        assert!(phrases(&pool,kb).await?);
-        utopia_store::materialize::materialize(&pool,kb).await?;
+        let (fact, _) = utopia_store::graph::insert_open_statement(
+            &pool,
+            kb,
+            alert,
+            "observed on",
+            utopia_store::graph::FactObject::Entity(host),
+            None,
+            1.0,
+        )
+        .await?;
+        utopia_store::graph::add_evidence(
+            &pool,
+            fact,
+            chunk,
+            Some("A1 observed on host"),
+            Some("observed on"),
+        )
+        .await?;
+        assert!(phrases(&pool, kb).await?);
+        utopia_store::materialize::materialize(&pool, kb).await?;
         let count:i64=sqlx::query_scalar("SELECT count(*) FROM facts WHERE kb_id=$1 AND predicate_id=$2 AND layer='typed' AND invalidated_at IS NULL").bind(kb).bind(relation).fetch_one(&pool).await?;
-        assert_eq!(count,1);
-        sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1").bind(kb.to_string()).execute(&pool).await?;
-        sqlx::query("DELETE FROM organizations WHERE id=$1").bind(org).execute(&pool).await?;
+        assert_eq!(count, 1);
+        sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
+            .bind(kb.to_string())
+            .execute(&pool)
+            .await?;
+        sqlx::query("DELETE FROM organizations WHERE id=$1")
+            .bind(org)
+            .execute(&pool)
+            .await?;
         Ok(())
     }
     #[test]
