@@ -67,3 +67,14 @@ Alert statuses include `new`, `acknowledged`, `in_progress`, `resolved`, `suppre
 The privacy feature centralizes remote LLM handling, canonical tenant context, TLS/fail-closed behavior, and egress inventory. Sprint 1 model adapters are compatible with a future protected base URL but do not call or modify that gateway. Production-sensitive documents must not be sent to an external endpoint until an approved privacy route and policy exist.
 
 The Auto-Triage path continues to treat the curated payload as untrusted data, not instructions. Risk scores, current rule/macro configuration, and `investigation_hint` retain their caveats. A future TKG connector must consume a durable, versioned Agentic envelope at an authenticated boundary; it must not scrape prompt context or infer authority from the privacy branch.
+
+## Final engineering recheck — 2026-11-05
+
+The same main/privacy references were inspected read-only. Fusion persistence
+outcomes, durable `alert_row_id`, curated `llm_payload` propagation and privacy
+REST create/encode/decode/delete fields were rechecked against source. The local
+Agentic_SOC checkout remained clean. Soorin's native transport and read-only
+consumer contract are now in [Integration v1](AGENTIC_SOC_INTEGRATION_V1.md).
+The normalizer now omits raw vendor extensions and sensitive structured keys;
+source evidence checksums/references preserve provenance. Earlier broad retention
+examples in this historical audit are not the current default storage policy.

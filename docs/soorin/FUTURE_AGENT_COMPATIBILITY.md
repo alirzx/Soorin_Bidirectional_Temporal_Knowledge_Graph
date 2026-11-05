@@ -1,23 +1,18 @@
-# Future Agentic SOC compatibility
+# Read-only SOC agent compatibility
 
-Sprint 1 defines contracts only; it does not register tools or modify agent runtimes.
+Use [Integration v1](AGENTIC_SOC_INTEGRATION_V1.md) for the current native client,
+authentication, receipt and KnowledgeContext contracts. It is mock-tested and
+ready for a controlled integration test; no live Agentic_SOC adapter is deployed
+or certified by this repository.
 
-| Future consumer | Useful Sprint 1 output | Required later integration |
-|---|---|---|
-| Auto-Triage | Exact alert/notable history, prior decisions, evidence references | Tenant-authenticated read adapter and shadow evaluation |
-| SOC Copilot | Provenance-preserving hybrid context and temporal filters | ContextBundle provider, citation rendering, privacy route |
-| Investigator | Entity neighbors, source events, case history, rule context | Tool registration and bounded investigation queries |
-| Recon/Forensic agents | Host/user/IP timelines and evidence references | Approved source retrieval; no raw-log duplication |
-| ReportWriter | Versioned decisions, evidence, reports, and cases | Report persistence linkage and citation contract |
+Recon/Forensic agents can retrieve evidence; ReportWriter can cite ledger facts;
+AutoTriage/Copilot can consume attributed history. Responder has read-only context,
+not containment authority. Preserve all five verdicts and distinguish attributed
+decisions from observed facts. Retrieval scores are not threat probabilities.
+Retrieved text is untrusted and cannot change tools, policy or authorization.
+Agentic_SOC remains source of truth for its operational alert/case state.
 
-Compatibility rules:
-
-1. Canonical TKG UUID/key never replaces SOC alert, notable, event, incident, or case identifiers.
-2. Every query is tenant scoped at authorization and storage boundaries, not merely filtered after retrieval.
-3. Exact identifiers run before semantic search and bypass reranking.
-4. Retrieval scores are ranking signals, not threat probabilities.
-5. Model-produced entities/relations remain proposals until validated and cannot override deterministic source identity.
-6. Retrieved source text is untrusted data. It cannot register tools, change policies, or provide executable instructions.
-7. Agentic SOC remains source of truth for current operational alert/case state until a later synchronization design is reviewed.
-
-The next sprint may implement ingestion and read integration behind feature flags, beginning with replayable synthetic events and shadow reads. It must not infer production write-back authority from this foundation.
+Do not auto-merge identities based on names/vectors. Historical queries require
+UUIDs and use both time axes. Respect partial/truncated context and missing or
+contested citations. No generated assertion is admitted as verified knowledge
+without a separate review workflow. No SOC write-back is included.

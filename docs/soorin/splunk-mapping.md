@@ -1,5 +1,7 @@
 # Synthetic Splunk ES -> Soorin TKG field mapping
 
+> Historical checkpoint. Current behavior and evidence are in [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) and [Production architecture](PRODUCTION_ARCHITECTURE.md).
+
 **No production export is included.** The examples approximate fields observed in Agentic SOC's Splunk normalizer and earlier password-spray investigations. All IPs use RFC 5737 TEST-NET ranges; hosts use the reserved `example` domain.
 
 | Record | Splunk / Agentic SOC fields | TKG interpretation |

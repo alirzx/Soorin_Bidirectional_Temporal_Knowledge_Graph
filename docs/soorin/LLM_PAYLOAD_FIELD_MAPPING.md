@@ -1,5 +1,7 @@
 # Splunk `llm_payload` field mapping
 
+> Historical checkpoint. Current behavior and evidence are in [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) and [Production architecture](PRODUCTION_ARCHITECTURE.md).
+
 | Current Agentic field | Source meaning | Soorin category | Notes |
 |---|---|---|---|
 | `alert_id` | Connector notable identity in the curated payload | Verified source identity only when corroborated by source envelope | Kept distinct from SOC alert UUID |
