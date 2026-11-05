@@ -1,5 +1,7 @@
 # Soorin SOC Lab: local smoke runbook
 
+> Historical checkpoint. Current behavior and evidence are in [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) and [Production architecture](PRODUCTION_ARCHITECTURE.md).
+
 ## Prerequisites and deployed baseline
 
 Run commands from the repository root. The baseline uses Docker Compose, the upstream `ghcr.io/deeplethe/utopia:0.1.0-rc9` image, PostgreSQL 16 and port 1516 on loopback. This project's local Compose file has an older default image tag, so explicitly set `UTOPIA_IMAGE` in your ignored local `.env`.
