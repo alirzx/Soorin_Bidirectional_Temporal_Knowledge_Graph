@@ -179,7 +179,11 @@ def normalize_llm_payload(
             raise NormalizationError("missing_timestamp", "event_time and alert_time are both absent")
         event_time = alert_time
         warnings.append("event_time_fell_back_to_alert_time")
-    source_observed_at = alert_time or event_time
+    # Stable occurrence time is not a source revision clock. Prefer an explicit
+    # source update timestamp; delivery/processing time never establishes order.
+    source_observed_at = (_first(raw, "source_updated_at", "updated_at", "last_modified")
+                          or _first(payload, "source_updated_at", "updated_at", "last_modified")
+                          or alert_time or event_time)
     processing_time = recorded_at or observed_at or _now()
     source_revision_id = _first(raw, "source_revision_id", "revision_id", "revision", "_version")
 
@@ -262,7 +266,8 @@ def normalize_llm_payload(
         seed = f"{subject.entity_id}|{relation_type}|{obj.entity_id}"
         relations.append(KnowledgeRelation(
             "rel:" + hashlib.sha256(seed.encode()).hexdigest(), relation_type, subject.entity_id, obj.entity_id,
-            confidence_category="observed", valid_from=event_time, evidence_ids=(evidence_id,),
+            confidence_category="asserted" if relation_type in {"CORRELATED_WITH", "MAPPED_TO_TECHNIQUE", "PART_OF_CASE"} else "observed",
+            valid_from=event_time, evidence_ids=(evidence_id,),
         ))
 
     notable = explicit.get("SplunkNotable")
@@ -278,12 +283,21 @@ def normalize_llm_payload(
         relate(evidence_anchor, "DETECTED_BY", explicit["DetectionRule"])
     relation_map = {
         "Host": "OBSERVED_ON", "IPAddress": "ORIGINATED_FROM", "UserAccount": "INVOLVES_USER",
-        "MITRETechnique": "MAPPED_TO_TECHNIQUE", "SOCCase": "PART_OF_CASE", "Ticket": "TRACKED_BY_TICKET",
+        "MITRETechnique": "MAPPED_TO_TECHNIQUE", "SOCCase": "PART_OF_CASE",
     }
     already_linked = {entity.entity_id for entity in explicit.values()} | {entity.entity_id for entity in event_entities}
     for entity in entity_rows:
         if entity.entity_id not in already_linked and entity.entity_type in relation_map:
             relate(evidence_anchor, relation_map[entity.entity_type], entity)
+
+    for ticket in [entity for entity in entity_rows if entity.entity_type == "Ticket"]:
+        ticket_subject = case or explicit.get("SecurityAlert")
+        if ticket_subject:
+            relate(ticket_subject, "TRACKED_BY_TICKET", ticket)
+        else:
+            # A notable is not an alert/case. Retain the ticket identity and
+            # report the unmappable association; never invent a broader axiom.
+            warnings.append("ticket_link_requires_alert_or_case")
 
     identifiers = {
         "soc_alert_id": classification.soc_alert_id, "notable_id": classification.notable_id,
@@ -316,6 +330,8 @@ def normalize_llm_payload(
             "investigation_hint": "retrieval guidance; not evidence",
         },
     })
+    if "ticket_link_requires_alert_or_case" in warnings:
+        attributes["normalization_warnings"] = ["ticket_link_requires_alert_or_case"]
     evidence_content = _source_content({"raw_record": raw, "llm_payload": payload})
     evidence = EvidenceReference(
         evidence_id=evidence_id, source_record_id=source_record_id,

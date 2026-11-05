@@ -6,6 +6,7 @@ Engineering handoff is distinct from production release approval.
 
 | Purpose | Document |
 |---|---|
+| Latest focused hardening / upstream / branding | [Pre-build hardening](PREBUILD_HARDENING_REPORT.md) |
 | Current implementation and evidence | [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) |
 | Runtime ownership and call paths | [Production architecture](PRODUCTION_ARCHITECTURE.md) |
 | SOC data flow | [Knowledge architecture](SOC_KNOWLEDGE_ARCHITECTURE.md) |

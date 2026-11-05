@@ -1,5 +1,8 @@
 # Final engineering acceptance — 2026-11-05
 
+> Subsequent small hardening evidence and Git integration gates: [Pre-build hardening report](PREBUILD_HARDENING_REPORT.md). This report remains the preserved prior checkpoint.
+
+
 **ENGINEERING HANDOFF READY for controlled build/integration qualification.**
 **PRODUCTION RELEASE NOT APPROVED.** This decision accepts the documented code,
 lightweight evidence and reproducible next-stage plan, not runtime readiness.

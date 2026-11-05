@@ -27,6 +27,15 @@ def validate_native_event(event: SecurityKnowledgeEvent, *, allow_sensitive: boo
     for row in (*event.relations, *event.facts):
         require(row.confidence_category in {'observed', 'asserted'}, 'native_review_required')
         require(len(row.evidence_ids) <= 256, 'native_evidence_bound')
+    kinds_by_id = {entity.entity_id: next(row['key'] for row in ontology['entity_types'] if row['label'].replace(' ', '') == entity.entity_type) for entity in event.entities}
+    normalize = lambda value: ''.join(c.lower() for c in value if c.isascii() and c.isalnum())
+    relations = {normalize(row['key']): row for row in ontology['relation_types']}
+    for row in event.relations:
+        spec = relations.get(normalize(row.relation_type))
+        require(spec is not None, 'soc_relation_type_unknown')
+        require(kinds_by_id[row.subject_entity_id] in spec['domains'], 'soc_relation_domain_invalid')
+        require(kinds_by_id[row.object_entity_id] in spec['ranges'], 'soc_relation_range_invalid')
+        require(not spec.get('required_provenance') or bool(row.evidence_ids), 'soc_relation_evidence_required')
     for fact in event.facts:
         require(fact.invalidated_at is None, 'native_retraction_requires_review')
     if not allow_sensitive:

@@ -1,5 +1,8 @@
 # Final engineering register — 2026-11-05
 
+> Subsequent small hardening evidence and Git integration gates: [Pre-build hardening report](PREBUILD_HARDENING_REPORT.md). This report remains the preserved prior checkpoint.
+
+
 Starting tree: `585a03466147616bd271a59225b5ff5757014f05`, clean feature branch.
 Historical M01–M10 work is preserved in commits through that baseline. This pass
 reviewed the changes since `b6162c4` and made the following corrections.

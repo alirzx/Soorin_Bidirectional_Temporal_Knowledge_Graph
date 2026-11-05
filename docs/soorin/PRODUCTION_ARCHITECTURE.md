@@ -46,8 +46,8 @@ Historical lexical recall uses PostgreSQL and has different tokenization/ranking
 | External models | Native LLM client → deployment origin policy → context/encode/provider/decode/cleanup gateway; binary OCR/transcription require trusted local origin |
 
 Graphify's existing index was queried before the audit and its AST-only updater
-was inspected and run with a 55-second deadline. The update produced 12,002 nodes,
-31,819 edges and 600 communities at the final code checkpoint. Source inspection and SQL
+was inspected and run with a 55-second deadline. The update produced 12,042 nodes,
+31,908 edges and 598 communities at the focused hardening code checkpoint. Source inspection and SQL
 references resolved missing graph detail; Graphify is not an execution proof or a
 runtime dependency. No semantic extraction or model call was requested.
 
@@ -66,3 +66,12 @@ its scores do not prove native runtime ranking. The legacy Statements client
 bypasses native receipt/identity admission and must not share a native source.
 `KnowledgeContext` is deterministic graph lookup, not an LLM answer pipeline;
 its model provenance explicitly says `usage=none`.
+
+## Focused hardening after 84a92bc
+
+Native relation admission now checks reviewed key/domain/range/evidence; incompatible
+older queued events quarantine before side effects. Source updates advance the
+source observation clock independently of occurrence time. Provisional v1 keys
+retain their compatibility limit behind immutable native KB source bindings.
+Tantivy readers use manual reload under the existing writer mutex. See
+[Pre-build hardening](PREBUILD_HARDENING_REPORT.md) for selective upstream and UI evidence.

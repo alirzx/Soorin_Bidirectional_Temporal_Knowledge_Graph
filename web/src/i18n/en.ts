@@ -34,15 +34,15 @@ export const en = {
     count: (n: number) => `${n} attributes loaded from this knowledge base`,
   },
   app: {
-    name: "Utopia",
+    name: "Soorin TKG",
     // 化用《乌托邦》全书最后一句（Burnet 1684 译本）：
     // "there are many things in the commonwealth of Utopia that I rather wish,
     //  than hope, to see followed in our governments."
     // 改 I 为 We、去掉插入语逗号、留白 to see 的宾语。
-    tagline: "We rather wish than hope to see.",
-    taglineSource: "— Thomas More, 1516",
-    siteUrl: "https://utopia.bi",
-    docsUrl: "https://utopia.bi/docs",
+    tagline: "Evidence, identity and history for security operations.",
+    taglineSource: "",
+    siteUrl: "https://soorinsec.ir",
+    docsUrl: "/docs",
   },
   /** 服务端校验错误的措辞。key = 服务端给的 code；缺一条就退回英文原句，不会崩。
       契约守卫（调错接口才碰得到）刻意不在这里——它们的读者是开发者 */
@@ -157,7 +157,7 @@ export const en = {
   },
   account: {
     /* 账户区字标：Persona——你在这座城里的身份面具 */
-    brand: "Utopia Persona",
+    brand: "Soorin Account",
     /* 网页标题用的短名：`Utopia | Persona` */
     titleTag: "Persona",
     profile: "Profile",
@@ -215,7 +215,7 @@ export const en = {
     /* 个人令牌页（0014 / 0016 A2）：给 agent 的钥匙，以这个人的身份行事 */
     tokensNav: "Agents & tokens",
     tokensTitle: "Personal access tokens",
-    tokensHint: "A token lets an agent reach Utopia over MCP as you, with no more access than you have. Read-only by default, limited to the bases you pick, revocable here.",
+    tokensHint: "A token lets an agent reach Soorin TKG over MCP as you, with no more access than you have. Read-only by default, limited to the bases you pick, revocable here.",
     newToken: "New token",
     tokenName: "Name",
     tokenNamePlaceholder: "My laptop",
@@ -231,7 +231,7 @@ export const en = {
     issueToken: "Create token",
     issuedTitle: "Copy it now. It will not be shown again.",
     issuedHint:
-      "Utopia keeps only a hash of it. If you lose it, revoke it here and create another.",
+      "Soorin TKG keeps only a hash of it. If you lose it, revoke it here and create another.",
     copy: "Copy",
     copied: "Copied",
     mcpTitle: "MCP client configuration",
@@ -260,8 +260,8 @@ export const en = {
   },
   docs: {
     /* 文档区字标：Charter——理想之城的立城宪章，与主字标同字体同字号 */
-    brand: "Utopia Charter",
-    backTitle: "Back to Utopia",
+    brand: "Soorin Docs",
+    backTitle: "Back to Soorin TKG",
     searchPlaceholder: "Search the docs…",
     noResults: "No matches.",
   },
@@ -343,6 +343,7 @@ export const en = {
     myKbs: "My knowledge bases",
   },
   nav: {
+    primaryNavigation: "Primary navigation",
     workspaceLabel: "Workspace",
     kbLabel: "Knowledge base",
     findKb: "Find a knowledge base…",
@@ -361,8 +362,8 @@ export const en = {
     docs: "Docs",
     loading: "Loading…",
     serverUnreachable:
-      "Punishment 500: Utopia has gone quiet — it isn't answering.",
-    notFound: "Punishment 404: You are lost in Utopia.",
+      "Punishment 500: Soorin TKG has gone quiet — it isn't answering.",
+    notFound: "Punishment 404: You are lost in Soorin TKG.",
     returnHome: "Return home",
     reportIssue: "Report an issue",
     refresh: "Refresh",
@@ -415,7 +416,7 @@ export const en = {
     agreePrefix: "By continuing, you agree to the ",
     agreeAnd: " and acknowledge the ",
     agreeSuffix: ".",
-    githubUrl: "https://github.com/deeplethe/utopia",
+    githubUrl: "https://github.com/SoorinSecurity/Soorin_Bidirectional_Temporal_Knowledge_Graph",
   },
   legal: {
     privacyTitle: "Privacy policy",
@@ -423,12 +424,12 @@ export const en = {
     backToSignIn: "← Back to sign in",
     privacy: {
       title: "Privacy policy",
-      note: "Default text bundled with Utopia. The organization operating this deployment may replace it with its own policy.",
+      note: "Default text bundled with Soorin TKG. The organization operating this deployment may replace it with its own policy.",
       sections: [
         {
           h: "A self-hosted platform",
           body: [
-            "Utopia runs entirely on infrastructure chosen by the organization that deployed it (the operator). The Utopia project has no access to this deployment: the software sends no telemetry, no analytics and no crash reports to anyone.",
+            "Soorin TKG runs entirely on infrastructure chosen by the organization that deployed it (the operator). The Soorin TKG project has no access to this deployment: the software sends no telemetry, no analytics and no crash reports to anyone.",
           ],
         },
         {
@@ -468,12 +469,12 @@ export const en = {
     },
     terms: {
       title: "Terms of use",
-      note: "Default text bundled with Utopia. The organization operating this deployment may replace it with its own terms.",
+      note: "Default text bundled with Soorin TKG. The organization operating this deployment may replace it with its own terms.",
       sections: [
         {
           h: "About these terms",
           body: [
-            "This instance of Utopia is operated by the organization that deployed it, not by the Utopia project. Your use of it is governed by that organization's own policies; these default terms cover the basics until the operator replaces them.",
+            "This instance of Soorin TKG is operated by the organization that deployed it, not by the Soorin TKG project. Your use of it is governed by that organization's own policies; these default terms cover the basics until the operator replaces them.",
           ],
         },
         {
@@ -500,7 +501,7 @@ export const en = {
         {
           h: "The software",
           body: [
-            "Utopia is open-source software provided “as is”, without warranty of any kind. Responsibility for operating this deployment — including backups, availability and compliance — lies with the operator.",
+            "Soorin TKG is open-source software provided “as is”, without warranty of any kind. Responsibility for operating this deployment — including backups, availability and compliance — lies with the operator.",
           ],
         },
       ],
@@ -671,7 +672,7 @@ export const en = {
       statements:
         "Your system pushes statements already in the extraction contract; no model reads them. Send events, not the state of a table.",
       custom:
-        "Polls a URL you control on a schedule — your service returns JSON items and Utopia keeps them in sync.",
+        "Polls a URL you control on a schedule — your service returns JSON items and Soorin TKG keeps them in sync.",
       memory:
         "Episodes remembered from Chat. Append-only: contradicted memories close their " +
         "validity range instead of being deleted — the timeline keeps the whole story.",
@@ -824,7 +825,7 @@ export const en = {
     conversationsLoadFailed: "Could not load conversations.",
     retryConversations: "Retry",
     /* 新对话首屏问候：碑铭衬线，品牌名入句（标题不带句号） */
-    greeting: "Ask Utopia what it remembers",
+    greeting: "Ask Soorin TKG what it remembers",
     emptyTitle: "Chat",
     emptyBody:
       "Converse with your knowledge base — cited answers, temporal questions, and it can remember.\nUpload documents in Library and configure a model in Administration → Models first.",
@@ -1689,7 +1690,7 @@ export const en = {
     /* 出现过但今天不投影的公理，按名字与次数列出——"暂未投影"不是"已跳过" */
     importUnprojected: "Not projected yet",
     importUnprojectedBody:
-      "Axioms this file uses that Utopia does not consume yet. Nothing is lost: the source file is stored as uploaded, so a later version can project them.",
+      "Axioms this file uses that Soorin TKG does not consume yet. Nothing is lost: the source file is stored as uploaded, so a later version can project them.",
     importDone: (created: number, updated: number) =>
       `Imported — ${created} classes created, ${updated} updated.`,
     importHistory: "Previous imports",
