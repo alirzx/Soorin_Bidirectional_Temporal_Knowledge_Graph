@@ -225,6 +225,17 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     .await?;
     assert_eq!(status, 200, "{context}");
     assert_eq!(context["schema_version"], "soorin.knowledge-context.v2");
+    let (status, limited) = call(
+        app.clone(),
+        format!("/api/v1/kbs/{kb}/knowledge/context"),
+        &session,
+        json!({"tenant_id":"tenant-blue","entity":"A1","limit":1}),
+    )
+    .await?;
+    assert_eq!(status, 200);
+    assert_eq!(limited["bounds"]["returned_count"], 1);
+    assert_eq!(limited["bounds"]["truncated"], true);
+    assert_eq!(limited["retrieval_status"], "partial");
     let (status, _) = call(
         app.clone(),
         format!("/api/v1/kbs/{other_kb}/knowledge/context"),

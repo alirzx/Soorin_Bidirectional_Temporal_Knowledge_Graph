@@ -321,3 +321,81 @@ pub fn validate(event: &Value) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// Receipt storage accepts curated events by default. Explicit deployment policy
+/// may retain sensitive source payloads; that is never enabled by a request.
+pub fn storage_policy(event: &Value, allow_sensitive: bool) -> anyhow::Result<()> {
+    if allow_sensitive {
+        return Ok(());
+    }
+    fn safe(value: &Value) -> bool {
+        match value {
+            Value::Object(row) => row.iter().all(|(key, value)| {
+                !matches!(
+                    key.to_lowercase().as_str(),
+                    "_raw"
+                        | "raw"
+                        | "raw_record"
+                        | "raw_payload"
+                        | "message"
+                        | "log"
+                        | "logs"
+                        | "password"
+                        | "passwd"
+                        | "secret"
+                        | "token"
+                        | "access_token"
+                        | "api_key"
+                        | "authorization"
+                        | "cookie"
+                        | "credentials"
+                        | "prompt"
+                        | "response"
+                ) && safe(value)
+            }),
+            Value::Array(rows) => rows.iter().all(safe),
+            _ => true,
+        }
+    }
+    anyhow::ensure!(
+        event["vendor_fields"]
+            .as_object()
+            .is_none_or(|m| m.is_empty()),
+        "soc_sensitive_payload_policy"
+    );
+    anyhow::ensure!(
+        safe(&event["attributes"])
+            && safe(&event["entities"])
+            && safe(&event["relations"])
+            && safe(&event["facts"]),
+        "soc_sensitive_payload_policy"
+    );
+    anyhow::ensure!(
+        event["evidence"].as_array().is_none_or(|rows| rows
+            .iter()
+            .all(|e| e["excerpt"].as_str().is_none_or(str::is_empty))),
+        "soc_excerpt_requires_storage_policy"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    #[test]
+    fn raw_payloads_and_excerpts_require_deployment_policy() {
+        for event in [
+            serde_json::json!({"vendor_fields":{"x":"value"}}),
+            serde_json::json!({"attributes":{"nested":{"password":"private"}}}),
+            serde_json::json!({"evidence":[{"excerpt":"private"}]}),
+        ] {
+            assert!(storage_policy(&event, false).is_err());
+            assert!(storage_policy(&event, true).is_ok());
+        }
+        assert!(storage_policy(
+            &serde_json::json!({"attributes":{"source_record_id":"synthetic"}}),
+            false
+        )
+        .is_ok());
+    }
+}

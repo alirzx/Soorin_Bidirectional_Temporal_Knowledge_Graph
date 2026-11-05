@@ -301,20 +301,21 @@ def normalize_llm_payload(
     }
     reported_keys = (
         "severity", "finding_count", "risk_score", "risk_object", "risk_object_type", "entity", "entity_type",
-        "detection_type", "security_domain", "investigation_type", "date_context", "time_window", "annotations", "alert_fields",
+        "detection_type", "security_domain", "investigation_type", "date_context", "time_window",
     )
     reported = {key: payload[key] for key in reported_keys if key in payload}
     analyst = _mapping(raw.get("analyst_labels"), "analyst_labels", allow_missing=True)
     retrieval_hints = {"investigation_hint": payload.get("investigation_hint")} if payload.get("investigation_hint") else {}
-    attributes = {
+    from soorin.contracts.storage_policy import minimize
+    attributes = minimize({
         "verified_source_metadata": verified, "reported_observations": reported, "analyst_assertions": analyst,
-        "rule_configuration": payload.get("rule") or {}, "retrieval_hints": retrieval_hints,
+        "retrieval_hints": retrieval_hints,
         "semantic_caveats": {
             "risk_score": "vendor accumulated risk; not a probability",
             "rule_configuration": "current configuration may differ from fire-time configuration",
             "investigation_hint": "retrieval guidance; not evidence",
         },
-    }
+    })
     evidence_content = _source_content({"raw_record": raw, "llm_payload": payload})
     evidence = EvidenceReference(
         evidence_id=evidence_id, source_record_id=source_record_id,
@@ -335,7 +336,7 @@ def normalize_llm_payload(
         recorded_at=processing_time, processed_at=processing_time, source_revision_id=source_revision_id,
         delivery_id=delivery_id, entities=tuple(entity_rows), relations=tuple(relations), evidence=(evidence,),
         attributes=attributes,
-        vendor_fields={key: item for key, item in raw.items() if key not in {"llm_payload", "analyst_labels", "delivery_id", "processed_at", "received_at"}},
+        vendor_fields={},  # Source bytes remain at their authority; checksum preserves provenance.
         source_references=source_references,
         curated_payload_version="agentic-soc.splunk.llm-payload.v1" if payload else None,
     )

@@ -50,15 +50,20 @@ pub async fn context(
         .into());
     }
     let limit = query.limit.unwrap_or(40).clamp(1, 100);
-    let nodes = if let Ok(id) = query.entity.parse::<Uuid>() {
-        utopia_store::graph::entity_node_visible(&state.pool, kb, id, as_of)
-            .await?
-            .into_iter()
-            .collect()
+    let (nodes, lookup_more) = if let Ok(id) = query.entity.parse::<Uuid>() {
+        (
+            utopia_store::graph::entity_node_visible(&state.pool, kb, id, as_of)
+                .await?
+                .into_iter()
+                .collect(),
+            false,
+        )
     } else {
-        utopia_store::graph::search_entities(&state.pool, kb, &query.entity, 20, 0, as_of)
-            .await?
-            .0
+        let (rows, total) =
+            utopia_store::graph::search_entities(&state.pool, kb, &query.entity, 20, 0, as_of)
+                .await?;
+        let more = total > rows.len() as i64;
+        (rows, more)
     };
     let nodes: Vec<_> = nodes
         .into_iter()
@@ -69,10 +74,12 @@ pub async fn context(
                 .is_none_or(|kind| n.type_key.as_deref() == Some(kind))
         })
         .collect();
+    let candidate_count = nodes.len();
+    let mut truncated = lookup_more || candidate_count > 5;
     let mut facts = Vec::new();
     let mut evidence = Vec::new();
     let mut resolved = Vec::new();
-    for node in nodes.into_iter().take(5) {
+    for (node_index, node) in nodes.into_iter().take(5).enumerate() {
         let (mut node, rows) = utopia_store::graph::entity_detail_bounded(
             &state.pool,
             kb,
@@ -89,22 +96,31 @@ pub async fn context(
             node.disambiguator = None;
         }
         resolved.push(node);
+        truncated |= rows.len() > limit - facts.len();
         for mut fact in rows.into_iter().take(limit - facts.len()) {
             let references =
-                utopia_store::graph::fact_evidence_at(&state.pool, fact.id, as_of).await?;
+                utopia_store::graph::fact_evidence_bounded(&state.pool, fact.id, as_of, Some(65))
+                    .await?;
+            truncated |= references.len() > 64;
+            let references: Vec<_> = references.into_iter().take(64).collect();
             let ids: Vec<_> = references.iter().map(|r| r.chunk_id).collect();
             let eligible =
                 utopia_store::documents::chunks_by_ids(&state.pool, kb, &ids, as_of).await?;
             let eligible: std::collections::HashSet<_> = eligible.iter().map(|r| r.id).collect();
-            let references: Vec<_> = references
+            let mut references: Vec<_> = references
                 .into_iter()
                 .filter(|r| eligible.contains(&r.chunk_id))
-                .take(8)
                 .collect();
+            truncated |= references.len() > 8;
+            references.truncate(8);
             fact.document_ids = references.iter().map(|r| r.document_id).collect();
             fact.evidence_count = references.len() as i64;
             if as_of.is_some() {
                 fact.last_evidence_time = None;
+                fact.predicate_label = None;
+                fact.invalidated_at = fact.invalidated_at.filter(|time| Some(*time) <= as_of);
+                fact.closed_by_id = None;
+                fact.closed_by_value = None;
                 fact.other_name = fact.other_id.map(|id| id.to_string());
                 fact.other_type = None;
                 fact.closed_by = None;
@@ -128,18 +144,20 @@ pub async fn context(
             facts.push(fact);
         }
         if facts.len() >= limit {
+            truncated |= node_index + 1 < candidate_count;
             break;
         }
     }
     let conflicts: Vec<_> = facts.iter().filter_map(|f| f.contested.as_ref()).collect();
-    let partial = facts.iter().any(|f| f.evidence_count == 0) || !conflicts.is_empty();
+    let partial = truncated || facts.iter().any(|f| f.evidence_count == 0) || !conflicts.is_empty();
     Ok(Json(json!({
         "schema_version":"soorin.knowledge-context.v2", "query_id":Uuid::now_v7(),
         "tenant_id":query.tenant_id,"knowledge_base_id":kb,"requested_entity":query.entity,
         "resolved_entities":resolved,"facts":facts,"evidence_references":evidence,
         "valid_time":at,"knowledge_time":as_of,"retrieval_methods":["entity_lookup","temporal_graph","fact_evidence"],
         "retrieval_status":if resolved.is_empty(){"unavailable"}else if partial{"partial"}else{"complete"},
-        "conflicts":conflicts,"model_versions":{},"latency_ms":started.elapsed().as_millis(),
+        "conflicts":conflicts,"model_versions":{"usage":"none","reason":"deterministic_graph_lookup"},
+        "bounds":{"truncated":truncated,"has_more":truncated,"returned_count":facts.len(),"candidate_count":candidate_count,"candidate_count_is_lower_bound":lookup_more,"limit":limit,"entity_limit":5,"evidence_limit_per_fact":8},"latency_ms":started.elapsed().as_millis(),
         "limitations":["bounded to five entity candidates and 100 facts","open facts have inferred=true; this describes alignment, not security confidence","historical evidence excludes legacy links with unknown attachment time","no generated claim is approved by this endpoint"]
     })))
 }

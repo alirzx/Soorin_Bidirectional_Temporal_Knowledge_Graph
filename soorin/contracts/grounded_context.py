@@ -52,4 +52,7 @@ def extractive_answer(context: Mapping[str, Any]) -> dict[str, Any]:
                 "text": statement_text(fact),
                 "assertion_origin": "open" if fact.get("inferred") else "typed"})
     return {"schema_version": "soorin.grounded-answer.v1", "claims": claims,
-        "status": "complete" if claims else "unavailable", "generated": False}
+        "status": ("unavailable" if not claims else
+                   "partial" if context.get("retrieval_status") != "complete"
+                   or context.get("bounds", {}).get("truncated")
+                   or len(claims) != len(context.get("facts", [])) else "complete"), "generated": False}

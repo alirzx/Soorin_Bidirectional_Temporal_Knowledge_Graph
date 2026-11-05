@@ -2207,6 +2207,15 @@ pub async fn fact_evidence_at(
     fact_id: Uuid,
     as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<Vec<EvidenceView>> {
+    fact_evidence_bounded(pool, fact_id, as_of, None).await
+}
+
+pub async fn fact_evidence_bounded(
+    pool: &PgPool,
+    fact_id: Uuid,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
+    limit: Option<i64>,
+) -> AppResult<Vec<EvidenceView>> {
     let rows: Vec<EvidenceView> = sqlx::query_as(
         "SELECT fe.quote, fe.proposed_predicate, fe.chunk_id, c.document_id, d.filename, c.seq,
                 c.doc_version,
@@ -2219,10 +2228,11 @@ pub async fn fact_evidence_at(
          JOIN chunks c ON c.id = fe.chunk_id
          JOIN documents d ON d.id = c.document_id
          WHERE fe.fact_id = $1 AND ($2::timestamptz IS NULL OR fe.recorded_at <= $2)
-         ORDER BY c.document_id,c.doc_version,c.seq,c.id",
+         ORDER BY c.document_id,c.doc_version,c.seq,c.id LIMIT $3",
     )
     .bind(fact_id)
     .bind(as_of)
+    .bind(limit)
     .fetch_all(pool)
     .await?;
     Ok(rows)

@@ -49,7 +49,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 fn field<'a>(value: &'a Value, key: &str) -> anyhow::Result<&'a str> {
     value[key]
         .as_str()
-        .filter(|v| !v.trim().is_empty() && v.len() <= 512)
+        .filter(|v| !v.trim().is_empty() && v.chars().count() <= 512)
         .ok_or_else(|| anyhow::anyhow!("invalid SOC field {key}"))
 }
 
@@ -272,6 +272,11 @@ pub async fn ingest(
     {
         return Err(AppError::Unauthorized.into());
     }
+    super::soc_event_validation::storage_policy(
+        &event,
+        std::env::var("UTOPIA_SOC_ALLOW_SENSITIVE_PAYLOAD").as_deref() == Ok("1"),
+    )
+    .map_err(|_| AppError::Validation("soc_sensitive_payload_policy".into()))?;
     validate(&event).map_err(|_| AppError::Validation("invalid SOC knowledge event".into()))?;
     let legacy_source:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE source_id=$1) AND NOT EXISTS(SELECT 1 FROM soorin_ingestion_receipts WHERE source_id=$1)").bind(source_id).fetch_one(&state.pool).await?;
     if legacy_source {
@@ -377,6 +382,7 @@ fn render(event: &Value) -> anyhow::Result<Value> {
         };
         let mut q = qualifiers.clone();
         q["evidence_ids"] = json!(serde_json::to_string(&fact["evidence_ids"])?);
+        q["confidence_category"] = fact["confidence_category"].clone();
         statements.push(json!([
             null,
             fact["subject_entity_id"],
@@ -520,10 +526,17 @@ async fn process_locked(
     if matches!(status, "bound" | "quarantined") {
         return Ok(());
     }
-    let newer:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM soorin_ingestion_receipts newer JOIN soorin_ingestion_receipts current ON current.id=$1 WHERE newer.source_id=current.source_id AND newer.source_key=current.source_key AND newer.created_at>current.created_at AND newer.status IN ('submitted','bound'))")
-        .bind(id).fetch_one(&state.pool).await?;
-    if newer {
-        sqlx::query("UPDATE soorin_ingestion_receipts SET status='quarantined',failure_code='late_revision_retained_for_review',updated_at=now() WHERE id=$1").bind(id).execute(&state.pool).await?;
+    // Delivery order is not source order. Opaque revision IDs are identities,
+    // not sortable clocks. Equal source clocks with changed content are ambiguous.
+    let previous: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT (payload->>'observed_at')::timestamptz FROM soorin_ingestion_receipts
+         WHERE source_id=$1 AND source_key=(SELECT source_key FROM soorin_ingestion_receipts WHERE id=$2)
+           AND id<>$2 AND status IN ('submitted','bound')
+         ORDER BY (payload->>'observed_at')::timestamptz DESC LIMIT 1",
+    ).bind(source_id).bind(id).fetch_optional(&state.pool).await?;
+    let observed = chrono::DateTime::parse_from_rfc3339(field(event, "observed_at")?)?.to_utc();
+    if previous.is_some_and(|previous| observed <= previous) {
+        sqlx::query("UPDATE soorin_ingestion_receipts SET status='quarantined',failure_code='late_or_ambiguous_revision_retained_for_review',updated_at=now() WHERE id=$1").bind(id).execute(&state.pool).await?;
         return Ok(());
     }
     if status == "pending" {
@@ -649,11 +662,58 @@ async fn process_locked(
     }
     let payload = render(event)?;
     let key = format!("statements:{}", field(&payload, "external_id")?);
-    let ready:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE source_id=$1 AND external_key=$2 AND deleted_at IS NULL AND status='ready' AND graph_status='done')").bind(source_id).bind(key).fetch_one(&state.pool).await?;
+    let ready:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE source_id=$1 AND external_key=$2 AND deleted_at IS NULL AND status='ready' AND graph_status='done')").bind(source_id).bind(&key).fetch_one(&state.pool).await?;
     anyhow::ensure!(
         ready,
         "soc_materialization_pending; receipt remains submitted for retry"
     );
+    // Open graph completion alone does not prove reviewed SOC relations were
+    // materialized. Human-rejected/unknown bindings are never auto-approved here.
+    let ontology: Value = serde_json::from_str(include_str!(
+        "../../../../soorin/ontology/soc_ontology_v1.yaml"
+    ))?;
+    for relation in event["relations"].as_array().into_iter().flatten() {
+        let token = |value: &str| {
+            value
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        };
+        let Some(kind) = ontology["relation_types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| {
+                token(row["key"].as_str().unwrap())
+                    == token(relation["relation_type"].as_str().unwrap())
+            })
+        else {
+            continue;
+        };
+        let typed: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM facts f
+             JOIN relation_types p ON p.id=f.predicate_id
+             JOIN entities s ON s.id=f.subject_id JOIN entities o ON o.id=f.object_id
+             JOIN fact_evidence fe ON fe.fact_id=f.id
+             JOIN documents d ON d.id=fe.document_id
+             WHERE f.kb_id=$1 AND f.invalidated_at IS NULL AND p.key=$2
+               AND s.canonical_name=$3 AND o.canonical_name=$4
+               AND d.source_id=$5 AND d.external_key=$6 AND d.deleted_at IS NULL)",
+        )
+        .bind(kb)
+        .bind(kind["key"].as_str().unwrap())
+        .bind(relation["subject_entity_id"].as_str().unwrap())
+        .bind(relation["object_entity_id"].as_str().unwrap())
+        .bind(source_id)
+        .bind(&key)
+        .fetch_one(&state.pool)
+        .await?;
+        anyhow::ensure!(
+            typed,
+            "soc_materialization_pending; reviewed SOC relation not materialized"
+        );
+    }
     sqlx::query("UPDATE soorin_ingestion_receipts SET status='bound',failure_code=NULL,updated_at=now() WHERE id=$1")
         .bind(id)
         .execute(&state.pool)
@@ -726,4 +786,26 @@ pub async fn retry(
     )
     .await?;
     Ok(Json(json!({"receipt_id":id,"job_id":job})))
+}
+
+#[cfg(test)]
+mod rendering_tests {
+    use super::*;
+    #[test]
+    fn asserted_fact_is_not_relabelled_as_observed() {
+        let mut event: Value = serde_json::from_str::<Value>(include_str!(
+            "../../../../soorin/tests/fixtures/soc_canonical_minimal_v1.json"
+        ))
+        .unwrap()["event"]
+            .clone();
+        event["facts"] = json!([{"subject_entity_id":event["entities"][0]["entity_id"],"predicate":"analyst verdict","object_value":"needs_review","confidence_category":"asserted","evidence_ids":[]}]);
+        let rendered = render(&event).unwrap();
+        let fact = rendered["s"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row[2] == "analyst verdict")
+            .unwrap();
+        assert_eq!(fact[5]["confidence_category"], "asserted");
+    }
 }

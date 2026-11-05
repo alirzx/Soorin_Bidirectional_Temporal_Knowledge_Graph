@@ -24,3 +24,12 @@ class GroundedContextTests(unittest.TestCase):
         context["facts"][0]["contested"] = {"kind": "conflict"}
         with self.assertRaises(ValueError):
             validate_claims(context, [GroundedClaim("x", ("f1",))])
+
+    def test_extractive_answer_preserves_partial_context(self):
+        context = {"retrieval_status": "partial", "facts": [{"id":"f","predicate_key":"observed_on","other_name":"host"}],
+                   "evidence_references":[{"fact_id":"f","source":{"chunk_id":"c","document_id":"d","doc_version":1}}]}
+        self.assertEqual(extractive_answer(context)["status"], "partial")
+        context["retrieval_status"] = "complete"
+        self.assertEqual(extractive_answer(context)["status"], "complete")
+        context["bounds"] = {"truncated": True}
+        self.assertEqual(extractive_answer(context)["status"], "partial")
