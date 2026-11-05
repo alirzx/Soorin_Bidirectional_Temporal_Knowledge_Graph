@@ -45,6 +45,7 @@ pub mod rss_full_content;
 pub mod sealing;
 pub mod settings;
 pub mod signature_vectors;
+pub mod soorin_embeddings;
 pub mod soorin_identity;
 pub mod sources;
 pub mod temporal;

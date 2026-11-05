@@ -36,6 +36,9 @@ pub async fn search(
 
     let top_k = req.top_k.unwrap_or(10).min(50);
     let as_of = super::graph_routes::parse_instant("as_of", req.as_of.as_deref())?;
-    let chunks = retrieval::hybrid(&state, kb_id, kb.workspace_id, q, top_k, as_of, None).await?;
-    Ok(Json(json!({ "results": chunks })))
+    let result =
+        retrieval::hybrid_detailed(&state, kb_id, kb.workspace_id, q, top_k, as_of, None).await?;
+    Ok(Json(
+        json!({ "results": result.chunks, "retrieval":result.metadata }),
+    ))
 }

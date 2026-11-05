@@ -317,7 +317,7 @@ async fn embed_each(
     document_id: Uuid,
 ) -> anyhow::Result<usize> {
     let pending =
-        utopia_store::documents::chunks_pending_embedding(&state.pool, document_id).await?;
+        utopia_store::soorin_embeddings::pending(&state.pool, document_id, settings).await?;
     let mut done = 0;
     for (chunk_id, text) in pending {
         let embedded = {
@@ -327,7 +327,12 @@ async fn embed_each(
         match embedded {
             Ok(mut vectors) if vectors.len() == 1 => {
                 let vector = vectors.remove(0);
-                utopia_store::documents::set_embeddings(&state.pool, &[(chunk_id, vector)]).await?;
+                utopia_store::soorin_embeddings::write(
+                    &state.pool,
+                    &[(chunk_id, vector)],
+                    settings,
+                )
+                .await?;
                 done += 1;
             }
             Ok(vectors) => {
@@ -359,14 +364,14 @@ fn embedder(settings: Option<&LlmSettings>) -> Option<(&LlmSettings, LlmClient)>
 /// **任一批失败整篇失败。** 串行时错误自然一路 unwind；并发下要明确地把它传出去，让调用方
 /// 把文档标成 failed，而不是留它停在 embedding。已经写进去的向量留着，重跑只补缺的
 /// （`chunks_pending_embedding` 只挑 embedding 为空的）。
-async fn embed_pending(
+pub(crate) async fn embed_pending(
     state: &AppState,
     settings: &LlmSettings,
     client: &LlmClient,
     document_id: Uuid,
 ) -> anyhow::Result<usize> {
     let pending =
-        utopia_store::documents::chunks_pending_embedding(&state.pool, document_id).await?;
+        utopia_store::soorin_embeddings::pending(&state.pool, document_id, settings).await?;
     // 批次先切成拥有的数据：借来的切片捕进并发驱动的 future 过不了 Send 边界
     //（ontology_index 里同一句话）
     let batches: Vec<Vec<(Uuid, String)>> =
@@ -385,7 +390,7 @@ async fn embed_pending(
             }
             let items: Vec<(Uuid, Vec<f32>)> =
                 batch.iter().map(|(id, _)| *id).zip(embeddings).collect();
-            utopia_store::documents::set_embeddings(&state.pool, &items).await?;
+            utopia_store::soorin_embeddings::write(&state.pool, &items, settings).await?;
             Ok::<usize, anyhow::Error>(items.len())
         })
         .buffer_unordered(EMBED_JOBS);

@@ -114,6 +114,10 @@ impl Fixture {
             None,
         )
         .await?;
+        let settings = utopia_store::settings::get(&self.pool, self.ws).await?.unwrap();
+        sqlx::query("UPDATE chunks SET embedding_model=$2 WHERE kb_id=$1")
+            .bind(self.kb).bind(utopia_store::soorin_embeddings::identity(&settings))
+            .execute(&self.pool).await?;
         Ok(())
     }
 

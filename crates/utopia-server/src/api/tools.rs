@@ -76,11 +76,16 @@ impl ToolCtx<'_> {
 
     /// [`Self::embed`]，同一轮里同样的文字只嵌一次（见 [`ToolSink::embeddings`]）
     pub async fn embed_once(&self, sink: &mut ToolSink, text: &str) -> Option<Vec<f32>> {
-        if let Some(vec) = sink.embeddings.get(text) {
+        let settings = utopia_store::settings::get(&self.state.pool, self.workspace_id)
+            .await.ok().flatten()?;
+        let key = format!("{}:{text}", utopia_store::soorin_embeddings::identity(&settings));
+        if let Some(vec) = sink.embeddings.get(&key) {
             return Some(vec.clone());
         }
-        let vec = self.embed(text).await?;
-        sink.embeddings.insert(text.to_string(), vec.clone());
+        let mut vectors = crate::llm_util::embed_client(&settings)?.embed(&[text.to_owned()]).await.ok()?;
+        if vectors.is_empty() { return None; }
+        let vec = vectors.remove(0);
+        sink.embeddings.insert(key, vec.clone());
         Some(vec)
     }
 }
