@@ -23,10 +23,10 @@ export function HeaderActions({
   signedOut?: ReactNode;
 }) {
   return (
-    <div className="ml-auto flex items-center gap-3">
+    <div className="ml-auto flex shrink-0 items-center gap-3">
       {/* 项目入口是一对（链接 + GitHub·版本），彼此贴得比组间近 */}
       <div className="flex items-center gap-2">
-        <Link to={link.to} className="u-navlink">
+        <Link to={link.to} className="u-header-docs u-navlink">
           {link.label}
         </Link>
         <a
@@ -37,7 +37,7 @@ export function HeaderActions({
           className="u-pill"
         >
           <GithubMark size={13} />
-          {version && <span className="u-num text-fine">v{version}</span>}
+          {version && <span className="u-header-version u-num text-fine">v{version}</span>}
         </a>
       </div>
       {user ? (

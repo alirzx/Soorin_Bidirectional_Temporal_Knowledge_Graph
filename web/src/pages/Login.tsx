@@ -111,6 +111,8 @@ export function Login() {
             {mode === "register" && (
               <Input
                 className="w-full"
+                aria-label={S.login.displayName}
+                autoComplete="name"
                 placeholder={S.login.displayName}
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
@@ -120,6 +122,8 @@ export function Login() {
             <Input
               type="email"
               className="w-full"
+              aria-label={S.login.email}
+              autoComplete="username"
               placeholder={S.login.email}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -128,13 +132,15 @@ export function Login() {
             <Input
               type="password"
               className="w-full"
+              aria-label={S.login.password}
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
               placeholder={S.login.password}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
               minLength={8}
             />
-            {error && <p className="text-body text-danger">{error}</p>}
+            {error && <p role="alert" className="text-body text-danger">{error}</p>}
             <Button variant="primary" size="md" className="w-full"
               type="submit"
               disabled={mutation.isPending || leaving}

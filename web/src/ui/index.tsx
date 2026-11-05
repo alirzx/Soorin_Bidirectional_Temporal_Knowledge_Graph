@@ -12,7 +12,6 @@ import type {
   TextareaHTMLAttributes,
 } from "react";
 import {
-  ArrowUpRight,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -22,6 +21,7 @@ import {
   Search as SearchIcon,
 } from "lucide-react";
 import { S } from "../i18n";
+import soorinLogo from "../assets/soorinsec-logo2.png";
 import { Button as ShadButton, buttonVariants } from "@/components/ui/button";
 import { badgeVariants } from "@/components/ui/badge";
 import { Checkbox as ShadCheckbox } from "@/components/ui/checkbox";
@@ -72,28 +72,15 @@ import {
     以最宽的 Ontology（w-64）为基准——rail 装的是名字，宽一档少截断。 */
 export const RAIL_CLS = "w-64 shrink-0 glass-strong border-y-0 border-l-0";
 
-/** 品牌字标：Marcellus 衬线，逐字母从左到右淡入；hover 浮出 ↗，点击去官网。
-    箭头/偏移全部用 em，跟随使用处的字号缩放（登录大标题与顶栏共用）。 */
+/** Local company artwork keeps its original aspect ratio in every theme. */
 export function Wordmark({ className }: { className?: string }) {
   return (
-    <a
-      href={S.app.siteUrl}
-      target="_blank"
-      rel="noreferrer"
-      title="utopia.bi"
-      className={cn("relative inline-flex text-ink", className)}
-      style={{ fontFamily: "var(--font-brand)", letterSpacing: "0.01em" }}
-    >
-      {[...S.app.name].map((ch, i) => (
-        <span
-          key={i}
-          className="u-letter"
-          style={{ animationDelay: `${80 + i * 65}ms` }}
-        >
-          {ch}
-        </span>
-      ))}
-      <ArrowUpRight className="u-mark-arrow" aria-hidden />
+    <a href={S.app.siteUrl} target="_blank" rel="noopener noreferrer"
+      aria-label={S.app.name} title={S.app.name}
+      className={cn("u-product-brand", className)}>
+      <img src={soorinLogo} width={674} height={230} alt="Soorin Security"
+        className="u-company-logo" decoding="async" />
+      <span className="u-product-name">{S.app.name}</span>
     </a>
   );
 }

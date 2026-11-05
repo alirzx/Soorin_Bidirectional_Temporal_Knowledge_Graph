@@ -82,10 +82,10 @@ export function UserMenu({ user }: { user: User }) {
        不是与个人资料、管理并列的动作。 */
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" className="u-avatar-btn">
+        <Button variant="ghost" className="u-avatar-btn" aria-label={user.display_name}>
           {/* 24：胶囊是 32 高（顶栏所有控件同一个高度），头像两边各留 4 */}
           <Avatar name={user.display_name} size={24} />
-          <span className="text-body text-ink-2">{user.display_name}</span>
+          <span className="u-user-display max-w-32 truncate text-body text-ink-2">{user.display_name}</span>
         </Button>
       </DropdownMenuTrigger>
       {/* **行的节奏跟顶栏另外两个面板一样**（px-4 py-2 text-body，整行出血）：
