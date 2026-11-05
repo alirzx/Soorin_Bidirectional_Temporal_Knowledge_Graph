@@ -1,35 +1,35 @@
-# Deterministic entity resolution
+# Deterministic and persistent identity
 
-`soorin/identity/` normalizes Unicode NFKC text, IDNA hostnames, compressed IPv4/IPv6, Windows principals, UPNs, and MITRE IDs. Canonical keys hash a deterministic JSON identity tuple.
+Python normalization handles Unicode NFKC, IDNA hosts, canonical IPs, Windows
+principals/UPNs and MITRE identifiers. Canonical keys include tenant and the
+required source/directory/network scope. Display names, embeddings and private
+IP values alone are never authoritative merge evidence.
 
-## Automatic identity
+Migrations 0111/0112 implement canonical identities, source authorities,
+observations, aliases, conflicts and same-KB compare-and-set Utopia links.
+The registry is called by native Rust ingestion. The legacy Statements route
+continues to exist but does not activate this registry.
 
-Automatic resolution requires tenant scope plus a trusted source identifier. Depending on type, the tuple also includes source system, source instance, directory/network scope, and authoritative ID. Hostnames, aliases, private IPs, and embedding similarity alone never trigger automatic merges.
+The native authority key is `authority-v1:` followed by deterministic JSON of
+`[authority_name, authority_value, scope_or_null]`. Array positions are fixed,
+values are validated strings, object ordering cannot change this tuple, and
+omitted/null scope have the same representation. Registry uniqueness also binds
+KB, tenant, entity type, source system and source instance. Existing registry
+history is never rewritten to this format.
 
-Examples:
+Lifecycle: authorize source and tenant → persist receipt/job → register authority
+and observations → record aliases → submit stable Statements → find canonical
+Utopia entity → compare-and-set link → verify document and recognized typed
+relations → mark receipt bound. Registration steps can survive a later failure;
+the durable receipt resumes them. This is a recoverable journal, not one database
+transaction spanning the entire asynchronous document pipeline.
 
-- A CMDB `asset_id` survives host rename; old/new hostnames remain temporal aliases.
-- The same hostname in two tenants produces different keys.
-- `10.0.0.1` without network scope is ambiguous. Different VPC/network scopes produce different keys.
-- `DOMAIN\\user` and UPNs are normalized but remain provisional without an authoritative directory object ID.
-- Conflicting authoritative IDs create separate entities and a review candidate, not an automatic merge.
+A conflicting authority quarantines the receipt before Statements submission.
+Provisional entities with authority mappings are rejected; value-only observations
+do not claim trusted source authority. Quarantined receipts cannot be retried by
+the retry endpoint. Review/reconciliation is explicit; no automatic merge/split
+or quarantine override is implemented.
 
-`IdentityDecision` records `resolved`, `provisional`, or `ambiguous`, automatic status, rationale, aliases, and candidate keys. Semantic similarity is permitted only to discover candidates for an explicit merge/split decision.
-
-## Persistent registry status: implemented, deliberately dormant
-
-Migrations `0111` and `0112` add Soorin-owned canonical identities, source-authority mappings, append-only observations, temporal alias history, and audited conflicts. Registry writes are transactional and concurrency-safe; composite foreign keys prevent cross-KB authority, alias, and conflict edges. Conflicting candidate identities are marked `ambiguous`, and linking a canonical identity to a Utopia entity is a same-KB compare-and-set.
-
-This is **Option B for the Foundation release**: no active normalizer, Statements, or ingestion caller invokes the registry yet. Deterministic canonical keys remain the live Python/Statements identity behavior. Database tables existing is not evidence that registry-backed resolution is active.
-
-Sprint 2 activation must be one explicit ingestion transaction boundary:
-
-1. Resolve the authenticated tenant to one target Utopia KB.
-2. Register every authoritative source tuple and append its evidence observation.
-3. Stop on `Conflict`; never push the ambiguous candidate as a usable entity.
-4. Record aliases with source evidence and validity interval.
-5. Render Statements with the resolved canonical key.
-6. After Utopia materializes the concrete entity, link it with `link_utopia_entity` compare-and-set.
-7. Emit metrics/audit IDs and test concurrent replay, rollback, and cross-tenant isolation against PostgreSQL.
-
-Do not partially wire only the normalizer or only the Statements client; that would create two identity authorities without an atomic reconciliation boundary.
+Concurrent registration and cross-KB constraints have database tests. Runtime
+crash/recovery, alias history across revisions, and source-to-typed-graph behavior
+must be repeated for the final built artifact in the controlled acceptance phase.

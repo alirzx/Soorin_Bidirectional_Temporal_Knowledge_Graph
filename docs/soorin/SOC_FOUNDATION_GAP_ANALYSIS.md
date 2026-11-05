@@ -1,5 +1,7 @@
 # Soorin SOC foundation · Current gap analysis
 
+> Historical checkpoint. Current behavior and evidence are in [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) and [Production architecture](PRODUCTION_ARCHITECTURE.md).
+
 **Decision:** ready for the first isolated local source build with documented
 restrictions; not merge-ready and not approved for production SOC data.
 

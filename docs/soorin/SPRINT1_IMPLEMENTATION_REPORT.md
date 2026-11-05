@@ -1,5 +1,7 @@
 # Sprint 1 and final pre-build implementation report
 
+> Historical checkpoint. Current behavior and evidence are in [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) and [Production architecture](PRODUCTION_ARCHITECTURE.md).
+
 ## Scope and history
 
 The work remains on `feature/soc-knowledge-foundation-v1`. The verified start

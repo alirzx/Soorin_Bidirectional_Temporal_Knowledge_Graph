@@ -1,24 +1,43 @@
 # SOC temporal model
 
-## Two axes
-
-| SOC field | Utopia meaning |
+| Clock | Meaning / authority |
 |---|---|
-| `event_time`, `valid_from`, `valid_to` | World time: when the assertion applied |
-| `recorded_at`, `invalidated_at` | Knowledge time: when Utopia knew/retired it |
-| `observed_at`, `ingested_at`, `processed_at` | Pipeline provenance; not replacements for world time |
+| `event_time`, `valid_from`, `valid_to` | Source world/valid time |
+| `observed_at` | Source observation/revision clock; must advance for automatic same-record replacement |
+| Event `recorded_at`, `processed_at`, `delivery_id` | Adapter/delivery provenance; excluded from checksum v3 |
+| Fact/receipt server `recorded_at` / `created_at` | Actual knowledge recording/delivery time |
+| `at` | Query the world/valid axis |
+| `as_of` | Query the server knowledge/record axis |
 
-The Statements adapter maps event time to `doc_time` and statement `when`. Utopia creates `recorded_at` and invalidates prior document-derived facts on revision. The adapter does not invent ledger timestamps.
+Opaque `source_revision_id` values identify revisions; they are not sortable
+versions. Delivery order is not authority order. Exact checksum replay returns
+the same receipt and active/terminal job. For the same source identity, an incoming
+source `observed_at` less than or equal to an already submitted/bound observation
+is quarantined if content differs. Its receipt retains historical evidence, but
+it is not automatically projected into graph history. Equal-clock corrections
+need review or a source-issued later observation. Event-time changes alone never
+establish revision precedence. This conservative rule can quarantine legitimate
+corrections whose upstream source lacks a reliable revision clock.
 
-## Revision classification
+Utopia creates graph recording timestamps; client timestamps cannot backdate its
+knowledge ledger. Native retractions (`invalidated_at`) require a separate review
+workflow and are rejected at admission. Existing generic graph correction and
+retraction operations retain their authorization rules.
 
-- Exact replay: same source key and checksum; no revision.
-- New occurrence: different authoritative source record.
-- Correction: same source record, changed content, no lifecycle change.
-- State change: status changed; prior current state closes.
-- Supersession/retraction: only when explicitly declared.
-- Late arrival: same source record with event time older than the latest revision; retain without pretending it is current.
+Migration 10002 adds evidence attachment `recorded_at`: new links get server time;
+legacy links remain NULL and are excluded from historical context. Never backfill
+these with invented timestamps. Historical citations also require the document
+version to be eligible at the requested knowledge time.
 
-Historical revisions remain represented through Utopia's record axis. Queries use `at` for world time and `as_of` for knowledge time. Historical full-text recall remains incomplete because Tantivy retains current chunks only; graph/vector history is not evidence that BM25 history is complete.
+Historical context requires an entity UUID, not today's aliases or type filter.
+Current display names, labels, disambiguators, closure names/values, evidence
+filenames, later invalidation timestamps and nonhistorical metadata are withheld.
+Facts are selected by both axes and conflicts use record-axis predicates. The
+query reports truncation and missing citations as partial. `model_versions`
+identifies deterministic graph lookup with no model usage.
 
-`soorin/evaluation/temporal_cases.py` provides gold offline cases. A live isolated-KB experiment must still verify the exact deployed build's document/fact timeline before production claims.
+Current lexical retrieval uses Tantivy; historical lexical retrieval uses
+PostgreSQL `simple` tokenization with OR terms. Phrase, stemming and Persian
+segmentation behavior differ. Neither identical numeric scores nor full historic
+vector coverage is promised. Repeated database correction/deletion/restoration
+and historical citation experiments remain required release gates.
