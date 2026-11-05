@@ -37,6 +37,7 @@ pub fn require(base: &str) -> anyhow::Result<()> {
 
 /// Published Privacy Gateway REST contract. It performs no local tokenization.
 /// Caller must supply a trusted canonical tenant; response contents are never logged.
+#[derive(Clone)]
 pub struct Gateway {
     pub base_url: String,
     pub api_key: String,
@@ -45,10 +46,17 @@ pub struct Gateway {
 }
 
 impl Gateway {
-    pub async fn transform(
+    pub async fn exchange(
         &self,
         payload: &serde_json::Value,
+        provider_url: &str,
+        provider_key: Option<&str>,
     ) -> anyhow::Result<serde_json::Value> {
+        let allowed = std::env::var("UTOPIA_PRIVACY_PROVIDER_ORIGINS").unwrap_or_default();
+        anyhow::ensure!(
+            trusted(provider_url, &allowed),
+            "privacy_provider_origin_not_approved"
+        );
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none())
@@ -73,16 +81,31 @@ impl Gateway {
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')),
             "privacy_context_invalid"
         );
+        let _cleanup = Cleanup {
+            http: http.clone(),
+            url: format!("{}/v1/contexts/{id}", self.base_url.trim_end_matches('/')),
+            key: self.api_key.clone(),
+        };
         let encoded = async {
             let response = http.post(format!("{}/v1/encode", self.base_url.trim_end_matches('/'))).bearer_auth(&self.api_key)
                 .json(&serde_json::json!({"tenant_id":self.tenant_id,"context_id":id,"profile":self.profile,"purpose":"llm-egress","format":"json","payload":payload,"registrations":[]})).send().await?;
             anyhow::ensure!(response.status().as_u16() == 200, "privacy_encode_rejected");
             let body: serde_json::Value = response.json().await?;
             anyhow::ensure!(body["context_id"].as_str() == Some(id) && body["format"] == "json", "privacy_encode_binding_invalid");
-            body.get("payload").cloned().ok_or_else(|| anyhow::anyhow!("privacy_payload_missing"))
+            let encoded=body.get("payload").cloned().ok_or_else(|| anyhow::anyhow!("privacy_payload_missing"))?;
+            anyhow::ensure!(encoded.is_object() && encoded["model"]==payload["model"],"privacy_provider_contract_changed");
+            let mut provider=http.post(provider_url).json(&encoded);
+            if let Some(key)=provider_key {provider=provider.bearer_auth(key);}
+            let response=provider.send().await.map_err(|_|anyhow::anyhow!("protected_provider_unavailable"))?;
+            anyhow::ensure!(response.status().is_success(),"protected_provider_rejected");
+            let response:serde_json::Value=response.json().await.map_err(|_|anyhow::anyhow!("protected_provider_invalid_json"))?;
+            let decoded=http.post(format!("{}/v1/decode",self.base_url.trim_end_matches('/'))).bearer_auth(&self.api_key)
+                .json(&serde_json::json!({"context_id":id,"format":"json","payload":response,"purpose":"llm-response","reveal_credentials":false})).send().await?;
+            anyhow::ensure!(decoded.status().as_u16()==200,"privacy_decode_rejected");
+            let decoded:serde_json::Value=decoded.json().await?;
+            anyhow::ensure!(decoded["context_id"].as_str()==Some(id) && decoded["format"]=="json" && decoded["stats"]["unknown_aliases"].as_u64()==Some(0),"privacy_decode_binding_or_alias_failure");
+            decoded.get("payload").cloned().ok_or_else(||anyhow::anyhow!("privacy_decode_payload_missing"))
         }.await;
-        // Encode-only output is suitable for approved proxy integration, not a
-        // request-scoped decoded conversation. Never silently authorize inference.
         let _ = http
             .delete(format!(
                 "{}/v1/contexts/{id}",
@@ -92,6 +115,22 @@ impl Gateway {
             .send()
             .await;
         encoded
+    }
+}
+
+struct Cleanup {
+    http: reqwest::Client,
+    url: String,
+    key: String,
+}
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let (http, url, key) = (self.http.clone(), self.url.clone(), self.key.clone());
+            runtime.spawn(async move {
+                let _ = http.delete(url).bearer_auth(key).send().await;
+            });
+        }
     }
 }
 

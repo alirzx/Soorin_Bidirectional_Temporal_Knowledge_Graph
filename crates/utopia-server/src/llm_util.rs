@@ -19,7 +19,8 @@ pub fn chat_client(s: &LlmSettings) -> Option<LlmClient> {
             s.chat_api_key.as_deref(),
             s.chat_model.as_deref()?,
         )
-        .with_reasoning_effort(s.chat_reasoning_effort.clone()),
+        .with_reasoning_effort(s.chat_reasoning_effort.clone())
+        .with_gateway_from_env(&s.workspace_id.to_string()),
     )
 }
 
@@ -74,11 +75,14 @@ pub fn embed_client(s: &LlmSettings) -> Option<LlmClient> {
     if !s.embed_ready() {
         return None;
     }
-    Some(LlmClient::new(
-        s.embed_base_url.as_deref()?,
-        s.embed_api_key.as_deref(),
-        s.embed_model.as_deref()?,
-    ))
+    Some(
+        LlmClient::new(
+            s.embed_base_url.as_deref()?,
+            s.embed_api_key.as_deref(),
+            s.embed_model.as_deref()?,
+        )
+        .with_gateway_from_env(&s.workspace_id.to_string()),
+    )
 }
 
 /// 按模型的信号量注册表。限额变了就换一把新的——旧的在飞许可自然跑完，
