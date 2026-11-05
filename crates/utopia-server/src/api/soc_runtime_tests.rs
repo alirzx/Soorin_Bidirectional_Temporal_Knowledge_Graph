@@ -24,6 +24,55 @@ fn python_checksum_is_verified_before_any_registration() {
     assert!(soc_ingestion::validate(&event).is_err());
 }
 
+#[test]
+fn canonical_python_vectors_and_nested_contract_validation() {
+    let vectors: Value = serde_json::from_str(include_str!(
+        "../../../../soorin/tests/fixtures/soc_checksum_vectors_v3.json"
+    ))
+    .unwrap();
+    for row in vectors["cases"].as_array().unwrap() {
+        soc_ingestion::validate(&row["event"]).unwrap_or_else(|e| panic!("{}: {e}", row["name"]));
+    }
+    for (key, bad) in [
+        ("relations", json!({})),
+        ("facts", json!(false)),
+        ("evidence", json!("bad")),
+        ("source_references", json!({})),
+        ("attributes", json!([])),
+    ] {
+        let mut event = fixture();
+        event[key] = bad;
+        assert!(
+            super::soc_event_validation::validate(&event).is_err(),
+            "{key}"
+        );
+    }
+    for (key, bad) in [
+        ("source_identifiers", json!({"alert_id":false})),
+        ("aliases", json!("bad")),
+        ("provisional", json!("false")),
+        ("entity_type", json!("Unknown")),
+    ] {
+        let mut event = fixture();
+        event["entities"][0][key] = bad;
+        assert!(
+            super::soc_event_validation::validate(&event).is_err(),
+            "{key}"
+        );
+    }
+    let mut event = fixture();
+    event["facts"] = json!([{"fact_id":"f","subject_entity_id":"soorin:securityalert:test","predicate":"has status","object_value":"open","recorded_at":"2026-11-05T00:00:00Z","evidence_ids":["missing"],"confidence_category":"observed"}]);
+    assert!(super::soc_event_validation::validate(&event).is_err());
+    event["facts"][0]["evidence_ids"] = json!([]);
+    assert!(super::soc_event_validation::validate(&event).is_ok());
+    event["facts"][0]["confidence_category"] = json!("model_proposed");
+    assert!(super::soc_event_validation::validate(&event).is_err());
+    event["facts"][0]["confidence_category"] = json!("observed");
+    event["facts"][0]["valid_from"] = json!("2026-11-06T00:00:00Z");
+    event["facts"][0]["valid_to"] = json!("2026-11-05T00:00:00Z");
+    assert!(super::soc_event_validation::validate(&event).is_err());
+}
+
 async fn call(app: Router, path: String, token: &str, body: Value) -> anyhow::Result<(u16, Value)> {
     let response = app
         .oneshot(
@@ -90,6 +139,20 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     let (status, replay) = call(app.clone(), path, "synthetic-only-token", event).await?;
     assert_eq!(status, 200);
     assert_eq!(receipt["receipt_id"], replay["receipt_id"]);
+    assert_eq!(receipt["job_id"], replay["job_id"]);
+    let calls = (0..8).map(|_| {
+        call(
+            app.clone(),
+            format!("/api/v1/sources/{source}/knowledge-events"),
+            "synthetic-only-token",
+            fixture(),
+        )
+    });
+    for result in futures_util::future::join_all(calls).await {
+        let (status, value) = result?;
+        assert_eq!(status, 200);
+        assert_eq!(value["job_id"], receipt["job_id"]);
+    }
     let id = receipt["receipt_id"].as_str().unwrap().parse()?;
     // No asynchronous graph yet: durable receipt remains submitted for retry.
     assert!(soc_ingestion::process(&state, id).await.is_err());
@@ -103,6 +166,55 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     let (status,linked):(String,Option<Uuid>)=sqlx::query_as("SELECT r.status,i.utopia_entity_id FROM soorin_ingestion_receipts r JOIN soorin_canonical_identities i ON i.kb_id=r.kb_id WHERE r.id=$1").bind(id).fetch_one(&pool).await?;
     assert_eq!(status, "bound");
     assert!(linked.is_some());
+    let entity_id = linked.unwrap();
+    let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&pool)
+        .await?;
+    let context_path = format!("/api/v1/kbs/{kb}/knowledge/context");
+    let historical = json!({"tenant_id":"tenant-blue","entity":entity_id,"as_of":now.to_rfc3339()});
+    let (status, old_context) = call(
+        app.clone(),
+        context_path.clone(),
+        &session,
+        historical.clone(),
+    )
+    .await?;
+    assert_eq!(status, 200, "{old_context}");
+    assert!(!old_context["evidence_references"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    // A later evidence attachment cannot be substituted into the old snapshot.
+    sqlx::query("UPDATE fact_evidence SET recorded_at=$2 WHERE fact_id IN (SELECT id FROM facts WHERE kb_id=$1)").bind(kb).bind(now+chrono::Duration::days(1)).execute(&pool).await?;
+    let (status, old_context) =
+        call(app.clone(), context_path.clone(), &session, historical).await?;
+    assert_eq!(status, 200);
+    assert_eq!(old_context["retrieval_status"], "partial");
+    assert!(old_context["evidence_references"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let (status, old_entity) = call(
+        app.clone(),
+        context_path,
+        &session,
+        json!({"tenant_id":"tenant-blue","entity":entity_id,"as_of":"2000-01-01T00:00:00Z"}),
+    )
+    .await?;
+    assert_eq!(status, 200);
+    assert!(old_entity["resolved_entities"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let (_, replay) = call(
+        app.clone(),
+        format!("/api/v1/sources/{source}/knowledge-events"),
+        "synthetic-only-token",
+        fixture(),
+    )
+    .await?;
+    assert_eq!(replay["status"], "bound");
+    assert_eq!(replay["job_id"], receipt["job_id"]);
     let query = json!({"tenant_id":"tenant-blue","entity":"A1","limit":10});
     let (status, context) = call(
         app.clone(),

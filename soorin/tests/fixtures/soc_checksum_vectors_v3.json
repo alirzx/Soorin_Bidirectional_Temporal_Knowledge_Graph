@@ -1,0 +1,99 @@
+{
+  "synthetic": true,
+  "cases": [
+    {
+      "name": "unicode_numbers",
+      "event": {
+        "schema_version": "soorin.soc.knowledge-event.v1",
+        "tenant_id": "tenant-blue",
+        "source_system": "splunk",
+        "source_instance": "splunk-e2e",
+        "source_record_id": "A1",
+        "event_id": "e1",
+        "event_type": "security_alert",
+        "event_time": "2026-11-05T00:00:00.000000Z",
+        "observed_at": "2026-11-05T00:00:00.000000Z",
+        "recorded_at": "2026-11-05T00:00:00.000000Z",
+        "source_references": [
+          "z",
+          "a"
+        ],
+        "entities": [
+          {
+            "entity_id": "soorin:securityalert:test",
+            "entity_type": "SecurityAlert",
+            "normalized_value": "A1",
+            "source_identifiers": {
+              "alert_id": "A1"
+            },
+            "aliases": [
+              "z",
+              "a"
+            ],
+            "provisional": false,
+            "attributes": {}
+          }
+        ],
+        "relations": [],
+        "facts": [],
+        "evidence": [],
+        "attributes": {
+          "fa": "میزبان آزمایشی",
+          "nested": {
+            "z": -0.0,
+            "tiny": 1e-07,
+            "large": 1e+20,
+            "whole": 1000000000000000.0
+          }
+        },
+        "vendor_fields": {},
+        "content_checksum_version": "soorin.source-content.sha256.v3",
+        "content_checksum": "00b54def4315a75b107f1a467503ddd0c4194b3a3c9d9e77129eb6fc90042f5b"
+      }
+    },
+    {
+      "name": "revision",
+      "event": {
+        "schema_version": "soorin.soc.knowledge-event.v1",
+        "tenant_id": "tenant-blue",
+        "source_system": "splunk",
+        "source_instance": "splunk-e2e",
+        "source_record_id": "A1",
+        "event_id": "e1",
+        "event_type": "security_alert",
+        "event_time": "2026-11-05T00:00:00.000000Z",
+        "observed_at": "2026-11-05T00:00:00.000000Z",
+        "recorded_at": "2026-11-05T00:00:00.000000Z",
+        "source_references": [
+          "z",
+          "a"
+        ],
+        "entities": [
+          {
+            "entity_id": "soorin:securityalert:test",
+            "entity_type": "SecurityAlert",
+            "normalized_value": "A1",
+            "source_identifiers": {
+              "alert_id": "A1"
+            },
+            "aliases": [
+              "z",
+              "a"
+            ],
+            "provisional": false,
+            "attributes": {}
+          }
+        ],
+        "relations": [],
+        "facts": [],
+        "evidence": [],
+        "attributes": {
+          "revision": 2
+        },
+        "vendor_fields": {},
+        "content_checksum_version": "soorin.source-content.sha256.v3",
+        "content_checksum": "f44c7346b27ba0a28593fdf676a4dde7b0b688efbd7adaaa89aa089ed4aee9bb"
+      }
+    }
+  ]
+}

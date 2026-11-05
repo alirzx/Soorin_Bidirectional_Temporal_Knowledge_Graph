@@ -24,6 +24,7 @@ mod rule_expression_input;
 pub(crate) mod rule_routes;
 mod search_routes;
 mod settings_routes;
+mod soc_event_validation;
 pub(crate) mod soc_ingestion;
 mod soc_knowledge;
 #[cfg(test)]
@@ -119,6 +120,11 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             post(soc_ingestion::ingest),
         )
         .route("/kbs/{id}/knowledge/context", post(soc_knowledge::context))
+        .route("/kbs/{id}/knowledge/receipts", get(soc_ingestion::receipts))
+        .route(
+            "/kbs/{id}/knowledge/receipts/{receipt}/retry",
+            post(soc_ingestion::retry),
+        )
         .route(
             "/workspaces/{id}/settings/reranker",
             get(soc_settings::get).put(soc_settings::put),

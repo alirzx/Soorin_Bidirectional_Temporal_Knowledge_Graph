@@ -54,6 +54,7 @@ fn field<'a>(value: &'a Value, key: &str) -> anyhow::Result<&'a str> {
 }
 
 pub fn validate(event: &Value) -> anyhow::Result<()> {
+    super::soc_event_validation::validate(event)?;
     anyhow::ensure!(
         event["schema_version"] == "soorin.soc.knowledge-event.v1",
         "unsupported_soc_schema"
@@ -123,15 +124,134 @@ pub fn validate(event: &Value) -> anyhow::Result<()> {
             }
         }
     }
+    canonicalize_source(source)?;
     let bytes = format!(
         "soorin.source-content.sha256.v3\0{}",
-        serde_json::to_string(&source)?
+        python_json(&Value::Object(source.clone()))?
     );
     anyhow::ensure!(
         event["content_checksum"].as_str() == Some(hex_digest(bytes.as_bytes()).as_str()),
         "source_checksum_mismatch"
     );
     Ok(())
+}
+
+fn canonicalize_source(source: &mut serde_json::Map<String, Value>) -> anyhow::Result<()> {
+    fn time(row: &mut serde_json::Map<String, Value>, key: &str) -> anyhow::Result<()> {
+        if let Some(value) = row.get_mut(key) {
+            if value.is_null() {
+                row.remove(key);
+            } else {
+                let parsed = chrono::DateTime::parse_from_rfc3339(
+                    value
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("soc_time_invalid"))?,
+                )?;
+                *value = json!(parsed
+                    .to_utc()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Micros, true));
+            }
+        }
+        Ok(())
+    }
+    fn set(row: &mut serde_json::Map<String, Value>, key: &str) {
+        let list = row
+            .entry(key)
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .unwrap();
+        list.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+        list.dedup();
+    }
+    for key in ["event_time", "observed_at"] {
+        time(source, key)?;
+    }
+    source.retain(|_, v| !v.is_null());
+    for key in ["attributes", "vendor_fields"] {
+        source.entry(key).or_insert_with(|| json!({}));
+    }
+    set(source, "source_references");
+    for (collection, id, set_key) in [
+        ("entities", "entity_id", "aliases"),
+        ("relations", "relation_id", "evidence_ids"),
+        ("facts", "fact_id", "evidence_ids"),
+        ("evidence", "evidence_id", "source_event_ids"),
+    ] {
+        let rows = source
+            .entry(collection)
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .unwrap();
+        for row in rows.iter_mut() {
+            let row = row.as_object_mut().unwrap();
+            row.retain(|_, v| !v.is_null());
+            for key in ["valid_from", "valid_to", "observed_at", "invalidated_at"] {
+                time(row, key)?;
+            }
+            set(row, set_key);
+        }
+        rows.sort_by(|a, b| a[id].as_str().cmp(&b[id].as_str()));
+    }
+    Ok(())
+}
+
+// v3 uses Python's shortest float spelling, including signed/zero-padded
+// exponents. serde_json's numeric exponent spelling differs (1e-7 vs 1e-07).
+fn python_json(value: &Value) -> anyhow::Result<String> {
+    Ok(match value {
+        Value::Array(rows) => format!(
+            "[{}]",
+            rows.iter()
+                .map(python_json)
+                .collect::<anyhow::Result<Vec<_>>>()?
+                .join(",")
+        ),
+        Value::Object(row) => format!(
+            "{{{}}}",
+            row.iter()
+                .map(|(key, value)| Ok(format!(
+                    "{}:{}",
+                    serde_json::to_string(key)?,
+                    python_json(value)?
+                )))
+                .collect::<anyhow::Result<Vec<_>>>()?
+                .join(",")
+        ),
+        Value::Number(number) if number.is_f64() => {
+            let raw = number.to_string();
+            if let Some((mantissa, exponent)) = raw.split_once('e') {
+                let exp: i32 = exponent.parse()?;
+                let mantissa = mantissa.strip_suffix(".0").unwrap_or(mantissa);
+                if (-4..16).contains(&exp) {
+                    let text = number.as_f64().unwrap().to_string();
+                    if text.contains('.') {
+                        text
+                    } else {
+                        format!("{text}.0")
+                    }
+                } else {
+                    format!("{mantissa}e{exp:+03}")
+                }
+            } else if number.as_f64().unwrap().abs() >= 1e16 {
+                let negative = raw.starts_with('-');
+                let digits = raw.trim_start_matches('-').trim_end_matches(".0");
+                let exponent = digits.len() - 1;
+                let significant = digits.trim_end_matches('0');
+                let mantissa = if significant.len() > 1 {
+                    format!("{}.{}", &significant[..1], &significant[1..])
+                } else {
+                    significant.to_owned()
+                };
+                format!(
+                    "{}{mantissa}e+{exponent:02}",
+                    if negative { "-" } else { "" }
+                )
+            } else {
+                raw
+            }
+        }
+        _ => serde_json::to_string(value)?,
+    })
 }
 
 pub async fn ingest(
@@ -153,6 +273,10 @@ pub async fn ingest(
         return Err(AppError::Unauthorized.into());
     }
     validate(&event).map_err(|_| AppError::Validation("invalid SOC knowledge event".into()))?;
+    let legacy_source:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE source_id=$1) AND NOT EXISTS(SELECT 1 FROM soorin_ingestion_receipts WHERE source_id=$1)").bind(source_id).fetch_one(&state.pool).await?;
+    if legacy_source {
+        return Err(AppError::Conflict("native SOC receipts require a dedicated empty Statements source; preserve existing source documents".into()).into());
+    }
     let binding: Option<(String, String, String)> = sqlx::query_as(
         "SELECT tenant_id,source_system,source_instance FROM soorin_kb_tenants WHERE kb_id=$1",
     )
@@ -177,13 +301,24 @@ pub async fn ingest(
     let mut tx = state.pool.begin().await?;
     let (receipt,status):(Uuid,String)=sqlx::query_as("INSERT INTO soorin_ingestion_receipts(id,kb_id,source_id,source_key,checksum,payload) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(source_id,source_key,checksum) DO UPDATE SET updated_at=now() RETURNING id,status")
         .bind(Uuid::now_v7()).bind(source.kb_id).bind(source_id).bind(key).bind(field(&event,"content_checksum")?).bind(&event).fetch_one(&mut *tx).await?;
-    let job = utopia_store::jobs::enqueue_with_max_attempts_tx(
-        &mut tx,
-        "soc_ingest",
-        json!({"receipt_id":receipt,"kb_id":source.kb_id}),
-        5,
-    )
-    .await?;
+    let existing:Option<(i64,String)>=sqlx::query_as("SELECT j.id,j.status FROM jobs j JOIN soorin_ingestion_receipts r ON r.job_id=j.id WHERE r.id=$1").bind(receipt).fetch_optional(&mut *tx).await?;
+    let job = if matches!(status.as_str(), "bound" | "quarantined")
+        || existing
+            .as_ref()
+            .is_some_and(|(_, status)| matches!(status.as_str(), "queued" | "running"))
+    {
+        existing.map(|(id, _)| id)
+    } else {
+        Some(
+            utopia_store::jobs::enqueue_with_max_attempts_tx(
+                &mut tx,
+                "soc_ingest",
+                json!({"receipt_id":receipt,"kb_id":source.kb_id}),
+                5,
+            )
+            .await?,
+        )
+    };
     sqlx::query("UPDATE soorin_ingestion_receipts SET job_id=$2 WHERE id=$1")
         .bind(receipt)
         .bind(job)
@@ -356,7 +491,21 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
         .bind(owner)
         .execute(&state.pool)
         .await;
-    let result = result.map_err(|_| anyhow::anyhow!("soc_ingest_timeout_retry"))?;
+    let result = result.unwrap_or_else(|_| Err(anyhow::anyhow!("soc_ingest_timeout_retry")));
+    if let Err(error) = &result {
+        let code = if error.to_string().starts_with("soc_materialization_pending") {
+            "soc_materialization_pending"
+        } else {
+            "soc_ingest_retryable_failure"
+        };
+        let _ = sqlx::query(
+            "UPDATE soorin_ingestion_receipts SET failure_code=$2,updated_at=now() WHERE id=$1",
+        )
+        .bind(id)
+        .bind(code)
+        .execute(&state.pool)
+        .await;
+    }
     result
 }
 
@@ -379,11 +528,19 @@ async fn process_locked(
     }
     if status == "pending" {
         for entity in event["entities"].as_array().unwrap() {
-            for authority in entity["source_identifiers"]
+            for (authority_name, authority) in entity["source_identifiers"]
                 .as_object()
                 .into_iter()
-                .flat_map(|m| m.values())
+                .flat_map(|m| m.iter())
             {
+                let authority_key = format!(
+                    "authority-v1:{}",
+                    serde_json::to_string(&json!([
+                        authority_name,
+                        authority,
+                        entity.get("scope").unwrap_or(&Value::Null)
+                    ]))?
+                );
                 let outcome = utopia_store::soorin_identity::register(
                     &state.pool,
                     utopia_store::soorin_identity::Registration {
@@ -392,9 +549,7 @@ async fn process_locked(
                         entity_type: field(entity, "entity_type")?,
                         source_system: field(event, "source_system")?,
                         source_instance: field(event, "source_instance")?,
-                        source_identifier: authority
-                            .as_str()
-                            .ok_or_else(|| anyhow::anyhow!("authority_string_required"))?,
+                        source_identifier: &authority_key,
                         canonical_key: field(entity, "entity_id")?,
                         status: "active",
                         source_revision_id: event["source_revision_id"].as_str(),
@@ -420,22 +575,31 @@ async fn process_locked(
                 } = outcome
                 {
                     let provenance = json!({"receipt_id":id,"checksum":event["content_checksum"]});
-                    let alias = field(entity, "normalized_value")?;
-                    utopia_store::soorin_identity::record_alias(
-                        &state.pool,
-                        kb,
-                        identity_id,
-                        alias,
-                        &alias.to_lowercase(),
-                        Some(
-                            chrono::DateTime::parse_from_rfc3339(field(event, "event_time")?)?
-                                .to_utc(),
-                        ),
-                        None,
-                        chrono::Utc::now(),
-                        &provenance,
-                    )
-                    .await?;
+                    let mut aliases = vec![field(entity, "normalized_value")?];
+                    aliases.extend(
+                        entity["aliases"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .filter_map(Value::as_str),
+                    );
+                    for alias in aliases {
+                        utopia_store::soorin_identity::record_alias(
+                            &state.pool,
+                            kb,
+                            identity_id,
+                            alias,
+                            &alias.to_lowercase(),
+                            Some(
+                                chrono::DateTime::parse_from_rfc3339(field(event, "event_time")?)?
+                                    .to_utc(),
+                            ),
+                            None,
+                            chrono::Utc::now(),
+                            &provenance,
+                        )
+                        .await?;
+                    }
                 }
             }
         }
@@ -483,9 +647,83 @@ async fn process_locked(
     if missing {
         anyhow::bail!("soc_materialization_pending; receipt remains submitted for retry");
     }
-    sqlx::query("UPDATE soorin_ingestion_receipts SET status='bound',updated_at=now() WHERE id=$1")
+    let payload = render(event)?;
+    let key = format!("statements:{}", field(&payload, "external_id")?);
+    let ready:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE source_id=$1 AND external_key=$2 AND deleted_at IS NULL AND status='ready' AND graph_status='done')").bind(source_id).bind(key).fetch_one(&state.pool).await?;
+    anyhow::ensure!(
+        ready,
+        "soc_materialization_pending; receipt remains submitted for retry"
+    );
+    sqlx::query("UPDATE soorin_ingestion_receipts SET status='bound',failure_code=NULL,updated_at=now() WHERE id=$1")
         .bind(id)
         .execute(&state.pool)
         .await?;
     Ok(())
+}
+
+/// Payload-free operator diagnostics, protected by KB administration.
+pub async fn receipts(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb, Role::Admin).await?;
+    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('receipt_id',r.id,'source_id',r.source_id,'status',r.status,'failure_code',r.failure_code,'created_at',r.created_at,'updated_at',r.updated_at,'job_id',r.job_id,'job_status',j.status,'attempts',j.attempts,'max_attempts',j.max_attempts,'age_seconds',extract(epoch from now()-r.created_at)) FROM soorin_ingestion_receipts r LEFT JOIN jobs j ON j.id=r.job_id WHERE r.kb_id=$1 ORDER BY r.created_at DESC LIMIT 100").bind(kb).fetch_all(&state.pool).await?;
+    let counts:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('status',status,'count',count(*)) FROM soorin_ingestion_receipts WHERE kb_id=$1 GROUP BY status ORDER BY status").bind(kb).fetch_all(&state.pool).await?;
+    Ok(Json(
+        json!({"schema_version":"soorin.ingestion-status.v1","counts":counts,"receipts":rows,"limit":100}),
+    ))
+}
+
+pub async fn retry(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb, id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<Value>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb, Role::Admin).await?;
+    let mut tx = state.pool.begin().await?;
+    let row: Option<(String, Option<i64>)> = sqlx::query_as(
+        "SELECT status,job_id FROM soorin_ingestion_receipts WHERE kb_id=$1 AND id=$2 FOR UPDATE",
+    )
+    .bind(kb)
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (status, previous) = row.ok_or(AppError::NotFound)?;
+    if matches!(status.as_str(), "bound" | "quarantined") {
+        return Err(AppError::Conflict(
+            "receipt is terminal; quarantine requires identity/revision review".into(),
+        )
+        .into());
+    }
+    let pending: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM jobs WHERE id=$1 AND status IN ('queued','running'))",
+    )
+    .bind(previous)
+    .fetch_one(&mut *tx)
+    .await?;
+    let job = if pending {
+        previous.unwrap()
+    } else {
+        utopia_store::jobs::enqueue_with_max_attempts_tx(
+            &mut tx,
+            "soc_ingest",
+            json!({"receipt_id":id,"kb_id":kb}),
+            5,
+        )
+        .await?
+    };
+    sqlx::query("UPDATE soorin_ingestion_receipts SET job_id=$2,failure_code=NULL,updated_at=now() WHERE id=$1").bind(id).bind(job).execute(&mut *tx).await?;
+    tx.commit().await?;
+    utopia_store::audit::record(
+        &state.pool,
+        Some(kb),
+        user.id,
+        "soc.receipt_retried",
+        "receipt",
+        Some(id),
+        json!({"job_id":job}),
+    )
+    .await?;
+    Ok(Json(json!({"receipt_id":id,"job_id":job})))
 }
