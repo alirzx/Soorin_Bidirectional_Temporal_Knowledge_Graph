@@ -46,8 +46,8 @@ Historical lexical recall uses PostgreSQL and has different tokenization/ranking
 | External models | Native LLM client → deployment origin policy → context/encode/provider/decode/cleanup gateway; binary OCR/transcription require trusted local origin |
 
 Graphify's existing index was queried before the audit and its AST-only updater
-was inspected and run with a 55-second deadline. The update produced 12,042 nodes,
-31,908 edges and 598 communities at the focused hardening code checkpoint. Source inspection and SQL
+was inspected and run with a 55-second deadline. The update produced 12,051 nodes,
+31,925 edges and 607 communities at the focused hardening code checkpoint. Source inspection and SQL
 references resolved missing graph detail; Graphify is not an execution proof or a
 runtime dependency. No semantic extraction or model call was requested.
 

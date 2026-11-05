@@ -1,9 +1,8 @@
 # Final pre-build hardening — baseline 84a92bc
 
-This report records the completed source/static work before the branch is pushed
-for exact-commit CI. Delivery records the final remote SHAs and integration
-outcome. CI success is a mandatory prerequisite for the requested feature merge;
-this document does not substitute earlier-commit success for that gate.
+This report records source/static work and the subsequently verified exact-head CI
+and integration checkpoint. Final feature ref publication/cleanup is reported at
+delivery. Production runtime qualification remains a separate phase.
 
 ## Repository and preserved state
 
@@ -93,7 +92,7 @@ No independent redistribution right for the footage is asserted.
 | Frontend tests | PASS; 37 files / 270 tests |
 | TypeScript / style guard / frontend assets | PASS; installed tools only |
 | Development/production/model Compose | PASS; static placeholders only |
-| Git whitespace / local links | PASS; 112 local Markdown links resolve |
+| Git whitespace / local links | PASS; 113 local Markdown links resolve |
 | Search Rust unit execution | NOT RUN; 45s deadline during cached dependency compilation, not restarted |
 | Server/DB affected regressions | NOT RUN locally; prepared for CI/disposable-DB qualification |
 | Exact pushed branch CI | Pending verification after publication; a successful check on another SHA is insufficient |
@@ -110,8 +109,8 @@ TypeScript execution passed after the correction. The corrected head must pass
 CI before feature integration; the earlier frontend failure is not treated as green.
 Logs/reports are local temporary artifacts, excluded from Git.
 
-Graphify's bounded AST-only refresh completed with 12,042 nodes, 31,908 edges
-and 598 communities. Its files remain ignored/local-only; these are repository
+Graphify's bounded AST-only refresh completed with 12,051 nodes, 31,925 edges
+and 607 communities. Its files remain ignored/local-only; these are repository
 code-graph counts, not live SOC data. Mermaid diagrams were reviewed structurally;
 no browser rendering or unavailable Mermaid parser execution is claimed.
 
@@ -131,3 +130,27 @@ branches automatically. A blocker is a reason to retain recovery branches.
 Next runtime commands and criteria remain in
 [Build and test handoff](BUILD_AND_TEST_HANDOFF.md). Production readiness remains
 unverified regardless of static or unit-test results.
+
+## Verified integration checkpoint
+
+The corrected review head `c59d2bff75b874a77f4553790079253913c29223` passed
+[CI run 42094917185](https://github.com/alirzx/Soorin_Bidirectional_Temporal_Knowledge_Graph/actions/runs/42094917185):
+formatting, Clippy, Rust workspace build/tests, Python, web, migrations and backend
+aggregate all succeeded. Rust logs report 1,516 passed, zero failed and six existing
+ignored tests across 44 result summaries. The ignored tests are not passes. The
+previous local search-test timeout was superseded by its successful remote test
+execution; no local compilation loop was used.
+
+Both feature refs were refreshed and still matched the expected `84a92bc` baseline.
+The requested non-fast-forward integration created merge
+`3ebfe58224b64348f31e381e4d305ee63f10df30`, with the feature baseline and validated
+hardening head as its two parents. Its tree exactly matched the validated hardening
+head. This final evidence update changes documentation only. Fresh feature-push
+CI is distinct from the successful review-head run and must be reported with its
+actual observed status at delivery.
+
+PRE-BUILD HARDENING: PASS
+
+READY FOR ISOLATED BUILD: YES
+
+PRODUCTION READY: NOT YET VERIFIED

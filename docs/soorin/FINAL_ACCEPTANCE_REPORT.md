@@ -127,3 +127,17 @@ Rust full build: NOT RUN. Docker build: NOT RUN. Real model inference: NOT RUN.
 Database upgrade: NOT RUN. Full SOC E2E: NOT RUN. Production deployment: NOT RUN.
 These are release blockers, intentionally deferred by this mission. Engineering
 handoff readiness does not authorize a production release or a main merge.
+
+
+## Subsequent pre-build qualification and integration
+
+The focused hardening branch passed exact-head CI at
+`c59d2bff75b874a77f4553790079253913c29223` ([run 42094917185](https://github.com/alirzx/Soorin_Bidirectional_Temporal_Knowledge_Graph/actions/runs/42094917185))
+and was integrated through non-fast-forward merge
+`3ebfe58224b64348f31e381e4d305ee63f10df30`. This supersedes earlier unverified-CI
+limitations for the reviewed code. Local lightweight evidence, upstream adaptations,
+branding, preserved branches and final release boundaries are detailed in
+[Pre-build hardening](PREBUILD_HARDENING_REPORT.md). Real model inference,
+application image build, live SOC E2E, existing-deployment upgrade/restore and
+production deployment remain unqualified. CI used its own disposable database;
+no existing local environment was migrated.
