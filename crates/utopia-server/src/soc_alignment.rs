@@ -121,7 +121,8 @@ pub async fn phrases(pool: &PgPool, kb_id: Uuid) -> anyhow::Result<bool> {
         let row = matches[0];
         let Some(prop) = props.iter().find(|p| {
             p.key == row["key"].as_str().unwrap()
-                && p.label == row["label"].as_str().unwrap()
+                && (p.label == row["label"].as_str().unwrap()
+                    || p.label == utopia_store::ontology::lower_camel(row["label"].as_str().unwrap()))
                 && p.temporal == row["temporal"].as_str().unwrap()
                 && p.domains.contains(&sig.subject_type_id.unwrap())
                 && p.ranges.contains(&sig.object_type_id.unwrap())
@@ -218,7 +219,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await?;
         assert!(unknown_type.is_none());
-        sqlx::query("INSERT INTO relation_types(id,kb_id,key,label,temporal) VALUES($1,$2,'observed_on','observed on','event')").bind(relation).bind(kb).execute(&pool).await?;
+        sqlx::query("INSERT INTO relation_types(id,kb_id,key,label,temporal) VALUES($1,$2,'observed_on','observedOn','event')").bind(relation).bind(kb).execute(&pool).await?;
         sqlx::query(
             "INSERT INTO relation_type_domains(relation_type_id,entity_type_id) VALUES($1,$2)",
         )

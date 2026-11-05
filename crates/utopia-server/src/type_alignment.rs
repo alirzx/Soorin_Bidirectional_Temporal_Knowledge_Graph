@@ -113,12 +113,7 @@ pub async fn align_types_reasking(state: &AppState, kb_id: Uuid, reask: u32) -> 
     let pool = &state.pool;
     let soc = crate::soc_alignment::types(pool, kb_id).await?;
     let kb = utopia_store::kbs::get(pool, kb_id).await?;
-    if soc
-        && !utopia_store::settings::get(pool, kb.workspace_id)
-            .await?
-            .as_ref()
-            .is_some_and(|s| s.chat_ready())
-    {
+    if soc {
         utopia_store::jobs::enqueue_unless_queued_after(
             pool,
             "align_phrases",
