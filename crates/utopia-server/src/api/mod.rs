@@ -626,18 +626,25 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/jobs/noop", post(jobs_noop))
         .with_state(state);
 
-    // 开发环境 CORS：Vite dev server 携带 cookie 跨端口访问
-    let cors = CorsLayer::new()
-        .allow_origin("http://localhost:5173".parse::<HeaderValue>().unwrap())
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PATCH,
-            Method::DELETE,
-            Method::PUT,
-        ])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
-        .allow_credentials(true);
+    // Deployment-owned exact origin. Malformed values grant no cross-origin access.
+    let cors = CorsLayer::new();
+    let cors = match cfg
+        .cors_origin
+        .as_deref()
+        .and_then(|value| value.parse::<HeaderValue>().ok())
+    {
+        Some(origin) if origin != "*" => cors.allow_origin(origin),
+        _ => cors,
+    }
+    .allow_methods([
+        Method::GET,
+        Method::POST,
+        Method::PATCH,
+        Method::DELETE,
+        Method::PUT,
+    ])
+    .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+    .allow_credentials(true);
 
     /* **`/api` 下面认不出来的路径是 404，不是首页。**
     下面那个 history fallback 是给页面路由用的：刷新 /graph 要拿到 index.html。

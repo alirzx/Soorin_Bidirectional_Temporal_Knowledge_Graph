@@ -16,3 +16,12 @@ AGENTS.md
 graphify-out/
 .env
 *.log
+
+**/__pycache__/
+**/*.pyc
+.env.*
+!**/*.env.example
+**/model-cache/
+**/*.safetensors
+**/*.pt
+**/*.bin
