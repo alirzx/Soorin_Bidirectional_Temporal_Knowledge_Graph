@@ -69,7 +69,96 @@ impl ConversationClients {
 /// 一轮对话里嵌过的文字与它的向量（#971）。挑口径、检索分块、按名字查实体都要把问题嵌成
 /// 向量，一轮之内是同一句话、同一个模型，嵌一次就够。缓存跟着这一轮的 `ToolSink` 走，不落库，
 /// 只记成功的；没有这一轮的调用方（HTTP 检索、口径页）传 `None`，各嵌各的
-pub type EmbedCache = std::collections::HashMap<String, Vec<f32>>;
+#[derive(Default)]
+pub struct EmbedCache {
+    vectors: HashMap<(uuid::Uuid, String, String), Vec<f32>>,
+}
+
+impl EmbedCache {
+    fn key(settings: &LlmSettings, text: &str) -> (uuid::Uuid, String, String) {
+        // Exact text is intentional: whitespace and case can affect model output.
+        (
+            settings.workspace_id,
+            utopia_store::soorin_embeddings::identity(settings),
+            text.to_owned(),
+        )
+    }
+
+    pub fn valid(settings: &LlmSettings, vector: &[f32]) -> bool {
+        !vector.is_empty()
+            && vector.iter().all(|v| v.is_finite())
+            && settings
+                .embed_dim
+                .is_none_or(|dim| dim > 0 && vector.len() == dim as usize)
+    }
+
+    pub fn get(&self, settings: &LlmSettings, text: &str) -> Option<&Vec<f32>> {
+        self.vectors
+            .get(&Self::key(settings, text))
+            .filter(|v| Self::valid(settings, v))
+    }
+
+    pub fn insert(&mut self, settings: &LlmSettings, text: &str, vector: Vec<f32>) {
+        if Self::valid(settings, &vector) {
+            self.vectors.insert(Self::key(settings, text), vector);
+        }
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn cache_separates_workspace_model_dimension_and_exact_text_and_rejects_invalid_vectors() {
+        let mut settings = LlmSettings {
+            workspace_id: uuid::Uuid::now_v7(),
+            embed_base_url: Some("http://synthetic:8080/v1".into()),
+            embed_model: Some("synthetic@revision1".into()),
+            embed_dim: Some(2),
+            embed_api_key: None,
+            updated_at: chrono::Utc::now(),
+            ocr_provider: "mineru".into(),
+            chat_base_url: None,
+            chat_api_key: None,
+            chat_model: None,
+            chat_reasoning_effort: None,
+            ocr_base_url: None,
+            ocr_api_key: None,
+            ocr_backend: None,
+            ocr_model: None,
+            transcribe_base_url: None,
+            transcribe_api_key: None,
+            transcribe_model: None,
+        };
+        let mut cache = EmbedCache::default();
+        cache.insert(&settings, "Host A", vec![1.0, 0.0]);
+        assert_eq!(cache.get(&settings, "Host A"), Some(&vec![1.0, 0.0]));
+        assert!(cache.get(&settings, "Host B").is_none());
+        assert!(cache.get(&settings, " Host A").is_none());
+        let workspace = settings.workspace_id;
+        settings.workspace_id = uuid::Uuid::now_v7();
+        assert!(cache.get(&settings, "Host A").is_none());
+        settings.workspace_id = workspace;
+        settings.embed_model = Some("synthetic@revision2".into());
+        assert!(cache.get(&settings, "Host A").is_none());
+        settings.embed_model = Some("synthetic@revision1".into());
+        settings.embed_dim = Some(3);
+        assert!(cache.get(&settings, "Host A").is_none());
+        settings.embed_dim = Some(2);
+        for invalid in [
+            vec![],
+            vec![1.0],
+            vec![f32::NAN, 0.0],
+            vec![f32::INFINITY, 0.0],
+        ] {
+            cache.insert(&settings, "bad", invalid);
+            assert!(cache.get(&settings, "bad").is_none());
+        }
+        // A failed request inserts nothing and cannot poison an existing success.
+        assert_eq!(cache.get(&settings, "Host A"), Some(&vec![1.0, 0.0]));
+    }
+}
 
 pub fn embed_client(s: &LlmSettings) -> Option<LlmClient> {
     if !s.embed_ready() {

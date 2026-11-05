@@ -56,36 +56,27 @@ impl ToolCtx<'_> {
         self.via_token.is_none()
     }
 
-    /// 一段文字的向量，用这个工作区配的嵌入模型。没配、或调用失败时 None：
-    /// 图谱工具照常按子串走，向量只是第二阶段
-    pub async fn embed(&self, text: &str) -> Option<Vec<f32>> {
+    /// Reuse only a finite, dimension-compatible vector from this workspace/model.
+    pub async fn embed_once(&self, sink: &mut ToolSink, text: &str) -> Option<Vec<f32>> {
         let settings = utopia_store::settings::get(&self.state.pool, self.workspace_id)
             .await
             .ok()
             .flatten()?;
-        let client = crate::llm_util::embed_client(&settings)?;
-        match client.embed(&[text.to_string()]).await {
-            Ok(mut v) if !v.is_empty() => Some(v.remove(0)),
-            Ok(_) => None,
-            Err(e) => {
-                tracing::warn!(error = %e, "嵌入失败，图谱工具按子串匹配");
-                None
-            }
-        }
-    }
-
-    /// [`Self::embed`]，同一轮里同样的文字只嵌一次（见 [`ToolSink::embeddings`]）
-    pub async fn embed_once(&self, sink: &mut ToolSink, text: &str) -> Option<Vec<f32>> {
-        let settings = utopia_store::settings::get(&self.state.pool, self.workspace_id)
-            .await.ok().flatten()?;
-        let key = format!("{}:{text}", utopia_store::soorin_embeddings::identity(&settings));
-        if let Some(vec) = sink.embeddings.get(&key) {
+        if let Some(vec) = sink.embeddings.get(&settings, text) {
             return Some(vec.clone());
         }
-        let mut vectors = crate::llm_util::embed_client(&settings)?.embed(&[text.to_owned()]).await.ok()?;
-        if vectors.is_empty() { return None; }
+        let mut vectors = crate::llm_util::embed_client(&settings)?
+            .embed(&[text.to_owned()])
+            .await
+            .ok()?;
+        if vectors.is_empty() {
+            return None;
+        }
         let vec = vectors.remove(0);
-        sink.embeddings.insert(key, vec.clone());
+        if !crate::llm_util::EmbedCache::valid(&settings, &vec) {
+            return None;
+        }
+        sink.embeddings.insert(&settings, text, vec.clone());
         Some(vec)
     }
 }

@@ -145,8 +145,11 @@ async fn vector_channel(
     ) else {
         return Ok(None);
     };
-    let cache_key = format!("{}:{query}", utopia_store::soorin_embeddings::identity(&settings));
-    let vector = match cache.as_deref().and_then(|c| c.get(&cache_key)).cloned() {
+    let vector = match cache
+        .as_deref()
+        .and_then(|c| c.get(&settings, query))
+        .cloned()
+    {
         Some(v) => v,
         None => {
             let mut vectors = {
@@ -157,8 +160,11 @@ async fn vector_channel(
                 return Ok(None);
             }
             let v = vectors.remove(0);
+            if !llm_util::EmbedCache::valid(&settings, &v) {
+                return Ok(None);
+            }
             if let Some(cache) = cache {
-                cache.insert(cache_key, v.clone());
+                cache.insert(&settings, query, v.clone());
             }
             v
         }
