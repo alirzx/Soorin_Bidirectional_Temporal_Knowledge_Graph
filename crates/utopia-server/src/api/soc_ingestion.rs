@@ -533,6 +533,13 @@ async fn process_locked(
     if matches!(status, "bound" | "quarantined") {
         return Ok(());
     }
+    // Older queued receipts may predate stricter relation admission. Preserve
+    // them for review instead of ignoring an unknown/invalid typed relation.
+    if super::soc_event_validation::validate(event).is_err() {
+        sqlx::query("UPDATE soorin_ingestion_receipts SET status='quarantined',failure_code='stored_event_requires_review',updated_at=now() WHERE id=$1")
+            .bind(id).execute(&state.pool).await?;
+        return Ok(());
+    }
     // Delivery order is not source order. Opaque revision IDs are identities,
     // not sortable clocks. Equal source clocks with changed content are ambiguous.
     let previous: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(

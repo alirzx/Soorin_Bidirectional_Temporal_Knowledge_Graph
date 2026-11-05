@@ -120,6 +120,12 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     let state = AppState::new(pool.clone(), &cfg, search, "test-only".into());
     let app = router(state.clone(), &cfg);
     let session = crate::auth::issue_token(&state, user)?;
+    // Source boundaries protect established provisional v1 keys, which omit
+    // source namespace when no authority exists. Rebinding may not mix scopes.
+    let response = app.clone().oneshot(Request::put(format!("/api/v1/kbs/{kb}/knowledge/binding"))
+        .header("content-type", "application/json").header("authorization", format!("Bearer {session}"))
+        .body(Body::from(json!({"tenant_id":"tenant-blue","source_system":"edr","source_instance":"another-source"}).to_string()))?).await?;
+    assert_eq!(response.status().as_u16(), 409);
     let event = fixture();
     let path = format!("/api/v1/sources/{source}/knowledge-events");
     assert_eq!(
@@ -298,6 +304,23 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
         .bind(kb.to_string())
         .execute(&pool)
         .await?;
+    // A persisted receipt admitted by an older validator must not silently bind
+    // after its unknown relation is skipped. Keep it intact for explicit review.
+    let invalid_receipt = Uuid::now_v7();
+    let mut invalid = fixture();
+    invalid["relations"] = json!([{"relation_id":"legacy-unknown","relation_type":"unknown_relation",
+        "subject_entity_id":invalid["entities"][0]["entity_id"],"object_entity_id":invalid["entities"][0]["entity_id"],
+        "confidence_category":"observed","evidence_ids":[],"attributes":{}}]);
+    sqlx::query("INSERT INTO soorin_ingestion_receipts(id,kb_id,source_id,source_key,checksum,payload) VALUES($1,$2,$3,'legacy-invalid','synthetic',$4)")
+        .bind(invalid_receipt).bind(kb).bind(source).bind(&invalid).execute(&pool).await?;
+    soc_ingestion::process(&state, invalid_receipt).await?;
+    let status: (String, Option<String>) =
+        sqlx::query_as("SELECT status,failure_code FROM soorin_ingestion_receipts WHERE id=$1")
+            .bind(invalid_receipt)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(status.0, "quarantined");
+    assert_eq!(status.1.as_deref(), Some("stored_event_requires_review"));
     sqlx::query("DELETE FROM organizations WHERE id=$1")
         .bind(org)
         .execute(&pool)

@@ -1,6 +1,6 @@
 //! Runtime profile of the published v1 contract, checked before any writes.
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 fn object(value: &Value, allowed: &[&str]) -> anyhow::Result<()> {
     let row = value
@@ -116,6 +116,7 @@ pub fn validate(event: &Value) -> anyhow::Result<()> {
         "../../../../soorin/ontology/soc_ontology_v1.yaml"
     ))?;
     let mut entities = HashSet::new();
+    let mut entity_kinds = HashMap::new();
     for entity in array(event, "entities", 128)? {
         object(
             entity,
@@ -146,6 +147,19 @@ pub fn validate(event: &Value) -> anyhow::Result<()> {
                     .is_some_and(|label| label.replace(' ', "") == kind)),
             "soc_entity_type_unknown"
         );
+        let kind_key = spec["entity_types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| {
+                row["label"]
+                    .as_str()
+                    .is_some_and(|label| label.replace(' ', "") == kind)
+            })
+            .unwrap()["key"]
+            .as_str()
+            .unwrap();
+        entity_kinds.insert(id, kind_key);
         text(entity, "normalized_value")?;
         let authority = entity["source_identifiers"]
             .as_object()
@@ -295,8 +309,43 @@ pub fn validate(event: &Value) -> anyhow::Result<()> {
                 &["valid_from", "valid_to", "recorded_at", "invalidated_at"],
             )?;
             if collection == "relations" {
-                text(row, "relation_type")?;
-                text(row, "object_entity_id")?;
+                let normalize = |value: &str| {
+                    value
+                        .chars()
+                        .filter(|c| c.is_ascii_alphanumeric())
+                        .flat_map(char::to_lowercase)
+                        .collect::<String>()
+                };
+                let relation = text(row, "relation_type")?;
+                let relation = spec["relation_types"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|r| normalize(r["key"].as_str().unwrap()) == normalize(relation))
+                    .ok_or_else(|| anyhow::anyhow!("soc_relation_type_unknown"))?;
+                let subject = entity_kinds[text(row, "subject_entity_id")?];
+                let object = entity_kinds[text(row, "object_entity_id")?];
+                anyhow::ensure!(
+                    relation["domains"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|kind| kind.as_str() == Some(subject)),
+                    "soc_relation_domain_invalid"
+                );
+                anyhow::ensure!(
+                    relation["ranges"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|kind| kind.as_str() == Some(object)),
+                    "soc_relation_range_invalid"
+                );
+                anyhow::ensure!(
+                    relation["required_provenance"] != true
+                        || !row["evidence_ids"].as_array().unwrap().is_empty(),
+                    "soc_relation_evidence_required"
+                );
                 anyhow::ensure!(
                     row["attributes"].is_object(),
                     "soc_relation_attributes_required"
@@ -397,5 +446,51 @@ mod storage_tests {
             false
         )
         .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod relation_tests {
+    use super::*;
+    use serde_json::json;
+    fn event() -> Value {
+        let mut event: Value = serde_json::from_str::<Value>(include_str!(
+            "../../../../soorin/tests/fixtures/soc_canonical_minimal_v1.json"
+        ))
+        .unwrap()["event"]
+            .clone();
+        event["entities"] = json!([
+            {"entity_id":"soorin:a","entity_type":"SecurityAlert","normalized_value":"A","source_identifiers":{},"aliases":[],"attributes":{},"provisional":false},
+            {"entity_id":"soorin:b","entity_type":"Host","normalized_value":"H","source_identifiers":{},"aliases":[],"attributes":{},"provisional":false}]);
+        event["evidence"] = json!([{"evidence_id":"e","source_record_id":"A"}]);
+        event["relations"] = json!([{"relation_id":"r","relation_type":"observed_on","subject_entity_id":"soorin:a","object_entity_id":"soorin:b","evidence_ids":["e"],"confidence_category":"asserted","attributes":{}}]);
+        event
+    }
+    #[test]
+    fn reviewed_relations_require_valid_endpoints_and_evidence() {
+        for spelling in ["observed_on", "observed on", "observedOn"] {
+            let mut value = event();
+            value["relations"][0]["relation_type"] = json!(spelling);
+            validate(&value).unwrap();
+            assert_eq!(value["relations"][0]["confidence_category"], "asserted");
+        }
+        for (collection, index, field, bad) in [
+            ("relations", 0, "relation_type", json!("unknown_relation")),
+            ("entities", 0, "entity_type", json!("Ticket")),
+            ("entities", 1, "entity_type", json!("UserAccount")),
+            ("relations", 0, "object_entity_id", json!("soorin:missing")),
+            ("relations", 0, "evidence_ids", json!([])),
+            ("relations", 0, "evidence_ids", json!(["missing"])),
+            (
+                "relations",
+                0,
+                "confidence_category",
+                json!("model_proposed"),
+            ),
+        ] {
+            let mut value = event();
+            value[collection][index][field] = bad;
+            assert!(validate(&value).is_err(), "{collection}.{field}");
+        }
     }
 }

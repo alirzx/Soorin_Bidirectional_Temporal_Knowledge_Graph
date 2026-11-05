@@ -112,3 +112,23 @@ class SplunkNormalizerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class SourceRevisionClockTests(unittest.TestCase):
+    def test_revisions_keep_occurrence_time_and_advance_only_source_clock(self):
+        events=[]
+        for hour, status in [('10:00','created'),('10:30','updated'),('11:00','analyst_updated'),('12:00','report_attached')]:
+            event=normalize_llm_payload({'alert_id':'N','event_time':'2026-11-05T10:00:00Z'},tenant_id='t',source_instance='s',
+                raw_record={'notable_id':'N','source_updated_at':f'2026-11-05T{hour}:00Z','status':status,'source_revision_id':status},
+                recorded_at='2026-11-06T00:00:00Z').event
+            events.append(event)
+        self.assertEqual(len({e.event_time for e in events}),1)
+        self.assertEqual([e.observed_at for e in events],sorted(e.observed_at for e in events))
+        self.assertEqual(len({e.observed_at for e in events}),4)
+        self.assertEqual(len({e.entities[0].entity_id for e in events}),1)
+        self.assertEqual(len({e.content_checksum for e in events}),4)
+
+    def test_missing_source_update_does_not_use_delivery_clock_or_opaque_revision(self):
+        events=[normalize_llm_payload({'alert_id':'N','event_time':'2026-11-05T10:00:00Z'},tenant_id='t',source_instance='s',
+            raw_record={'notable_id':'N','source_revision_id':revision},recorded_at=delivery).event
+            for revision,delivery in [('z','2026-11-05T11:00:00Z'),('a','2026-11-06T12:00:00Z')]]
+        self.assertEqual(events[0].observed_at,events[1].observed_at)
