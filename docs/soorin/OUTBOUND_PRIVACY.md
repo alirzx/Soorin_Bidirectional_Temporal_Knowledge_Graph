@@ -77,3 +77,10 @@ gateway content.
 The gateway remains responsible for detection, tokenization, policy semantics,
 alias storage and encryption. Soorin does not implement a second tokenizer,
 infer tenants from arbitrary request headers, or modify the gateway repository.
+
+Release builds ignore `UTOPIA_MODEL_TEST_MODE`; the environment shortcut only
+exists in debug/test builds for local mocks. Secure HTTP-client initialization
+fails explicitly instead of falling back to default redirect/timeout behavior.
+Production tenant mapping, network isolation and storage minimization are detailed
+in [Security boundaries](SECURITY_BOUNDARIES.md). No real provider or gateway
+request was made during this lightweight hardening pass.
