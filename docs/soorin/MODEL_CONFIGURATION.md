@@ -1,59 +1,90 @@
-# Model configuration · Runtime versus evaluation
+# Native model deployment and CPU acceptance
 
-> **Sprint 1 readiness:** Chat, embedding, and reranker profiles are implemented and offline-tested. The `SOORIN_*` variables below are currently consumed by **Python Soorin modules**, **not automatically by the upstream Rust server**. No live provider has been validated.
+The Rust server reads authenticated **Workspace Settings** for Chat and
+Embedding. Python `SOORIN_*` evaluation variables do not configure that server.
+Reranking uses the administrator-only workspace runtime API. Optional model
+profiles do not affect basic application health or deterministic SOC alignment.
 
-## Production runtime: Utopia Workspace Settings
+| Role | Pinned model revision | Native endpoint | Cache volume suffix |
+| --- | --- | --- | --- |
+| embedding | BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181 | http://embedding:8080/v1 | soorin_embedding_cache |
+| reranker | BAAI/bge-reranker-v2-m3@953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e | http://reranker:8080 | soorin_reranker_cache |
+| NER | bnsapa/cybersecurity-ner@1ad52f1a7686a58da2a427c0706d8b868df47181 | http://ner:8080/ner | soorin_ner_cache |
 
-The running Utopia Rust API persists Chat and Embedding settings through its **authenticated Workspace Settings UI/API**. The supported runtime fields are `chat_base_url`, `chat_model`, `chat_api_key`, `chat_reasoning_effort`, `embed_base_url`, `embed_model`, `embed_api_key`, `embed_dim`. See `crates/utopia-server/src/api/settings_routes.rs`.
+Compose prefixes volumes with the project name. These are separate from the
+validation-only `soorin_master_*` caches. Never delete caches to repair startup.
 
-Use the Workspace Settings **connection test**, then inspect `align_types` and `embed_ontology` jobs. The service appends `/chat/completions` or `/embeddings` to the configured OpenAI-compatible base URL. Never enter the full endpoint as the base URL.
+## Download once, then start offline
 
-The Rust flow is direct and authoritative: `settings_routes` authorizes workspace administrators and persists `llm_settings`; `llm_util::chat_client` and `embed_client` construct live clients from that record; document ingestion, ontology alignment, chat tools, and hybrid retrieval read those clients. Changing the Python profile does not enter this flow.
+Run one profile at a time on a constrained host. Each profile has 2 CPUs, a
+4 GiB memory limit, one inference slot, batches <=16, and bounded request text.
+The runtime user is 65532. Initialization deliberately uses root to populate
+the initially root-owned named volume; cached runtime reads it without writes.
 
-**Important:** Merely adding `SOORIN_CHAT_ENABLED=true` or `SOORIN_EMBED_ENABLED=true` to a Compose `.env` **does not configure Utopia's live model clients**. The existing `docker-compose.soorin-dev.yml` does not wire those variables into Rust. Do not claim runtime activation from Python profile checks alone.
+```bash
+docker compose -p soorin-sprint1 -f docker-compose.soorin-dev.yml -f docker-compose.models.yml --profile ner build ner
+docker compose -p soorin-sprint1 -f docker-compose.soorin-dev.yml -f docker-compose.models.yml --profile ner run --rm --no-deps --user 0 -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 ner init --role ner
+docker compose -p soorin-sprint1 -f docker-compose.soorin-dev.yml -f docker-compose.models.yml --profile ner up -d ner
+python3 -m soorin.ops.models smoke --role ner --base-url http://127.0.0.1:2813
+```
 
-## Python model evaluation profiles
+Replace `ner` with `embedding` (port 2811) or `reranker` (2812) for the other
+roles, including the profile, service and `--role` arguments. Model startup
+sets HF_HUB_OFFLINE=1 and TRANSFORMERS_OFFLINE=1. A missing pinned snapshot
+fails readiness; startup never downloads weights implicitly. Repeating the
+explicit init command resumes an interrupted download from the same cache.
+No runtime needs GPU, CUDA, or a model-provider API key.
 
-`soorin/config/soorin.example.env` documents Python-only, optional configuration:
+Embedding and reranking inspect the first 512 tokens, with input bounded by
+16,000 characters. Native reranking additionally bounds query/text to 4,000 /
+8,000 characters. NER inspects the first 4,000 characters / 512 tokens, supports
+English, and returns no English-model proposals for Persian/Arabic script.
+BGE's multilingual input support is distinct from this English NER restriction.
+Truncation and NER scores do not establish security confidence.
 
-| Prefix | Feature | Runtime integration |
-| --- | --- | --- |
-| `SOORIN_CHAT_*` | OpenAI-compatible chat readiness probe | **Not** a replacement for Utopia Workspace Settings |
-| `SOORIN_EMBED_*` | Embedding client, batching, dimension validation, optional cache | Used by Python test/evaluation components; **not** native Rust vector indexing |
-| `SOORIN_RERANK_*` | Cohere v2 / Jina v1 / TEI reranker adapter | Offline Python adapter only; **not wired into Rust search or UI** |
+## Configure the native server
 
-Profiles default to disabled; no secrets, live URLs or provider access are included in Git. `BAAI/bge-m3` with 1024-dimensional dense vectors is an **evaluation candidate**, not an installed/validated service.
+Obtain a workspace administrator session using the normal Utopia login/UI.
+Supply UTOPIA_SESSION_TOKEN in the shell; never put credentials in Git or CLI
+arguments. The helper fetches existing nonsecret settings before updating them.
 
-| Variable family | Classification | Effect |
-|---|---|---|
-| Utopia Workspace Settings fields | Runtime-active | Live Rust Chat, embeddings, indexing, alignment, and retrieval |
-| `SOORIN_CHAT_*` | Python-only / development | Health/evaluation adapter |
-| `SOORIN_EMBED_*` | Python-only / development | Offline SDK/evaluation embeddings and bounded cache |
-| `SOORIN_RERANK_*` | Python-only / future integration | Offline reranker; not connected to Rust retrieval |
-| `SOORIN_OUTBOUND_*`, `SOORIN_SYNTHETIC_MODE` | Python-only policy | Does not configure a production Privacy Gateway |
-| Compose `UTOPIA_*`, ports, database variables | Docker/runtime | Container image, API/database wiring, and secrets as documented by Compose |
+```bash
+python3 -m soorin.ops.models configure --workspace "$UTOPIA_WORKSPACE_ID" --embedding --reranker
+# Also supply DEEPSEEK_API_KEY securely, then:
+python3 -m soorin.ops.models configure --workspace "$UTOPIA_WORKSPACE_ID" --chat
+```
 
-Configuration precedence `environment defaults → authorized workspace overrides` exists in the Python `SoorinModelConfig.with_workspace()` adapter **only**. It is not a general precedence rule implemented inside Utopia's production Rust process.
+Chat defaults to `https://api.deepseek.com`, model `deepseek-flash`, and
+`chat_reasoning_effort=none`, translated to `thinking: {type: disabled}`.
+Set DEEPSEEK_MODEL explicitly when the provider account requires another model.
+Model aliases are provider-controlled, so a successful settings write is not a
+connectivity test. Use Workspace Settings' authenticated connection test
+(`POST /api/v1/workspaces/{id}/settings/test`) with synthetic input.
 
-## Model acceptance checklist
+A remote Chat endpoint remains **blocked** until the gateway deployment
+configuration in [Outbound privacy](OUTBOUND_PRIVACY.md) is complete. Do not add
+an external provider to UTOPIA_MODEL_TRUSTED_ORIGINS to bypass that boundary.
 
-1. Verify exact provider URL, provider-specific model ID, TLS and credentials using approved secret storage; never commit tokens.
-2. Set **Chat and Embedding** in Utopia Workspace Settings; run its authenticated connectivity test.
-3. Validate the actual returned embedding vector length against `embed_dim`; check embedding model migrations/reindex behavior before changing dimensions.
-4. Verify Ontology Alignment and indexed/vector search using an **isolated test KB** and real API results.
-5. Keep reranking **disabled** until it is connected to native retrieval, protected by authentication and tenant scope, and benchmarked.
-6. For remote embeddings, enforce the approved privacy boundary. Removing obvious secret *keys* does not remove sensitive IPs, usernames, hostnames or identifiers embedded within free text.
+Reranker settings are GET/PUT `/api/v1/workspaces/{id}/settings/reranker`.
+The request is `{enabled,base_url,model,fallback}`; fallback defaults false.
+Only trusted internal origins are supported for reranking. The Search UI reports
+lexical-only retrieval and explicit reranker fallback.
 
-### Embedding model migration warning
+## Embedding lineage and recovery
 
-Utopia records model identity for ontology/type vectors and re-embeds those indexes when their model changes. Document `chunks.embedding`, however, does not currently carry an embedding-model column, and `chunks_pending_embedding` selects only rows whose vector is null. Changing the workspace model or vector dimension is therefore **not** a proven full document reindex. Before such a change, use an isolated copy to define a controlled re-embedding/index-rebuild procedure and verify pgvector dimensions; do not mix old and new document vectors in place.
+Document vectors carry a SHA256 fingerprint of endpoint, model revision/name
+and configured dimension. Unknown legacy vectors and other fingerprints are
+excluded from dense search. In-flight writes lock/check the current settings.
+The per-turn query cache includes workspace UUID, fingerprint and exact text;
+only finite, dimension-compatible successful vectors can enter it.
 
-## Python configuration and example file
+After changing model settings, POST
+`/api/v1/workspaces/{id}/settings/embedding/backfill` as workspace admin.
+The response queues at most 1,000 documents using the existing durable job
+queue. Repeat until zero; inspect `soc_reembed_document` failures in Jobs.
+Current live chunks are backfilled; superseded chunks remain lexical/graph
+history and are not silently re-embedded or matched to incompatible vectors.
 
-The exact example variables are maintained at [`soorin/config/soorin.example.env`](../../soorin/config/soorin.example.env). Never print or paste actual API secrets into logs or documentation.
-
-Inside Docker, `localhost` addresses the **container**. Use an approved reachable network address for host-model services; do not expose inference endpoints publicly by accident.
-
-See [Outbound privacy](OUTBOUND_PRIVACY.md) for local/external trust, test-mode gating, and the future gateway-verifier interface.
-
-For offline unit tests, see [Testing and evaluation](TESTING_AND_EVALUATION.md). Live provider verification was **not** performed during Sprint 1.
+Read [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) for actual model download,
+inference, cache restart, memory and latency results. Fake-model contract tests
+are not real-model acceptance.
