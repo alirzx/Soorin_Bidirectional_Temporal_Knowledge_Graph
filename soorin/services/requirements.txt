@@ -1,0 +1,6 @@
+# Optional CPU service only. Install torch from the CPU wheel index first.
+torch==2.6.0
+transformers==4.51.3
+sentence-transformers==4.1.0
+huggingface-hub==0.30.2
+sentencepiece==0.2.0

@@ -1,0 +1,45 @@
+# Add to docker-compose.soorin-dev.yml. Model profiles start independently.
+x-model: &model
+  build:
+    context: .
+    dockerfile: docker/models.Dockerfile
+  init: true
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  cpus: 2
+  mem_limit: 4g
+  environment:
+    HF_HOME: /models
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    SOORIN_MODEL_THREADS: "2"
+  healthcheck:
+    test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready',timeout=3)"]
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 120s
+services:
+  embedding:
+    <<: *model
+    profiles: [embedding]
+    command: [serve, --role, embedding, --host, 0.0.0.0]
+    ports: [127.0.0.1:2811:8080]
+    volumes: [soorin_embedding_cache:/models]
+  reranker:
+    <<: *model
+    profiles: [reranker]
+    command: [serve, --role, reranker, --host, 0.0.0.0]
+    ports: [127.0.0.1:2812:8080]
+    volumes: [soorin_reranker_cache:/models]
+  ner:
+    <<: *model
+    profiles: [ner]
+    command: [serve, --role, ner, --host, 0.0.0.0]
+    ports: [127.0.0.1:2813:8080]
+    volumes: [soorin_ner_cache:/models]
+volumes:
+  soorin_embedding_cache:
+  soorin_reranker_cache:
+  soorin_ner_cache:

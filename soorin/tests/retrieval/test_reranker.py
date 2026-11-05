@@ -17,6 +17,13 @@ CANDIDATES = [
 
 
 class RerankerTests(unittest.TestCase):
+    def test_tei_scores_every_candidate_before_selecting_top_n(self):
+        provider = HttpReranker(
+            RerankerConfig(True, "tei", "http://rerank", "m", endpoint_trust="local_trusted"),
+            lambda *args: [{"index": 0, "score": 0.1}, {"index": 1, "score": 0.9}, {"index": 2, "score": 0.3}],
+        )
+        self.assertEqual(provider.rerank("q", CANDIDATES, 1), [("b", 0.9)])
+
     def test_disabled_preserves_original_order(self):
         out = rerank_with_fallback("password spray", CANDIDATES, None, top_n=3)
         self.assertEqual([row.candidate.candidate_id for row in out.results], ["a", "b", "c"])
@@ -31,7 +38,7 @@ class RerankerTests(unittest.TestCase):
         cfg = RerankerConfig(True, "cohere_v2", "http://rerank", "m", top_n=2, endpoint_trust="local_trusted")
         provider = HttpReranker(cfg, lambda *args: {"results":[{"index":1,"relevance_score":0.9},{"index":0,"relevance_score":0.1}]})
         self.assertEqual(provider.rerank("q", CANDIDATES, 2)[0][0], "b")
-        tei = HttpReranker(RerankerConfig(True, "tei", "http://rerank", "m", top_n=2, endpoint_trust="local_trusted"), lambda *args: [{"index":2,"score":0.8},{"index":1,"score":0.7}])
+        tei = HttpReranker(RerankerConfig(True, "tei", "http://rerank", "m", top_n=2, endpoint_trust="local_trusted"), lambda *args: [{"index":2,"score":0.8},{"index":1,"score":0.7},{"index":0,"score":0.1}])
         self.assertEqual(tei.rerank("q", CANDIDATES, 2)[0][0], "c")
 
     def test_timeout_malformed_missing_and_incorrect_outputs_fallback(self):

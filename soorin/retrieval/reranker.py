@@ -113,19 +113,22 @@ class HttpReranker:
             parsed = [(row.get("index"), row.get("score")) for row in rows if isinstance(row, Mapping)]
         else:
             raise RerankerError("unsupported_provider", self.config.provider)
-        expected = min(top_n, len(candidates))
+        # TEI returns one score for every supplied text, independently of top_n.
+        expected = len(candidates) if self.config.provider == "tei" else min(top_n, len(candidates))
         if len(parsed) != expected:
             raise RerankerError("missing_candidate", f"expected {expected} scored candidates, received {len(parsed)}")
         seen: set[int] = set()
         result: list[tuple[str, float]] = []
         for index, score in parsed:
-            if not isinstance(index, int) or not 0 <= index < len(candidates) or index in seen:
+            if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(candidates) or index in seen:
                 raise RerankerError("invalid_index", f"invalid or duplicate candidate index {index!r}")
-            if not isinstance(score, (int, float)) or not math.isfinite(float(score)):
+            if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(float(score)):
                 raise RerankerError("invalid_score", f"invalid score {score!r}")
             seen.add(index)
             result.append((candidates[index].candidate_id, float(score)))
-        return result
+        ranks = {candidate.candidate_id: index for index, candidate in enumerate(candidates)}
+        result.sort(key=lambda row: (-row[1], ranks[row[0]]))
+        return result[:top_n]
 
 
 def rerank_with_fallback(
