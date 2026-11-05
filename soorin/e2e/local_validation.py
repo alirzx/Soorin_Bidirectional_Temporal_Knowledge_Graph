@@ -216,7 +216,7 @@ def _offline_checks(events: list[tuple[str, SecurityKnowledgeEvent]]) -> tuple[l
     ))
     checks.append(_check(
         "persistent_identity_conflict", "BLOCKED",
-        "the persistent registry is intentionally dormant; exercise its PostgreSQL concurrency tests before activation",
+        "this legacy offline harness does not exercise the active native registry; use native SOC and PostgreSQL acceptance tests",
     ))
     return checks, rendered
 

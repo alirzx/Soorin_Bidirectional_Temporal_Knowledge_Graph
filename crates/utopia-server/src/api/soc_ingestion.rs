@@ -515,6 +515,13 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
     result
 }
 
+fn source_clock_advances(
+    incoming: chrono::DateTime<chrono::Utc>,
+    previous: Option<chrono::DateTime<chrono::Utc>>,
+) -> bool {
+    previous.is_none_or(|previous| incoming > previous)
+}
+
 async fn process_locked(
     state: &AppState,
     id: Uuid,
@@ -535,7 +542,7 @@ async fn process_locked(
          ORDER BY (payload->>'observed_at')::timestamptz DESC LIMIT 1",
     ).bind(source_id).bind(id).fetch_optional(&state.pool).await?;
     let observed = chrono::DateTime::parse_from_rfc3339(field(event, "observed_at")?)?.to_utc();
-    if previous.is_some_and(|previous| observed <= previous) {
+    if !source_clock_advances(observed, previous) {
         sqlx::query("UPDATE soorin_ingestion_receipts SET status='quarantined',failure_code='late_or_ambiguous_revision_retained_for_review',updated_at=now() WHERE id=$1").bind(id).execute(&state.pool).await?;
         return Ok(());
     }
@@ -791,6 +798,28 @@ pub async fn retry(
 #[cfg(test)]
 mod rendering_tests {
     use super::*;
+    #[test]
+    fn revision_order_uses_source_clock_not_delivery_or_offset_spelling() {
+        let instant = |value: &str| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .unwrap()
+                .to_utc()
+        };
+        let previous = instant("2026-11-05T10:00:00Z");
+        assert!(source_clock_advances(previous, None));
+        assert!(!source_clock_advances(
+            instant("2026-11-05T13:30:00+03:30"),
+            Some(previous)
+        ));
+        assert!(!source_clock_advances(
+            instant("2026-11-05T09:59:59Z"),
+            Some(previous)
+        ));
+        assert!(source_clock_advances(
+            instant("2026-11-05T10:00:01Z"),
+            Some(previous)
+        ));
+    }
     #[test]
     fn asserted_fact_is_not_relabelled_as_observed() {
         let mut event: Value = serde_json::from_str::<Value>(include_str!(
