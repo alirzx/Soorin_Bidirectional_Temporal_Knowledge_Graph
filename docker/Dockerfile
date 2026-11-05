@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends pkg-config && r
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY migrations/ migrations/
+COPY soorin/ontology/soc_ontology_v1.yaml soorin/ontology/soc_ontology_v1.yaml
 # docs_corpus.rs 用 include_str! 把产品内文档编进二进制，所以它是后端的源码依赖，
 # 不只是前端资源——漏掉这行，cargo build 直接报 couldn't read。
 COPY web/src/docs/ web/src/docs/

@@ -24,6 +24,11 @@ mod rule_expression_input;
 pub(crate) mod rule_routes;
 mod search_routes;
 mod settings_routes;
+pub(crate) mod soc_ingestion;
+#[cfg(test)]
+mod soc_runtime_tests;
+mod soc_knowledge;
+mod soc_settings;
 mod sources_routes;
 #[cfg(test)]
 mod static_files_tests;
@@ -101,6 +106,23 @@ fn with_static_files(mut app: Router, web_dist: &str) -> Router {
 pub fn router(state: AppState, cfg: &AppConfig) -> Router {
     let api = Router::new()
         .route("/health", get(health))
+        .route(
+            "/workspaces/{id}/settings/embedding/backfill",
+            post(soc_settings::backfill),
+        )
+        .route(
+            "/kbs/{id}/knowledge/binding",
+            put(soc_ingestion::bind_tenant),
+        )
+        .route(
+            "/sources/{id}/knowledge-events",
+            post(soc_ingestion::ingest),
+        )
+        .route("/kbs/{id}/knowledge/context", post(soc_knowledge::context))
+        .route(
+            "/workspaces/{id}/settings/reranker",
+            get(soc_settings::get).put(soc_settings::put),
+        )
         .route("/auth/register", post(auth_routes::register))
         .route("/auth/login", post(auth_routes::login))
         .route("/auth/logout", post(auth_routes::logout))
