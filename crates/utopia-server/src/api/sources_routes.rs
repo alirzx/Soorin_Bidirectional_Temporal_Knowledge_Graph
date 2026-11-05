@@ -31,7 +31,7 @@ pub(crate) fn new_ingest_token() -> String {
 ///
 /// 长度不等直接返回——`ct_eq` 只对等长切片有意义。密钥长度固定（`utp_` + 64 位
 /// 十六进制），不是秘密的一部分，在这里短路不泄漏任何东西。
-fn push_key_matches(stored: Option<&str>, offered: &str) -> bool {
+pub(super) fn push_key_matches(stored: Option<&str>, offered: &str) -> bool {
     let Some(stored) = stored else {
         return false;
     };
@@ -428,7 +428,7 @@ pub async fn ingest(
 /// run 供集成调试，但不算来源同步失败——来源没坏，是那一次请求不合格；
 /// 后者才该把来源标成 failed 并进告警中心。从前两者都走 `finish_sync(error)`，
 /// 一次格式错误就让铃铛说"来源同步失败，没有新内容进来"
-enum PushError {
+pub(super) enum PushError {
     /// 4xx：负载不合格（JSON 解析、缺字段）
     Rejected(String),
     /// 摄入本身失败
@@ -759,7 +759,7 @@ fn validate_statements_payload(raw: &[u8]) -> Result<(StatementsBody, Option<Str
     Ok((body, Some(content)))
 }
 
-async fn handle_statements_push(
+pub(super) async fn handle_statements_push(
     state: &AppState,
     source: &utopia_core::models::Source,
     bytes: &[u8],

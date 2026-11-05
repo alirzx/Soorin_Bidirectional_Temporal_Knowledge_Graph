@@ -1,0 +1,13 @@
+{
+  "synthetic": true,
+  "event": {
+    "attributes": {},
+    "content_checksum": "0176d115fa50d927b2c8e6b1b2081e7aeaa71ae01d763232a7fe03edf817d36a",
+    "content_checksum_version": "soorin.source-content.sha256.v3",
+    "entities": [{"aliases": [], "attributes": {}, "entity_id": "soorin:securityalert:test", "entity_type": "SecurityAlert", "normalized_value": "A1", "provisional": false, "source_identifiers": {"alert_id": "A1"}}],
+    "event_id": "e1", "event_time": "2026-11-05T00:00:00.000000Z", "event_type": "security_alert",
+    "evidence": [], "facts": [], "observed_at": "2026-11-05T00:00:00.000000Z", "recorded_at": "2026-11-05T00:00:00.000000Z",
+    "relations": [], "schema_version": "soorin.soc.knowledge-event.v1", "source_instance": "splunk-e2e", "source_record_id": "A1",
+    "source_references": [], "source_system": "splunk", "tenant_id": "tenant-blue", "vendor_fields": {}
+  }
+}
