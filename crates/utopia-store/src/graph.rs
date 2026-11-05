@@ -1632,9 +1632,18 @@ pub async fn entity_node(
     entity_id: Uuid,
     as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<Option<GraphNode>> {
+    entity_node_scoped(pool,kb_id,entity_id,as_of,false).await
+}
+
+pub async fn entity_node_visible(pool:&PgPool,kb_id:Uuid,entity_id:Uuid,as_of:Option<chrono::DateTime<chrono::Utc>>)->AppResult<Option<GraphNode>> {
+    entity_node_scoped(pool,kb_id,entity_id,as_of,true).await
+}
+
+async fn entity_node_scoped(pool:&PgPool,kb_id:Uuid,entity_id:Uuid,as_of:Option<chrono::DateTime<chrono::Utc>>,visible:bool)->AppResult<Option<GraphNode>> {
     Ok(sqlx::query_as(&format!(
-        "{} WHERE e.kb_id = $1 AND e.id = $2",
-        node_sql(as_of.map(|_| 3), as_of.map(|_| 3))
+        "{} WHERE e.kb_id = $1 AND e.id = $2 AND {}",
+        node_sql(as_of.map(|_| 3), as_of.map(|_| 3)),
+        if visible {crate::record_axis::entity_visible_at("e", as_of.map(|_| 3))}else{"true".into()}
     ))
     .bind(kb_id)
     .bind(entity_id)
@@ -1725,6 +1734,17 @@ pub async fn entity_detail(
     at: Option<chrono::DateTime<chrono::Utc>>,
     as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<(GraphNode, Vec<EntityFact>)> {
+    entity_detail_bounded(pool, kb_id, entity_id, at, as_of, None).await
+}
+
+pub async fn entity_detail_bounded(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
+    limit: Option<i64>,
+) -> AppResult<(GraphNode, Vec<EntityFact>)> {
     let node = entity_node(pool, kb_id, entity_id, as_of)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -1786,7 +1806,7 @@ pub async fn entity_detail(
            AND NOT {represented}
            AND ({subject} = $2 OR {object} = $2)
            AND {not_name}
-         ORDER BY f.valid_from NULLS LAST, f.recorded_at",
+         ORDER BY f.valid_from NULLS LAST, f.recorded_at, f.id LIMIT $5",
         targets = TIME_CORRECTED_TARGETS,
         corrected_ends = corrected_ends_sql("f"),
         correction_note = correction_note_sql("f"),
@@ -1812,6 +1832,7 @@ pub async fn entity_detail(
     .bind(entity_id)
     .bind(as_of)
     .bind(at)
+    .bind(limit)
     .fetch_all(pool)
     .await?;
     // 边上的属性另一张表（0037），按 id 一次取回补上
@@ -2161,6 +2182,16 @@ pub async fn first_live_evidence(
 /// 证据回放路径：不过滤 superseded——它的职责就是能看旧版。
 /// stale = 证据版本落后于文档当前版本（UI 标 "from v{n}"）。
 pub async fn fact_evidence(pool: &PgPool, fact_id: Uuid) -> AppResult<Vec<EvidenceView>> {
+    fact_evidence_at(pool, fact_id, None).await
+}
+
+/// Historical context cannot cite evidence attached after the requested time.
+/// Legacy links with unknown attachment time are available only in current views.
+pub async fn fact_evidence_at(
+    pool: &PgPool,
+    fact_id: Uuid,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
+) -> AppResult<Vec<EvidenceView>> {
     let rows: Vec<EvidenceView> = sqlx::query_as(
         "SELECT fe.quote, fe.proposed_predicate, fe.chunk_id, c.document_id, d.filename, c.seq,
                 c.doc_version,
@@ -2172,9 +2203,11 @@ pub async fn fact_evidence(pool: &PgPool, fact_id: Uuid) -> AppResult<Vec<Eviden
          FROM fact_evidence fe
          JOIN chunks c ON c.id = fe.chunk_id
          JOIN documents d ON d.id = c.document_id
-         WHERE fe.fact_id = $1",
+         WHERE fe.fact_id = $1 AND ($2::timestamptz IS NULL OR fe.recorded_at <= $2)
+         ORDER BY c.document_id,c.doc_version,c.seq,c.id",
     )
     .bind(fact_id)
+    .bind(as_of)
     .fetch_all(pool)
     .await?;
     Ok(rows)
