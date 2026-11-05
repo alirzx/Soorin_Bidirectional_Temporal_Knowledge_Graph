@@ -505,7 +505,17 @@ pub async fn align_phrases_reasking(
     // Human interpretations are deliberately preserved by alignment. Report that preservation
     // explicitly even when no model is configured; it is not a fresh semantic judgment.
     utopia_store::ontology_regressions::record_human(pool, kb_id).await?;
+    let soc = crate::soc_alignment::phrases(pool, kb_id).await?;
     let kb = utopia_store::kbs::get(pool, kb_id).await?;
+    if soc
+        && !utopia_store::settings::get(pool, kb.workspace_id)
+            .await?
+            .as_ref()
+            .is_some_and(|s| s.chat_ready())
+    {
+        tracing::info!(%kb_id, "SOC exact phrases applied; unknown phrases remain open for review");
+        return Ok(());
+    }
     let settings = utopia_store::settings::get(pool, kb.workspace_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align phrases"))?;

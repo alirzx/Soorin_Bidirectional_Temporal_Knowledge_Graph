@@ -145,7 +145,8 @@ async fn vector_channel(
     ) else {
         return Ok(None);
     };
-    let vector = match cache.as_deref().and_then(|c| c.get(query)).cloned() {
+    let cache_key = format!("{}:{query}", utopia_store::soorin_embeddings::identity(&settings));
+    let vector = match cache.as_deref().and_then(|c| c.get(&cache_key)).cloned() {
         Some(v) => v,
         None => {
             let mut vectors = {
@@ -157,7 +158,7 @@ async fn vector_channel(
             }
             let v = vectors.remove(0);
             if let Some(cache) = cache {
-                cache.insert(query.to_string(), v.clone());
+                cache.insert(cache_key, v.clone());
             }
             v
         }

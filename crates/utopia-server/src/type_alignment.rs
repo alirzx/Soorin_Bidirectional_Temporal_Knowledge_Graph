@@ -111,7 +111,24 @@ const MAX_REASK: u32 = 3;
 /// `reask` 是这份任务已经是第几次自己排的（文档、建类排的是 0）。
 pub async fn align_types_reasking(state: &AppState, kb_id: Uuid, reask: u32) -> anyhow::Result<()> {
     let pool = &state.pool;
+    let soc = crate::soc_alignment::types(pool, kb_id).await?;
     let kb = utopia_store::kbs::get(pool, kb_id).await?;
+    if soc
+        && !utopia_store::settings::get(pool, kb.workspace_id)
+            .await?
+            .as_ref()
+            .is_some_and(|s| s.chat_ready())
+    {
+        utopia_store::jobs::enqueue_unless_queued_after(
+            pool,
+            "align_phrases",
+            serde_json::json!({"kb_id":kb_id}),
+            std::time::Duration::ZERO,
+        )
+        .await?;
+        tracing::info!(%kb_id, "SOC exact types applied; unknown kinds remain open for review");
+        return Ok(());
+    }
     let settings = utopia_store::settings::get(pool, kb.workspace_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align kind words"))?;
