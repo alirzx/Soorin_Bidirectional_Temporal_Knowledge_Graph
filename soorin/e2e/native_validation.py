@@ -11,13 +11,15 @@ from pathlib import Path
 from soorin.e2e.local_validation import (_request_json,select_isolated_api,DEFAULT_FIXTURE,normalize_fixture,_load_fixture,ValidationError)
 from soorin.ontology.importer import OntologyImporter,load_and_validate
 from soorin.ops.ingest import submit
+from soorin.e2e.qa_target import verify_qa_target
 from soorin.contracts.grounded_context import extractive_answer
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true');p.add_argument('--base-url',default='http://127.0.0.1:2516');p.add_argument('--report',type=Path,required=True)
     p.add_argument('--deadline',type=float,default=120)
-    args=p.parse_args();base=select_isolated_api(args.base_url)
+    p.add_argument('--qa-project');p.add_argument('--approved-port',type=int)
+    args=p.parse_args();base=select_isolated_api(args.base_url,qa_project=args.qa_project,approved_port=args.approved_port)
     report={'schema_version':'soorin.native-acceptance.v1','synthetic':True,'checks':[]}
     def save(name,status,**evidence):
         report['checks'].append({'name':name,'status':status,'evidence':evidence})
@@ -27,6 +29,7 @@ def main():
     if not args.execute:save('live_execution','NOT RUN');return
     if os.environ.get('SOORIN_DISPOSABLE_ACCEPTANCE')!='1':p.error('requires SOORIN_DISPOSABLE_ACCEPTANCE=1 in a private disposable runtime')
     try:
+        verify_qa_target(base,args.qa_project)
         registered=_request_json(base,'/api/v1/auth/register',method='POST',body={'email':f'{uuid.uuid4()}@synthetic.example','password':secrets.token_urlsafe(24),'display_name':'Synthetic acceptance','org_name':'Disposable SOC acceptance'})
         token=registered['token'];workspace=registered['workspace']['id']
         def api(path,body=None,method=None):return _request_json(base,path,token=token,body=body,method=method or ('POST' if body is not None else 'GET'))

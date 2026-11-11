@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Validate the Soorin foundation offline or against the isolated 2516 lab.
+"""Validate the foundation offline or against an explicitly approved QA project.
 
-Live execution is deliberately opt-in.  It accepts only a loopback Utopia API
-on port 2516, requires separate source-ingest and session credentials, and
+Live execution verifies Docker ownership and project-specific volumes,
+requires separate source-ingest and session credentials, and
 never prints either credential or provider response bodies.
 """
 
@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import time
 from typing import Any, Mapping
 import urllib.error
@@ -72,7 +73,7 @@ def _check(name: str, status: str, detail: str, **evidence: Any) -> Check:
     return Check(name, status, detail, evidence or None)
 
 
-def select_isolated_api(base_url: str) -> str:
+def select_isolated_api(base_url: str, *, qa_project: str | None = None, approved_port: int | None = None) -> str:
     parsed = urllib.parse.urlsplit(base_url)
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
         raise ValidationError("live E2E accepts only an HTTP loopback API")
@@ -82,8 +83,14 @@ def select_isolated_api(base_url: str) -> str:
         raise ValidationError("invalid API port") from exc
     if port == 1516:
         raise ValidationError("refusing the existing Utopia/SOC lab on port 1516")
-    if port != 2516:
-        raise ValidationError("live E2E requires the isolated Soorin API on port 2516")
+    if qa_project is not None:
+        from .qa_target import PROJECT
+        if (qa_project != PROJECT or type(approved_port) is not int
+                or not 1024 <= approved_port <= 65535 or approved_port in {1516, 1517, 2516, 2517}
+                or port != approved_port or parsed.hostname != "127.0.0.1"):
+            raise ValidationError("explicit disposable QA project and unused loopback port required")
+    elif port != 2516:
+        raise ValidationError("legacy selection requires port 2516; other ports require explicit QA approval")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValidationError("API URL must not contain credentials, query parameters, or fragments")
     path = parsed.path.rstrip("/")
@@ -400,7 +407,7 @@ def _live_checks(
         checks.append(_check("temporal_historical_query", "BLOCKED", str(exc)))
 
     for name, query in (
-        ("exact_search", "SOC-E2E-ALERT-001"),
+        ("identifier_lexical_search", "SOC-E2E-ALERT-001"),
         ("bm25_search", "synthetic e2e password spray"),
     ):
         try:
@@ -445,7 +452,7 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     started = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     checks: list[Check] = []
     try:
-        base_url = select_isolated_api(args.base_url)
+        base_url = select_isolated_api(args.base_url, qa_project=getattr(args, "qa_project", None), approved_port=getattr(args, "approved_port", None))
         checks.append(_check("isolated_api_selection", "PASS", "selected loopback Soorin source-build API", base_url=base_url))
         records = _load_fixture(args.fixture)
         events = normalize_fixture(records)
@@ -462,14 +469,16 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         source_id = os.environ.get("UTOPIA_SOURCE_ID", "")
         kb_id = os.environ.get("UTOPIA_KB_ID", "")
         try:
+            from .qa_target import verify_qa_target
+            verify_qa_target(base_url, getattr(args, "qa_project", None))
             uuid.UUID(source_id)
             uuid.UUID(kb_id)
             if not ingest_token or not session_token:
                 raise ValueError("both credential variables are required")
-        except ValueError:
+        except (ValueError, OSError, subprocess.SubprocessError):
             checks.append(_check(
                 "credential_presence", "FAIL",
-                "--execute requires valid UTOPIA_SOURCE_ID, UTOPIA_KB_ID, UTOPIA_INGEST_TOKEN, and UTOPIA_SESSION_TOKEN",
+                "--execute requires a verified disposable QA target plus valid UTOPIA_SOURCE_ID, UTOPIA_KB_ID, UTOPIA_INGEST_TOKEN, and UTOPIA_SESSION_TOKEN",
             ))
         else:
             checks.append(_check("credential_presence", "PASS", "required credential variables are present and identifiers are UUIDs"))
@@ -489,7 +498,7 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     elif not args.execute:
         for name in (
             "credential_presence", "api_health", "session_credentials", "statements_push", "background_jobs",
-            "graph_fetch", "graph_assertions", "temporal_historical_query", "exact_search", "bm25_search",
+            "graph_fetch", "graph_assertions", "temporal_historical_query", "identifier_lexical_search", "bm25_search",
         ):
             checks.append(_check(name, "NOT RUN", "live execution requires explicit --execute"))
         checks.append(_check("semantic_search", "SKIPPED", "live execution and an available embedding model are required"))
@@ -513,6 +522,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURE)
     parser.add_argument("--base-url", default=os.environ.get("UTOPIA_BASE_URL", DEFAULT_BASE_URL))
+    parser.add_argument("--qa-project")
+    parser.add_argument("--approved-port", type=int)
     parser.add_argument("--execute", action="store_true", help="mutate only the isolated synthetic source")
     parser.add_argument("--semantic-enabled", action="store_true", help="operator confirms the workspace embedding model is configured")
     parser.add_argument("--timeout", type=float, default=15.0)

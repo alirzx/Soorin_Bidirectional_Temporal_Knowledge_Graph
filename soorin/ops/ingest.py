@@ -1,67 +1,72 @@
-"""Synthetic normalization -> durable native SOC receipt; no competing queue.
-
-Retries resend the same versioned event. The server persists receipt and job in
-one transaction; interruptions can be recovered by replaying the same fixture.
-"""
+"""Preview structured SOC data or explicitly submit to the verified disposable QA API."""
 import argparse
 import json
 import os
+import re
 from pathlib import Path
-import time
-import urllib.error
-import urllib.request
-import uuid
 from soorin.e2e.local_validation import select_isolated_api, normalize_fixture, _load_fixture
-from soorin.adapters.utopia import StatementsAdapter
+from soorin.e2e.qa_target import verify_qa_target
+from soorin.adapters.utopia.knowledge_client import KnowledgeClient
+from soorin.contracts.native_profile import validate_native_event
+from soorin.contracts.json_input import MAX_INPUT_BYTES
+from soorin.ops.preview import preview
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
-        return None
+def submit(base, source, token, event):
+    """Compatibility entry point; retries use the shared bounded native client."""
+    return KnowledgeClient(base, source_token=token).ingest(source, event)
 
 
-def submit(base: str, source: str, token: str, event, *, opener=None, attempts=3):
-    request = urllib.request.Request(f"{base}/api/v1/sources/{source}/knowledge-events",
-        event.to_json().encode(), headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"}, method="POST")
-    opener = opener or urllib.request.build_opener(NoRedirect()).open
-    for attempt in range(attempts):
-        try:
-            with opener(request, timeout=30) as response:
-                result = json.load(response)
-            if result.get("schema_version") != "soorin.ingestion-receipt.v1":
-                raise ValueError("invalid receipt schema")
-            uuid.UUID(result["receipt_id"])
-            if not isinstance(result.get("job_id"), int):
-                raise ValueError("invalid receipt job")
-            return result
-        except urllib.error.HTTPError as exc:
-            if exc.code not in {429, 502, 503, 504} or attempt + 1 == attempts:
-                raise RuntimeError(f"SOC ingestion rejected: HTTP {exc.code}") from None
-        except (urllib.error.URLError, TimeoutError):
-            if attempt + 1 == attempts:
-                raise RuntimeError("SOC ingestion unavailable after bounded retries") from None
-        time.sleep(0.25 * 2 ** attempt)
-
-
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("fixture", type=Path)
-    parser.add_argument("--base-url", default="http://127.0.0.1:2516")
-    parser.add_argument("--execute", action="store_true")
-    args = parser.parse_args()
-    base = select_isolated_api(args.base_url)
-    events = normalize_fixture(_load_fixture(args.fixture))
-    source = os.environ.get("UTOPIA_SOURCE_ID", "")
-    token = os.environ.get("UTOPIA_INGEST_TOKEN", "")
-    if args.execute:
-        uuid.UUID(source)
-        if not token:
-            parser.error("UTOPIA_INGEST_TOKEN is required")
-    for scenario, event in events:
-        StatementsAdapter().render(event)  # Full local contract/size validation.
-        result = submit(base, source, token, event) if args.execute else {"status": "NOT RUN"}
-        print(json.dumps({"scenario": scenario, "receipt": result}, sort_keys=True), flush=True)
+    parser.add_argument('fixture', type=Path, nargs='?')
+    parser.add_argument('--raw', action='store_true', help='single structured SOC record, not scenario bundle')
+    parser.add_argument('--tenant-id')
+    parser.add_argument('--source-instance')
+    parser.add_argument('--base-url', default='http://127.0.0.1:2526')
+    parser.add_argument('--qa-project')
+    parser.add_argument('--approved-port', type=int)
+    parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--receipts', metavar='KB_UUID', help='read admin receipt/job status; no submission')
+    args = parser.parse_args(argv)
+    try:
+        if args.receipts:
+            if args.execute or args.fixture:
+                raise ValueError('receipts_cannot_be_combined_with_submission')
+            client = KnowledgeClient(args.base_url, session_token=os.environ.get('UTOPIA_SESSION_TOKEN', ''))
+            print(json.dumps(client.receipts(args.receipts), sort_keys=True))
+            return 0
+        if args.fixture is None:
+            raise ValueError('input_file_required')
+        with args.fixture.open('rb') as stream:
+            raw = stream.read(MAX_INPUT_BYTES + 1)
+        if len(raw) > MAX_INPUT_BYTES:
+            raise ValueError('input_too_large')
+        if args.raw:
+            if not args.tenant_id or not args.source_instance:
+                raise ValueError('tenant_and_source_instance_required')
+            event, result = preview(raw, tenant_id=args.tenant_id, source_instance=args.source_instance)
+            events = [('manual', event, result)]
+        else:
+            events = [(name, event, {'canonical_event': event.to_dict(), 'submission_status': 'NOT RUN'})
+                      for name, event in normalize_fixture(_load_fixture(args.fixture))]
+        for _, event, _ in events:
+            validate_native_event(event)
+        client = None
+        if args.execute:
+            base = select_isolated_api(args.base_url, qa_project=args.qa_project, approved_port=args.approved_port)
+            verify_qa_target(base, args.qa_project)
+            client = KnowledgeClient(base, source_token=os.environ.get('UTOPIA_INGEST_TOKEN', ''))
+        for name, event, result in events:
+            if client:
+                result = {'receipt': client.ingest(os.environ.get('UTOPIA_SOURCE_ID', ''), event)}
+            print(json.dumps({'scenario': name, **result}, sort_keys=True, ensure_ascii=False))
+        return 0
+    except Exception as exc:
+        # Do not echo input, tokens, paths, or provider bodies on failure.
+        code = getattr(exc, 'code', '') or (str(exc) if re.fullmatch(r'[a-z_]{1,80}', str(exc)) else type(exc).__name__)
+        parser.exit(2, f'ingestion failed: {code}; check input, scope, credentials and QA ownership\n')
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    raise SystemExit(main())
