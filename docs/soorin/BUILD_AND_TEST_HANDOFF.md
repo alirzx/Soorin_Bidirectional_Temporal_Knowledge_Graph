@@ -100,7 +100,7 @@ The native harness is opt-in and verifies the new QA project/volumes at loopback
 ```bash
 SOORIN_DISPOSABLE_ACCEPTANCE=1 timeout 300s python3 -m soorin.e2e.native_validation \
   --base-url http://127.0.0.1:2526 --qa-project soorin-tkg-v1-qa --approved-port 2526 \
-  --execute --base-url http://127.0.0.1:2516 --deadline 120 \
+  --execute --deadline 120 \
   --report /tmp/soorin-native-acceptance.json
 ```
 

@@ -28,6 +28,7 @@ microservice or persistent queue was introduced. No migrations changed.
 | MCP malformed time silently searched current data; execution metadata discarded | Invalid time errors and additive structured retrieval metadata; JSON-RPC envelope validation |
 | MCP manual omitted rule tools and described obsolete current-only historical recall | Reconciled 11 read tools, write gate and PostgreSQL historical behavior |
 | UI omitted successful reranker state | Explicit completed-reranker label; existing fallback/error/empty states preserved |
+| Native acceptance reused legacy equal source clocks for changed revisions | Explicit synthetic update clocks, exact UUID resolution, and late-revision quarantine assertion |
 | Harness port assumption could target existing 2516 lab | Explicit alternate loopback approval plus Docker label/volume/port ownership preflight in both harnesses |
 
 ## Source trace and preserved invariants
@@ -97,12 +98,12 @@ Local source checks use installed dependencies only. Commands and current outcom
 | Command | Result |
 |---|---|
 | `python3 -m compileall -q soorin` | PASS |
-| `python3 -m unittest discover -s soorin/tests -p 'test_*.py'` | PASS; count recorded in final report |
+| `python3 -m unittest discover -s soorin/tests -p 'test_*.py'` | PASS, 155 tests |
 | `python3 -m unittest discover -s soorin/tests/mock_splunk/tests` | PASS, 7 tests |
 | `python3 -m soorin.ops.ingest soorin/tests/fixtures/manual_soc_v1.json --raw --tenant-id tenant-blue --source-instance splunk-e2e` | PASS, no HTTP/persistence |
-| `node node_modules/vitest/vitest.mjs run` (web) | Result recorded in final report |
+| `node node_modules/vitest/vitest.mjs run` (web) | PASS, 37 files / 270 tests |
 | `node node_modules/typescript/bin/tsc --noEmit` (web) | PASS |
-| `node scripts/style-guard.mjs` (web) | Result recorded in final report |
+| `node scripts/style-guard.mjs` (web) | PASS, 126 files / zero baseline exceptions |
 | `cargo fmt --all --check` and `cargo metadata --locked --offline --no-deps --format-version 1` | PASS in cached network-disabled formatting container; host Cargo absent |
 | Compose `config --quiet` QA/dev plus model overlay | PASS; no resources created |
 | `git diff --check` | PASS |
@@ -148,3 +149,17 @@ READY FOR ISOLATED LOCAL BUILD: pending final reconciliation
 REAL MODEL INFERENCE: NOT RUN
 LIVE SOC INTEGRATION: NOT RUN
 PRODUCTION READY: NO
+
+
+## Graphify and CI reconciliation
+
+AST-only refresh after edits: 12,123 nodes, 32,089 edges, 609 communities at the
+first code checkpoint. Graphify reports missing tree_sitter_sql for 111 SQL files
+and no Cargo.toml nodes; SQL was traced directly. No package installation, semantic
+LLM labeling or model use was performed. Graph artifacts remain ignored/untracked.
+These metrics describe source code, not a live SOC graph.
+
+Draft PR #2 targets feature, not main. Initial CI run 42984983884 at de855c5 passed
+Python/web/migration checks but failed Rust compilation because a new Step label
+passed &String instead of &str. Corrected to q.as_str(); no assertion or lint gate
+was weakened. New exact-head CI must pass before integration.

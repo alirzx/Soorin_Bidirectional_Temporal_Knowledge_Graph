@@ -313,7 +313,7 @@ pub async fn search_chunks(
         Err(_) => {
             return ToolResult::new(
                 "Invalid as_of timestamp.".into(),
-                Step::new("search", &q, "invalid time")
+                Step::new("search", q.as_str(), "invalid time")
                     .status("failed")
                     .json(),
             )

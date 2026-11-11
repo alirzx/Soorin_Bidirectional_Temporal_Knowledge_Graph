@@ -34,3 +34,12 @@ class QaTargetTests(unittest.TestCase):
                 return row
             with self.subTest(defect=defect), self.assertRaises(ValueError):
                 verify_qa_target('http://127.0.0.1:2526', PROJECT, inspect=inspect)
+
+
+    def test_native_harness_revisions_have_real_synthetic_source_clocks(self):
+        from soorin.e2e.native_validation import acceptance_events
+        events = dict(acceptance_events())
+        clocks = [events[name].observed_at for name in ['initial_ingestion','changed_status','corrected_source_event']]
+        self.assertEqual(clocks, sorted(set(clocks)))
+        self.assertEqual(len(clocks), 3)
+        self.assertEqual(events['initial_ingestion'].event_time, events['changed_status'].event_time)

@@ -81,4 +81,4 @@ examples in this historical audit are not the current default storage policy.
 
 ## V1 baseline update
 
-Current source reference is main `a0a160d1dfbd83304fbb335b8ef8ba871a04cd90`; the older branch analysis below is historical. The API enrichment builder now emits alerts.id in payload alert_id when `_meta.mode=enriched_from_api`. TKG explicitly distinguishes that contract from legacy curated notables. See [updated workflow audit](AGENT_TOOL_CONTRACTS.md).
+Current source reference is main `a0a160d1dfbd83304fbb335b8ef8ba871a04cd90`; the older branch analysis above is historical. The API enrichment builder now emits alerts.id in payload alert_id when `_meta.mode=enriched_from_api`. TKG explicitly distinguishes that contract from legacy curated notables. See [updated workflow audit](AGENT_TOOL_CONTRACTS.md).
