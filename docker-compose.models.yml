@@ -3,6 +3,11 @@ x-model: &model
   build:
     context: .
     dockerfile: docker/models.Dockerfile
+    args:
+      PYTHON_BASE_IMAGE: ${SOORIN_PYTHON_BASE_IMAGE:-docker.arvancloud.ir/python:3.12-slim-bookworm}
+      PIP_PRIMARY_INDEX_URL: ${PIP_PRIMARY_INDEX_URL:-https://package-mirror.liara.ir/repository/pypi/simple}
+      PIP_FALLBACK_INDEX_URL: ${PIP_FALLBACK_INDEX_URL:-https://mirror2.chabokan.net/pypi/simple/}
+      TORCH_CPU_INDEX_URL: ${TORCH_CPU_INDEX_URL:-https://download.pytorch.org/whl/cpu}
   init: true
   restart: unless-stopped
   read_only: true
