@@ -23,6 +23,17 @@ services:
       dockerfile: docker/Dockerfile
       args:
         CARGO_BUILD_JOBS: ${SOORIN_BUILD_JOBS:-1}
+        NODE_BASE_IMAGE: ${SOORIN_NODE_BASE_IMAGE:-docker.arvancloud.ir/node:20-slim}
+        RUST_BASE_IMAGE: ${SOORIN_RUST_BASE_IMAGE:-docker.arvancloud.ir/rust:1.99.1-slim-bookworm}
+        DEBIAN_BASE_IMAGE: ${SOORIN_DEBIAN_BASE_IMAGE:-docker.arvancloud.ir/debian:bookworm-slim}
+        NPM_REGISTRY_URL: ${NPM_REGISTRY_URL:-https://package-mirror.liara.ir/repository/npm/}
+        NPM_FALLBACK_REGISTRY_URL: ${NPM_FALLBACK_REGISTRY_URL:-https://registry.npmjs.org/}
+        APT_PRIMARY_DEBIAN_URL: ${APT_PRIMARY_DEBIAN_URL:-https://mirror.arvancloud.ir/debian}
+        APT_PRIMARY_SECURITY_URL: ${APT_PRIMARY_SECURITY_URL:-https://mirror.arvancloud.ir/debian-security}
+        APT_FALLBACK_DEBIAN_URL: ${APT_FALLBACK_DEBIAN_URL:-https://mirror.metanet.ch/debian}
+        APT_FALLBACK_SECURITY_URL: ${APT_FALLBACK_SECURITY_URL:-https://mirror.metanet.ch/debian-security}
+        APT_LAST_DEBIAN_URL: ${APT_LAST_DEBIAN_URL:-https://mirrors.huaweicloud.com/repository/debian}
+        APT_LAST_SECURITY_URL: ${APT_LAST_SECURITY_URL:-https://mirrors.huaweicloud.com/repository/debian-security}
     environment:
       UTOPIA_DATABASE_URL: postgres://utopia:${SOORIN_DEV_DB_PASSWORD:-utopia-dev-only}@db:5432/utopia
       UTOPIA_BIND_ADDR: 0.0.0.0:1516
