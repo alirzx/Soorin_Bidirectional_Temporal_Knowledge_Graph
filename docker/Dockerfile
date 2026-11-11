@@ -1,9 +1,21 @@
 # ---- 前端构建 ----
-FROM node:20-slim AS web
+# Docker Hub registry mirror is configurable per stage. The Rust/runtime stages
+# must remain on Debian Bookworm to preserve glibc compatibility.
+ARG NODE_BASE_IMAGE=docker.arvancloud.ir/node:20-slim
+ARG RUST_BASE_IMAGE=docker.arvancloud.ir/rust:1.99.1-slim-bookworm
+ARG DEBIAN_BASE_IMAGE=docker.arvancloud.ir/debian:bookworm-slim
+FROM ${NODE_BASE_IMAGE} AS web
+ARG NPM_REGISTRY_URL=https://package-mirror.liara.ir/repository/npm/
+ARG NPM_FALLBACK_REGISTRY_URL=https://registry.npmjs.org/
 WORKDIR /src
 RUN corepack enable
+# Keep the committed pnpm lockfile authoritative. The fallback only changes the
+# registry, never the package versions or lockfile.
+RUN corepack prepare pnpm@10.2.1 --activate
 COPY web/package.json web/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    (pnpm install --frozen-lockfile --registry="${NPM_REGISTRY_URL}" \
+    || pnpm install --frozen-lockfile --registry="${NPM_FALLBACK_REGISTRY_URL}")
 COPY web/ ./
 RUN pnpm build
 
@@ -11,12 +23,25 @@ RUN pnpm build
 # 发行版必须和运行阶段钉死在同一个：rust:1-slim 会跟着上游滚（现已是 trixie/glibc 2.41），
 # 编出的二进制便要求 GLIBC_2.38，而 bookworm 只有 2.36——镜像构建照样成功，
 # 容器一启动就 "version `GLIBC_2.38' not found"。
-FROM rust:1.99.1-slim-bookworm AS build
+FROM ${RUST_BASE_IMAGE} AS build
+ARG APT_PRIMARY_DEBIAN_URL=https://mirror.arvancloud.ir/debian
+ARG APT_PRIMARY_SECURITY_URL=https://mirror.arvancloud.ir/debian-security
+ARG APT_FALLBACK_DEBIAN_URL=https://mirror.metanet.ch/debian
+ARG APT_FALLBACK_SECURITY_URL=https://mirror.metanet.ch/debian-security
+ARG APT_LAST_DEBIAN_URL=https://mirrors.huaweicloud.com/repository/debian
+ARG APT_LAST_SECURITY_URL=https://mirrors.huaweicloud.com/repository/debian-security
+ENV APT_PRIMARY_DEBIAN_URL=${APT_PRIMARY_DEBIAN_URL} \
+    APT_PRIMARY_SECURITY_URL=${APT_PRIMARY_SECURITY_URL} \
+    APT_FALLBACK_DEBIAN_URL=${APT_FALLBACK_DEBIAN_URL} \
+    APT_FALLBACK_SECURITY_URL=${APT_FALLBACK_SECURITY_URL} \
+    APT_LAST_DEBIAN_URL=${APT_LAST_DEBIAN_URL} \
+    APT_LAST_SECURITY_URL=${APT_LAST_SECURITY_URL}
 # Limit concurrent rustc processes on resource-constrained development hosts.
 # Override via SOORIN_BUILD_JOBS in the isolated Compose file.
 ARG CARGO_BUILD_JOBS=1
 WORKDIR /src
-RUN apt-get update && apt-get install -y --no-install-recommends pkg-config && rm -rf /var/lib/apt/lists/*
+COPY docker/install-debian-packages.sh /usr/local/bin/install-debian-packages
+RUN sh /usr/local/bin/install-debian-packages pkg-config
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY migrations/ migrations/
@@ -39,8 +64,21 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo build --locked --release -p utopia-server
 
 # ---- 运行 ----
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl poppler-utils poppler-data && rm -rf /var/lib/apt/lists/*
+FROM ${DEBIAN_BASE_IMAGE}
+ARG APT_PRIMARY_DEBIAN_URL=https://mirror.arvancloud.ir/debian
+ARG APT_PRIMARY_SECURITY_URL=https://mirror.arvancloud.ir/debian-security
+ARG APT_FALLBACK_DEBIAN_URL=https://mirror.metanet.ch/debian
+ARG APT_FALLBACK_SECURITY_URL=https://mirror.metanet.ch/debian-security
+ARG APT_LAST_DEBIAN_URL=https://mirrors.huaweicloud.com/repository/debian
+ARG APT_LAST_SECURITY_URL=https://mirrors.huaweicloud.com/repository/debian-security
+ENV APT_PRIMARY_DEBIAN_URL=${APT_PRIMARY_DEBIAN_URL} \
+    APT_PRIMARY_SECURITY_URL=${APT_PRIMARY_SECURITY_URL} \
+    APT_FALLBACK_DEBIAN_URL=${APT_FALLBACK_DEBIAN_URL} \
+    APT_FALLBACK_SECURITY_URL=${APT_FALLBACK_SECURITY_URL} \
+    APT_LAST_DEBIAN_URL=${APT_LAST_DEBIAN_URL} \
+    APT_LAST_SECURITY_URL=${APT_LAST_SECURITY_URL}
+COPY docker/install-debian-packages.sh /usr/local/bin/install-debian-packages
+RUN sh /usr/local/bin/install-debian-packages ca-certificates curl poppler-utils poppler-data
 WORKDIR /app
 COPY --from=build /src/target/release/utopia-server /usr/local/bin/utopia-server
 COPY --from=web /src/dist /app/web-dist
