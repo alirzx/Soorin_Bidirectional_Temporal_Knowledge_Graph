@@ -46,3 +46,27 @@ Use [manual preview](MANUAL_SOC_INGESTION.md) first; native_validation is the
 canonical receipt harness, local_validation remains a legacy Statements harness.
 Do not combine their sources. Optional model profiles remain absent by default;
 the development overlay's 2811–2813 bindings also need inventory before use.
+
+## Makefile entry points for the disposable V1 QA build
+
+The old `make e2e-live` command targets the pre-existing 2516 lab and is
+intentionally disabled. The V1 QA commands below select an independent Compose
+project and the isolated 2526/2527 ports. Run these only in the separately approved
+local-build window, **after** verifying those ports are free and the target volumes
+are new and disposable:
+
+```bash
+make qa-env-init        # writes .env.qa once with a random DB password, mode 0600
+make qa-config          # static Compose validation; no startup
+make qa-build           # builds the application image; next phase only
+make qa-up QA_EXECUTE=YES  # starts only QA db/app; next phase only
+make qa-native-e2e E2E_EXECUTE=YES  # runs synthetic native acceptance after ownership check
+```
+
+The generated `.env.qa` is Git-ignored. Keep `QA_ENV_FILE`, `QA_PROJECT`,
+`QA_APP_PORT` and `QA_DB_PORT` aligned with the actual Compose publication.
+The native acceptance tool verifies Docker project labels, ports and volume names
+before making HTTP mutations; a Makefile target does not certify a container's
+identity by itself. The older generic Makefile `build`, `up`, `health`, and
+`migrations` targets still use the legacy Sprint-1 defaults. Do not use those
+for V1 QA. Do not run destructive cleanup against any pre-existing stack.
