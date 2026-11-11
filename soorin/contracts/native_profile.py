@@ -11,6 +11,7 @@ def validate_native_event(event: SecurityKnowledgeEvent, *, allow_sensitive: boo
     def require(ok, code):
         if not ok:
             raise ContractError(code, 'event does not meet the native ingestion profile')
+    require(len(event.to_json().encode('utf-8')) <= 1024 * 1024, 'native_payload_size')
     require(event.content_checksum_version == SOURCE_CONTENT_CHECKSUM_VERSION, 'native_checksum_v3_required')
     ontology = json.loads((Path(__file__).parents[1] / 'ontology/soc_ontology_v1.yaml').read_text())
     kinds = {row['label'].replace(' ', '') for row in ontology['entity_types']}

@@ -89,7 +89,8 @@ class Engine:
                     return sorted([{"index": i, "score": float(score)} for i, score in enumerate(scores)], key=lambda row: (-row["score"], row["index"]))
                 if path == "/ner" and self.role == "ner":
                     text = texts(body.get("text"))[0]
-                    return {"model": self.name, "review_required": True, "proposals": [asdict(row) for row in self.model.extract(text)]}
+                    proposals = [dict(asdict(row), model_version=self.name) for row in self.model.extract(text)]
+                    return {"model": self.name, "review_required": True, "proposals": proposals}
                 raise ValueError("endpoint does not match service role")
             finally:
                 self.calls += 1

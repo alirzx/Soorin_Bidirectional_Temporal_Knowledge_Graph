@@ -74,7 +74,7 @@ def _now() -> str:
 def _first(mapping: Mapping[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = mapping.get(key)
-        if value not in (None, "") and not isinstance(value, (Mapping, list, tuple, set)):
+        if value not in (None, "") and not isinstance(value, (Mapping, list, tuple, set, bool)):
             return str(value).strip()
     return None
 
@@ -83,7 +83,7 @@ def _strings(value: Any) -> Iterable[str]:
     if isinstance(value, (list, tuple, set)):
         for item in value:
             yield from _strings(item)
-    elif value not in (None, "") and not isinstance(value, Mapping):
+    elif value not in (None, "") and not isinstance(value, (Mapping, bool)):
         yield str(value).strip()
 
 
@@ -112,7 +112,17 @@ def _nested_first(mapping: Mapping[str, Any], container: str, *keys: str) -> str
 
 def classify_source_record(raw: Mapping[str, Any], payload: Mapping[str, Any]) -> SourceRecordClassification:
     soc_alert_id = _first(raw, "alert_row_id", "soc_alert_id")
-    notable_id = _first(raw, "notable_id", "source_guid") or _first(payload, "alert_id")
+    # Agentic_SOC main's API enrichment builder now emits alert.id here. The
+    # legacy curated Splunk payload used alert_id for the notable. Only the
+    # explicit producer marker selects the newer contract; never guess from UUID shape.
+    meta = payload.get("_meta")
+    api_enriched = isinstance(meta, Mapping) and meta.get("mode") == "enriched_from_api"
+    payload_alert = _first(payload, "alert_id")
+    if api_enriched:
+        if soc_alert_id and payload_alert and soc_alert_id != payload_alert:
+            raise NormalizationError("conflicting_soc_alert_identity", "envelope and API enrichment alert IDs disagree")
+        soc_alert_id = soc_alert_id or payload_alert
+    notable_id = _first(raw, "notable_id", "source_guid") or (None if api_enriched else payload_alert)
     finding_uid = _nested_first(raw, "finding", "uid", "id")
     source_events: list[str] = []
     for key in ("source_event_ids", "source_event_id", "event_id"):
@@ -239,8 +249,8 @@ def normalize_llm_payload(
         if pair in entity_by_pair:
             continue
         leaf = result.source_field.rsplit(".", 1)[-1].casefold()
-        # In Agentic's Splunk llm_payload, alert_id is the notable identifier;
-        # the durable SOC alert row is carried separately by the envelope.
+        # alert_id is handled by the explicit producer contract above, never
+        # by generic field extraction.
         if leaf == "alert_id":
             continue
         authoritative = result.original_value if leaf in authoritative_fields else None
