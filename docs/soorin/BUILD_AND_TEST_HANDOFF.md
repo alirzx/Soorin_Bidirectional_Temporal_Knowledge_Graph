@@ -57,6 +57,20 @@ The local upstream comparison intentionally fails on 0111; do not merge upstream
 See [reconciliation](upstream-sync.md).
 
 ## Phase C — Docker / application
+### Regional mirror preflight (before the local image build)
+
+For Debian security-index timeouts, see
+[Local development / regional mirror recovery](LOCAL_DEVELOPMENT.md).
+The Docker application image uses mirrored Bookworm APT with verified Debian
+archive signatures and fallback; configurable Arvan Docker base images are
+separate from APT sources. The CPU-model image uses Liara/Chabokan only for
+ordinary Python dependencies and explicitly pins the PyTorch CPU wheel.
+Do not change the host's package sources or remove existing caches/volumes.
+Preserve and reuse the incomplete build layers, not `--no-cache`.
+Verify the actual Arvan APT endpoints from the build host first; the source
+configuration is not evidence that a remote mirror is reachable. Rust crate
+downloads and Hugging Face artifact downloads require independent checks.
+
 
 Prepare an isolated project/ports with no collision. The source-development file
 defaults to occupied 2516/2517; override through soorin/config/qa.env.example to 2526/2527 after inventory. Build once with
