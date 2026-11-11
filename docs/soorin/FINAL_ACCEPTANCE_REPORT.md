@@ -141,3 +141,7 @@ branding, preserved branches and final release boundaries are detailed in
 application image build, live SOC E2E, existing-deployment upgrade/restore and
 production deployment remain unqualified. CI used its own disposable database;
 no existing local environment was migrated.
+
+## V1 baseline update
+
+The later V1 baseline pass is tracked in [V1 baseline hardening](V1_BASELINE_HARDENING.md). Results below describe their recorded older checkpoints and do not assert current runtime or production qualification.

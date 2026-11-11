@@ -31,3 +31,7 @@ The published config exposes `Indicator`, `Malware`, `Organization`, `System`, a
 **Operational constraints:** no automatic model download at startup, configurable threshold and text limit, CPU device `-1`, no external inference API, no production-sensitive test material, and no implicit GPU use. Persian/Arabic-script input returns no proposals because the checkpoint is documented as English-only. The default model load is pinned to the reviewed revision above and requires local model files in operational mode. Benchmark CPU latency and NER quality with representative synthetic samples before enabling the model in a live pipeline.
 
 **Readiness:** Adapter and mock tests exist; actual CPU inference, model artifacts, and compatibility with installed Transformers/PyTorch are **unverified** in this branch.
+
+## V1 baseline update
+
+Baseline preview integration is described in [Manual SOC ingestion](MANUAL_SOC_INGESTION.md). No proposal changes canonical identity or checksum; a human must review it before any graph fact. Mock timeout, malformed response, duplicate suppression and unsupported-script cases are covered; the synchronous provider must own its execution deadline.

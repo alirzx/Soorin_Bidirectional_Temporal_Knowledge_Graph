@@ -37,7 +37,7 @@ Three methods are served:
 
 | Tool | What it answers |
 |---|---|
-| `search_chunks` | Full-text + semantic search over the base's documents. Returns the six best-matching passages, each cut at 800 characters and carrying its `document_id`. Pass `as_of` to search the base as it stood at that moment — earlier versions, documents deleted since; full-text recall stays current, so hits are right but may be incomplete |
+| `search_chunks` | Full-text + semantic search over the base's documents. Returns the six best-matching passages, each cut at 800 characters and carrying its `document_id`. Pass `as_of` to search the base as it stood at that moment — earlier versions, documents deleted since; historical lexical recall uses PostgreSQL versioned chunks; current recall uses Tantivy, with different tokenization and ranking |
 | `get_document` | The full text of one document, all sections in order, by `document_id`. Use it when a search hit is the right document but the excerpt does not carry the answer. Capped at 24,000 characters, and says so when it cuts |
 | `find_entities` | Entities by (partial) name: id, type, and a disambiguator when several share a name |
 | `entity_facts` | One entity's facts with validity ranges. Pass `at` (a date) to see the world as of that day; this is the tool for "who was X in 2024". Pass `as_of` (a date or an RFC3339 moment) to see the facts **as the base held them then**, before later corrections, retractions and merges — "what did we have on record before the memo arrived". The two combine: `at` for the date asked about, `as_of` for when |
@@ -46,6 +46,8 @@ Three methods are served:
 | `paths_between` | The chains of facts joining two entities, up to three hops, shortest first. With `at`, every edge must hold at that moment; with `as_of`, the chains as the base held them then |
 | `changes` | What the graph learned or revised in a window of **record** time: asserted, corrected, rejected, merged. Needs no entity; use it when the question names a period, not a subject |
 | `search_docs` | Utopia's own manual, for questions about how the platform works. Never the user's documents |
+| `list_rules` | Lists the base’s inference rules and their criteria; read-only |
+| `rule_matches` | Inspects entities matching a selected rule; does not create or change a rule |
 | `remember` | Record one sentence into the base's memory. **Needs a `write` token held by an editor**; a token without it does not see this tool in `tools/list`, and calling it anyway says why |
 
 The two time axes matter here. `at` reads **world time** (when something was true); `as_of` reads **record time** (what Utopia held at that moment, before it revised it), and `changes` lists what moved on that axis in a window. They are separate parameters on purpose: folded into one they would answer "what happened in March" with "what we learned in March", and both look plausible.
@@ -113,7 +115,7 @@ is a successful read, not an error.
 | Tool | Structured fields |
 |---|---|
 | `find_entities` | `entities[]`, in the same ranked order as the text: `id`, `name`, `type_key`, `type_label`, `disambiguator`, `fact_count`. This is a candidate list, not an exhaustive entity export |
-| `search_chunks` | `as_of`, `limit`, `limit_reached`, `chunks[]`. Each chunk has `chunk_id`, `document_id`, zero-based `seq`, `filename`, `text`, `truncated`. The text uses the same 800-character cutoff as the prose |
+| `search_chunks` | `as_of`, `limit`, `limit_reached`, `retrieval`, `chunks[]`. Each chunk has `chunk_id`, `document_id`, zero-based `seq`, `filename`, `text`, `truncated`. The text uses the same 800-character cutoff as the prose |
 | `entity_facts` | `entity` (`id`, `name`, `type_key`, `type_label`), effective `at`/`as_of`/`before`, `total_facts`, `matched_facts`, `limit`, `truncated`, `facts[]`, `derived_facts[]` |
 | `changes` | Effective `since` (inclusive) and `until` (exclusive), `limit`, `limit_reached`, `changes[]`. Events carry `fact_id`, `at`, `kind`, `subject_id`, `subject_name`, `predicate_label`, `object_name`, `object_value`, `confidence`, `valid_from`, `valid_to`, both validity precisions, `document_id`, `filename`, `quote` |
 
@@ -149,7 +151,19 @@ use `at`/`as_of`/`before` and are listed separately without that limit. `truncat
 reports omitted matching assertions. Search returns at most six chunks and
 changes at most 40 events; `limit_reached` means the cap was reached, not that
 another result is known to exist. Narrow the query/window to inspect more.
-Historical full-text search retains the recall limitation described above.
+Historical lexical recall uses versioned PostgreSQL chunks. Candidate limits still apply;
+this is not exhaustive history. `retrieval` reports `dense_executed`, `lexical_method`
+(and the compatible `lexical` alias), `reranker_status`, `candidate_count`, and
+`returned`. Optional dense/reranking failures do not imply those models ran successfully.
+Malformed `as_of` fails rather than silently selecting the present.
+
+Soorin also exposes versioned REST `/knowledge/resolve` and `/knowledge/context`
+contracts for exact source-authority resolution and bounded evidence context.
+`find_entities` is fuzzy discovery, not exact identity. Investigation clients
+should use a dedicated read PAT scoped to their KB; ingestion uses a separate
+source token. No consumer gains containment, ticket mutation or graph approval
+from these read interfaces. Notifications currently receive an empty JSON result;
+streaming and batch JSON-RPC are not supported.
 
 ## What an agent records waits for a nod
 

@@ -59,11 +59,11 @@ See [reconciliation](upstream-sync.md).
 ## Phase C — Docker / application
 
 Prepare an isolated project/ports with no collision. The source-development file
-uses 2516/2517 and must not start if those belong to a running lab. Build once with
+defaults to occupied 2516/2517; override through soorin/config/qa.env.example to 2526/2527 after inventory. Build once with
 an explicit deadline and job limit; save the output, do not repeatedly restart it.
 
 ```bash
-SOORIN_BUILD_JOBS=1 timeout 1800s docker compose -p soorin-qualification \
+SOORIN_BUILD_JOBS=1 timeout 1800s docker compose --env-file soorin/config/qa.env.example -p soorin-tkg-v1-qa \
   -f docker-compose.soorin-dev.yml build app
 ```
 
@@ -94,11 +94,12 @@ Never use `down -v`, pruning or an old lab source as test cleanup.
 
 ## Phase E — synthetic SOC and privacy
 
-The native harness is opt-in and accepts loopback port 2516. Use a new disposable
-stack at that port after inventory; it creates synthetic accounts/KBs/sources.
+The native harness is opt-in and verifies the new QA project/volumes at loopback
+2526; it refuses existing labs and creates only synthetic accounts/KBs/sources.
 
 ```bash
 SOORIN_DISPOSABLE_ACCEPTANCE=1 timeout 300s python3 -m soorin.e2e.native_validation \
+  --base-url http://127.0.0.1:2526 --qa-project soorin-tkg-v1-qa --approved-port 2526 \
   --execute --base-url http://127.0.0.1:2516 --deadline 120 \
   --report /tmp/soorin-native-acceptance.json
 ```

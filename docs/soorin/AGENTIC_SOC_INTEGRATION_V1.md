@@ -1,9 +1,10 @@
 # Agentic_SOC integration v1
 
-Status: source-audited contract and mock-tested Soorin client; no live Agentic_SOC
-connector deployment has been exercised. Agentic_SOC remains unchanged at privacy
-branch `11cd70c9dcd27a3bf91a364046e3ab86c0cdc201`; main reference
-`19a0ceeb5375f2dfb8d50760c883053e50b529e9` was read without checkout or mutation.
+Status: source-audited against Agentic_SOC main
+`a0a160d1dfbd83304fbb335b8ef8ba871a04cd90`; no live connector deployment.
+The earlier `11cd70c` privacy branch and `19a0cee` main are historical checkpoints.
+See [current workflow and tool contracts](AGENT_TOOL_CONTRACTS.md) for the updated
+API-enriched alert ID semantics and the V1 multi-source ownership limitation.
 
 The source path is Splunk enriched notables → connector envelope/OCSF → raw-events
 transport → fusion promotion → durable tenant alert row → fused-alert consumer →
@@ -23,11 +24,12 @@ All paths are below `/api/v1`. Use TLS except local synthetic testing.
 | POST `/sources/{source}/knowledge-events` | Statements source bearer token; dedicated empty source; canonical event v1, checksum `soorin.source-content.sha256.v3` |
 | GET `/kbs/{kb}/knowledge/receipts` | KB admin session; counts and newest 100 operational receipts, no event payload |
 | POST `/kbs/{kb}/knowledge/receipts/{receipt}/retry` | KB admin; reuses queued/running job, refuses bound/quarantined receipts |
+| POST `/kbs/{kb}/knowledge/resolve` | Reader session/PAT plus tenant/source binding; exact current authority lookup |
 | POST `/kbs/{kb}/knowledge/context` | Reader authorization plus matching tenant; read-only context v2 |
 
 The binding is deployment-owned. Tenant strings are assertions checked against
 that binding; they cannot grant access. Source credentials do not authorize context
-reads. Use separate session credentials for read-only consumers.
+reads. Use a separate KB-scoped read PAT for read-only consumers; admin diagnostics still require an admin session.
 
 The general v1 contract retains legacy v1/v2 checksums and reviewed/proposed
 objects for historical tooling. Native admission is stricter: checksum v3 only,
@@ -105,3 +107,5 @@ Source update timestamps can advance `observed_at` while original `event_time`
 stays stable. The event/checksum version and identity keys are unchanged. Producer
 projection corrections can change newly generated content checksums; replay the
 same serialized canonical event when retrying an already accepted delivery.
+
+Manual operators can use the [bounded preview/submission workflow](MANUAL_SOC_INGESTION.md).

@@ -21,3 +21,28 @@ Soorin image variable, not generic upstream-image Compose. Keep secrets outside 
 The default CORS origin is the local frontend dev server; production overrides it
 with the exact TLS origin. Runtime and model settings are separate: workspace
 settings activate native clients; Python evaluation env vars do not.
+
+
+## Next V1 disposable QA project (prepared, NOT RUN)
+
+Use `soorin/config/qa.env.example` with existing `docker-compose.soorin-dev.yml`.
+It sets COMPOSE_PROJECT_NAME=soorin-tkg-v1-qa, app 127.0.0.1:2526 and DB
+127.0.0.1:2527. Verify port ownership again during the future build mission.
+Volumes resolve to `soorin-tkg-v1-qa_soorin_sprint1_db` and
+`soorin-tkg-v1-qa_soorin_sprint1_data`; no external volume/bind reuse is configured.
+Replace the example DB password with an operator-owned secret before startup.
+Always pass `--env-file` and `-p soorin-tkg-v1-qa` explicitly. Static check only:
+
+```bash
+docker compose --env-file soorin/config/qa.env.example -p soorin-tkg-v1-qa \
+  -f docker-compose.soorin-dev.yml config --quiet
+```
+
+No build/up/down is authorized by this documentation. Existing labs at 1516/2516
+must remain intact. Both E2E harnesses require explicit QA project/approved port
+and verify app/db labels, exact project-owned mounts and loopback mappings before
+any HTTP mutation. Offline preflight remains available without Docker access.
+Use [manual preview](MANUAL_SOC_INGESTION.md) first; native_validation is the
+canonical receipt harness, local_validation remains a legacy Statements harness.
+Do not combine their sources. Optional model profiles remain absent by default;
+the development overlay's 2811–2813 bindings also need inventory before use.

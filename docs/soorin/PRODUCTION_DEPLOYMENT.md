@@ -78,3 +78,7 @@ are roll-forward; no downgrade SQL or volume deletion is provided. For incompati
 schema changes, restore the tested pre-upgrade backup into a separate database
 and restore matching data/key material, then switch traffic under incident control.
 Do not blindly run an older binary against a newer schema.
+
+## V1 baseline update
+
+V1 baseline parameterizes app publication as `SOORIN_APP_BIND` (default 127.0.0.1:2516); use a verified unused bind before deployment. Keep DB/model ports internal. Future Agentic access requires approved DNS/TLS reverse proxy, narrowly scoped read PAT and separate TKG Privacy Gateway client authorization; no running server network was joined. Local QA uses [the dedicated project/env](LOCAL_DEVELOPMENT.md), not this production template. No immutable image qualification, backup restore or live gateway test occurred in this pass.
