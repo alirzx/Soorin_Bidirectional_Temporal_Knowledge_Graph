@@ -28,6 +28,7 @@ sources=/etc/apt/sources.list.d/debian.sources
 
 attempt() {
     label="$1"; main_url="$2"; security_url="$3"
+    shift 3
     echo "APT: trying $label signed Bookworm mirrors"
     # Replace upstream sources rather than add extra sources that could still time out.
     rm -f /etc/apt/sources.list
