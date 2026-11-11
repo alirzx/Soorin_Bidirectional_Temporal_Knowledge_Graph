@@ -38,3 +38,18 @@ class KnowledgeClientTests(unittest.TestCase):
                 KnowledgeClient(url)
         with self.assertRaises(ValueError):
             KnowledgeClient('https://outside.invalid').context(ID, tenant_id='blue', entity='current alias', as_of='2026-01-01T00:00:00Z')
+
+
+    def test_receipt_diagnostics_and_resolution_use_separate_reader_credential(self):
+        calls = []
+        def transport(method, url, headers, body):
+            calls.append((method, url, headers, body))
+            schema = 'soorin.ingestion-status.v1' if method == 'GET' else 'soorin.identity-resolution.v1'
+            return 200, {'schema_version':schema}
+        client = KnowledgeClient('http://127.0.0.1:2526', source_token='source-only', session_token='reader-only', transport=transport)
+        client.receipts(ID)
+        client.resolve(ID, tenant_id='blue', source_system='splunk', source_instance='one',
+                       entity_type='Host', authority_name='host_id', source_identifier='one')
+        self.assertEqual(calls[0][0], 'GET')
+        self.assertIsNone(calls[0][3])
+        self.assertTrue(all(c[2]['Authorization'] == 'Bearer reader-only' for c in calls))

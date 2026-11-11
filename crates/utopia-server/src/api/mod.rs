@@ -120,6 +120,7 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             post(soc_ingestion::ingest),
         )
         .route("/kbs/{id}/knowledge/context", post(soc_knowledge::context))
+        .route("/kbs/{id}/knowledge/resolve", post(soc_knowledge::resolve))
         .route("/kbs/{id}/knowledge/receipts", get(soc_ingestion::receipts))
         .route(
             "/kbs/{id}/knowledge/receipts/{receipt}/retry",
