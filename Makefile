@@ -4,16 +4,43 @@ ENV_FILE ?= .env
 PROJECT ?= soorin-sprint1
 DC = docker compose --env-file $(ENV_FILE) -p $(PROJECT) -f docker-compose.soorin-dev.yml
 PYTHON ?= python3
+QA_ENV_FILE ?= .env.qa
+QA_PROJECT ?= soorin-tkg-v1-qa
+QA_APP_PORT ?= 2526
+QA_DB_PORT ?= 2527
+QA_DC = docker compose --env-file $(QA_ENV_FILE) -p $(QA_PROJECT) -f docker-compose.soorin-dev.yml
 OLD_IMAGE := ghcr.io/deeplethe/utopia:0.1.0-rc9
-.PHONY: help env-init preflight config old-inspect old-remove image-remove build build-fresh up down ps health logs migrations offline mock-check e2e-offline e2e-live ner-install ner-smoke rust-check web-check
+.PHONY: qa-env-init qa-config qa-build qa-up qa-native-e2e help env-init preflight config old-inspect old-remove image-remove build build-fresh up down ps health logs migrations offline mock-check e2e-offline e2e-live ner-install ner-smoke rust-check web-check
 help:
-	@echo 'Targets: env-init preflight old-inspect old-remove image-remove build build-fresh up down ps health logs migrations offline mock-check e2e-offline e2e-live ner-install ner-smoke rust-check web-check'
+	@echo 'Targets: qa-env-init qa-config qa-build qa-up qa-native-e2e env-init preflight old-inspect old-remove image-remove build build-fresh up down ps health logs migrations offline mock-check e2e-offline e2e-live ner-install ner-smoke rust-check web-check'
 env-init:
 	@test ! -e '$(ENV_FILE)' || { echo 'Environment file exists, refusing overwrite'; exit 1; }
 	@command -v openssl >/dev/null
 	@umask 077; { printf 'SOORIN_DEV_DB_PASSWORD=%s\n' "$$(openssl rand -hex 24)"; printf 'SOORIN_DEV_APP_BIND=127.0.0.1:2516\nSOORIN_DEV_DB_BIND=127.0.0.1:2517\nUTOPIA_DB_IMAGE=pgvector/pgvector:pg16\nSOORIN_BUILD_JOBS=1\nSOORIN_DEV_DB_MAX_CONNECTIONS=8\n'; } > '$(ENV_FILE)'
 	@chmod 600 '$(ENV_FILE)'
 	@echo 'Created $(ENV_FILE); preserve the password for existing volumes.'
+# All QA targets use an independently named stack and explicit ports.
+# The generated secret remains outside Git. Never overwrite an existing QA env.
+qa-env-init:
+	@test '$(QA_PROJECT)' = soorin-tkg-v1-qa || { echo 'Refusing non-QA project'; exit 1; }
+	@test ! -e '$(QA_ENV_FILE)' || { echo 'QA environment exists; refusing overwrite'; exit 1; }
+	@command -v openssl >/dev/null
+	@umask 077; { printf 'COMPOSE_PROJECT_NAME=soorin-tkg-v1-qa\n'; printf 'SOORIN_DEV_DB_PASSWORD=%s\n' "$(openssl rand -hex 24)"; printf 'SOORIN_DEV_APP_BIND=127.0.0.1:%s\nSOORIN_DEV_DB_BIND=127.0.0.1:%s\n' '$(QA_APP_PORT)' '$(QA_DB_PORT)'; printf 'UTOPIA_DB_IMAGE=pgvector/pgvector:pg16\nSOORIN_BUILD_JOBS=1\nSOORIN_DEV_DB_MAX_CONNECTIONS=8\n'; } > '$(QA_ENV_FILE)'
+	@chmod 600 '$(QA_ENV_FILE)'
+	@echo 'Created $(QA_ENV_FILE); verify ownership, volumes and free ports before QA build.'
+qa-config:
+	@test '$(QA_PROJECT)' = soorin-tkg-v1-qa || { echo 'Refusing non-QA project'; exit 1; }
+	@$(QA_DC) config --quiet
+qa-build: qa-config
+	@$(QA_DC) build app
+qa-up: qa-config
+	@test '$(QA_EXECUTE)' = YES || { echo 'Set QA_EXECUTE=YES after verifying empty QA volumes and free ports'; exit 1; }
+	@$(QA_DC) up -d --no-build db app
+qa-native-e2e:
+	@test '$(E2E_EXECUTE)' = YES || { echo 'Set E2E_EXECUTE=YES only for the disposable QA project'; exit 1; }
+	@test '$(QA_PROJECT)' = soorin-tkg-v1-qa || { echo 'Refusing non-QA project'; exit 1; }
+	@SOORIN_DISPOSABLE_ACCEPTANCE=1 $(PYTHON) -m soorin.e2e.native_validation --base-url http://127.0.0.1:$(QA_APP_PORT) --qa-project $(QA_PROJECT) --approved-port $(QA_APP_PORT) --execute --deadline 120 --report /tmp/soorin-native-acceptance.json
+
 config:
 	@$(DC) config --quiet
 preflight: config
@@ -70,10 +97,10 @@ mock-check:
 	@$(PYTHON) soorin/tests/mock_splunk/scripts/soc_mock.py render --output-dir /tmp/soorin-sprint1-mock-statements
 e2e-offline:
 	@$(PYTHON) -m soorin.e2e.local_validation --report /tmp/soorin-sprint1-e2e-offline.json
+# The previous command targeted 2516 and no longer satisfies the safe QA ownership gate.
 e2e-live:
-	@test '$(E2E_EXECUTE)' = YES || { echo 'Set E2E_EXECUTE=YES only after isolated KB/source creation'; exit 1; }
-	@test -n "$$UTOPIA_KB_ID" && test -n "$$UTOPIA_SOURCE_ID" && test -n "$$UTOPIA_INGEST_TOKEN" && test -n "$$UTOPIA_SESSION_TOKEN" || { echo 'Missing KB/source IDs or credentials'; exit 1; }
-	@UTOPIA_BASE_URL=http://127.0.0.1:2516 $(PYTHON) -m soorin.e2e.local_validation --execute --report /tmp/soorin-sprint1-e2e-live.json
+	@echo 'Legacy 2516 E2E target disabled; use qa-native-e2e with E2E_EXECUTE=YES and verified disposable QA containers.' >&2
+	@exit 2
 ner-install:
 	@$(PYTHON) -m pip install -r soorin/requirements-ner-cpu.txt
 ner-smoke:
