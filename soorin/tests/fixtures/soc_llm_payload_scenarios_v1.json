@@ -1,0 +1,67 @@
+{
+  "synthetic": true,
+  "schema_version": "soorin.synthetic.soc-llm-payload.v1",
+  "records": [
+    {
+      "scenario": "password_spray",
+      "tenant_id": "tenant-blue",
+      "source_instance": "splunk-lab-a",
+      "raw_record": {"notable_id":"NOTABLE-PS-001","source_guid":"GUID-PS-001","source_event_id":"EVT-PS-001","detection_id":"RULE-1110-003","analyst_labels":"{\"status\":\"new\",\"owner\":null}"},
+      "llm_payload": {"alert_id":"NOTABLE-PS-001","alert_time":"2026-10-01T08:05:00Z","event_time":"2026-10-01T08:00:00Z","event_time_source":"first_event","rule_name":"Synthetic Password Spray","severity":"high","finding_count":32,"risk_score":72,"risk_object":"CORP\\lab-user","risk_object_type":"user","entity":"dc01.lab.example","entity_type":"system","annotations":{"mitre_attack":["T1110.003"]},"rule":{"title":"Password spray","description":"Synthetic repeated authentication failures","spl":"| tstats count where Authentication.action=failure","spl_caveat":"Current saved-search definition; not fire-time evidence."},"investigation_hint":"search synthetic auth events","alert_fields":{"src_ip":"192.0.2.44","target_users":["lab-user","lab-admin"]}}
+    },
+    {
+      "scenario": "authentication_failure",
+      "tenant_id": "tenant-blue", "source_instance": "splunk-lab-a",
+      "raw_record": {"source_event_id":"EVT-AUTH-4625","orig_sid":"scheduler__lab","orig_rid":"17"},
+      "llm_payload": {"alert_id":"EVT-AUTH-4625","alert_time":"2026-10-01T08:11:00Z","event_time":"2026-10-01T08:10:58Z","event_time_source":"first_event","rule_name":"Synthetic Windows 4625","severity":"medium","entity":"workstation-7.lab.example","entity_type":"system","alert_fields":{"EventCode":"4625","src_ip":"198.51.100.8","user":"LAB\\analyst"}}
+    },
+    {
+      "scenario": "privileged_account_activity",
+      "tenant_id": "tenant-blue", "source_instance": "splunk-lab-a",
+      "raw_record": {"notable_id":"NOTABLE-PRIV-001","rule_id":"RULE-PRIV-001"},
+      "llm_payload": {"alert_id":"NOTABLE-PRIV-001","alert_time":"2026-10-02T03:00:00Z","event_time":"2026-10-02T02:58:00Z","event_time_source":"first_event","rule_name":"Synthetic Privileged Activity","severity":"critical","risk_score":95,"risk_object":"svc-backup@lab.example","risk_object_type":"user","annotations":{"mitre_attack":["T1078"]},"alert_fields":{"hostname":"db01.lab.example","change_ticket":"CHG-4242"}}
+    },
+    {
+      "scenario": "suspicious_process",
+      "tenant_id": "tenant-blue", "source_instance": "splunk-lab-a",
+      "raw_record": {"source_guid":"GUID-PROC-001"},
+      "llm_payload": {"alert_id":"GUID-PROC-001","alert_time":"2026-10-02T12:00:00Z","event_time":"2026-10-02T11:59:30Z","event_time_source":"first_event","rule_name":"Synthetic Suspicious Process","severity":"high","entity":"ws01.lab.example","entity_type":"system","annotations":{"mitre_attack":["T1059.001"]},"alert_fields":{"process_name":"powershell.exe","process_path":"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    },
+    {
+      "scenario": "multi_entity_notable",
+      "tenant_id": "tenant-blue", "source_instance": "splunk-lab-a",
+      "raw_record": {"notable_id":"NOTABLE-MULTI-001"},
+      "llm_payload": {"alert_id":"NOTABLE-MULTI-001","alert_time":"2026-10-03T09:00:00Z","event_time":"2026-10-03T08:55:00Z","event_time_source":"first_event","rule_name":"Synthetic Lateral Movement","severity":"high","alert_fields":{"src_ip":"203.0.113.9","dest_ip":"10.10.4.8","hostname":"srv02.lab.example","username":"LAB\\operator","url":"https://synthetic.example/path"}}
+    },
+    {
+      "scenario": "missing_llm_payload",
+      "tenant_id": "tenant-blue", "source_instance": "splunk-lab-a",
+      "raw_record": {"notable_id":"NOTABLE-OLD-001","_time":"2026-10-04T00:00:00Z","search_name":"Historical synthetic notable","severity":"low","src_ip":"192.0.2.90","host":"legacy.lab.example"},
+      "llm_payload": null
+    },
+    {
+      "scenario": "risk_based_alert",
+      "tenant_id": "tenant-blue", "source_instance": "splunk-lab-a",
+      "raw_record": {"notable_id":"NOTABLE-RBA-001"},
+      "llm_payload": {"alert_id":"NOTABLE-RBA-001","alert_time":"2026-10-05T10:00:00Z","event_time":"2026-10-05T09:45:00Z","event_time_source":"first_event","rule_name":"Synthetic Risk Aggregation","severity":"high","risk_score":143,"risk_object":"LAB\\risk-user","risk_object_type":"user","alert_fields":{"risk_messages":["synthetic signal one","synthetic signal two"]}}
+    },
+    {
+      "scenario": "unknown_event_time",
+      "tenant_id": "tenant-blue", "source_instance": "splunk-lab-a",
+      "raw_record": {"notable_id":"NOTABLE-TIME-001","_time":"2026-10-06T10:00:00Z"},
+      "llm_payload": {"alert_id":"NOTABLE-TIME-001","alert_time":"2026-10-06T10:00:00Z","event_time_source":"alert_time_fallback","rule_name":"Synthetic Unknown Event Time","severity":"medium"}
+    },
+    {
+      "scenario": "dynamic_alert_fields",
+      "tenant_id": "tenant-blue", "source_instance": "splunk-lab-a",
+      "raw_record": {"notable_id":"NOTABLE-DYNAMIC-001"},
+      "llm_payload": "{\"alert_id\":\"NOTABLE-DYNAMIC-001\",\"alert_time\":\"2026-10-07T11:00:00Z\",\"event_time\":\"2026-10-07T10:59:00Z\",\"event_time_source\":\"first_event\",\"rule_name\":\"Synthetic Dynamic Fields\",\"severity\":\"medium\",\"alert_fields\":{\"custom_signal_01\":\"value-01\",\"custom_signal_18\":\"value-18\",\"domain\":\"synthetic.example\"}}"
+    },
+    {
+      "scenario": "nested_ocsf_envelope",
+      "tenant_id": "tenant-blue", "source_instance": "splunk-lab-a",
+      "raw_record": {"tenant_id":"tenant-blue","ocsf_event":{"class_uid":2004,"finding":{"uid":"OCSF-FINDING-001"},"raw_data":{"notable_id":"NOTABLE-OCSF-001","source_event_id":"EVENT-OCSF-001","host":"ocsf-host.lab.example"}}},
+      "llm_payload": {"alert_id":"NOTABLE-OCSF-001","alert_time":"2026-10-08T12:00:00Z","event_time":"2026-10-08T11:59:00Z","event_time_source":"first_event","rule_name":"Synthetic OCSF Finding","severity":"medium","alert_fields":{"src_ip":"198.51.100.77"}}
+    }
+  ]
+}

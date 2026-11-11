@@ -1,0 +1,157 @@
+{
+  "schema_version": "soorin.synthetic.soc-e2e.v1",
+  "synthetic": true,
+  "warning": "Synthetic E2E data only. Names use example domains and addresses use documentation or private ranges.",
+  "records": [
+    {
+      "scenario": "initial_ingestion",
+      "tenant_id": "tenant-blue",
+      "source_instance": "splunk-e2e",
+      "multiple_evidence": true,
+      "raw_record": {
+        "alert_row_id": "SOC-E2E-ALERT-001",
+        "notable_id": "SOC-E2E-NOTABLE-001",
+        "source_event_ids": ["SOC-E2E-EVENT-001", "SOC-E2E-EVENT-002"],
+        "detection_id": "SOC-E2E-RULE-001",
+        "case_id": "SOC-E2E-CASE-001",
+        "source_revision_id": "1",
+        "network_scope": "vpc-a",
+        "analyst_labels": {"status": "new"}
+      },
+      "llm_payload": {
+        "alert_id": "SOC-E2E-NOTABLE-001",
+        "alert_time": "2026-10-20T10:01:00Z",
+        "event_time": "2026-10-20T10:00:00Z",
+        "event_time_source": "first_event",
+        "rule_name": "Synthetic E2E Password Spray",
+        "severity": "high",
+        "entity": "shared.e2e.example",
+        "entity_type": "system",
+        "annotations": {"mitre_attack": ["T1110.003"]},
+        "alert_fields": {
+          "src_ip": "10.20.30.40",
+          "user": "E2E\\analyst",
+          "ticket_id": "SOC-E2E-TICKET-001"
+        }
+      }
+    },
+    {
+      "scenario": "changed_status",
+      "tenant_id": "tenant-blue",
+      "source_instance": "splunk-e2e",
+      "raw_record": {
+        "alert_row_id": "SOC-E2E-ALERT-001",
+        "notable_id": "SOC-E2E-NOTABLE-001",
+        "source_event_ids": ["SOC-E2E-EVENT-001", "SOC-E2E-EVENT-002"],
+        "detection_id": "SOC-E2E-RULE-001",
+        "case_id": "SOC-E2E-CASE-001",
+        "source_revision_id": "2",
+        "network_scope": "vpc-a",
+        "analyst_labels": {"status": "investigating"}
+      },
+      "llm_payload": {
+        "alert_id": "SOC-E2E-NOTABLE-001",
+        "alert_time": "2026-10-20T10:01:00Z",
+        "event_time": "2026-10-20T10:00:00Z",
+        "event_time_source": "first_event",
+        "rule_name": "Synthetic E2E Password Spray",
+        "severity": "high",
+        "entity": "shared.e2e.example",
+        "annotations": {"mitre_attack": ["T1110.003"]},
+        "alert_fields": {"src_ip": "10.20.30.40", "user": "E2E\\analyst", "ticket_id": "SOC-E2E-TICKET-001"}
+      }
+    },
+    {
+      "scenario": "corrected_source_event",
+      "tenant_id": "tenant-blue",
+      "source_instance": "splunk-e2e",
+      "raw_record": {
+        "alert_row_id": "SOC-E2E-ALERT-001",
+        "notable_id": "SOC-E2E-NOTABLE-001",
+        "source_event_ids": ["SOC-E2E-EVENT-001", "SOC-E2E-EVENT-002-CORRECTED"],
+        "detection_id": "SOC-E2E-RULE-001",
+        "case_id": "SOC-E2E-CASE-001",
+        "source_revision_id": "3",
+        "network_scope": "vpc-a",
+        "analyst_labels": {"status": "investigating", "correction": "event reference"}
+      },
+      "llm_payload": {
+        "alert_id": "SOC-E2E-NOTABLE-001",
+        "alert_time": "2026-10-20T10:01:00Z",
+        "event_time": "2026-10-20T10:00:00Z",
+        "event_time_source": "first_event",
+        "rule_name": "Synthetic E2E Password Spray",
+        "severity": "high",
+        "entity": "shared.e2e.example",
+        "annotations": {"mitre_attack": ["T1110.003"]},
+        "alert_fields": {"src_ip": "10.20.30.40", "user": "E2E\\analyst", "ticket_id": "SOC-E2E-TICKET-001"}
+      }
+    },
+    {
+      "scenario": "late_arriving_event",
+      "tenant_id": "tenant-blue",
+      "source_instance": "splunk-e2e",
+      "raw_record": {"source_event_id": "SOC-E2E-EVENT-LATE", "network_scope": "vpc-a"},
+      "llm_payload": {
+        "alert_id": "SOC-E2E-EVENT-LATE",
+        "alert_time": "2026-10-22T12:00:00Z",
+        "event_time": "2026-10-18T08:00:00Z",
+        "event_time_source": "first_event",
+        "rule_name": "Synthetic E2E Late Event",
+        "severity": "low",
+        "alert_fields": {"hostname": "late.e2e.example", "src_ip": "192.0.2.18"}
+      }
+    },
+    {
+      "scenario": "same_host_second_alert",
+      "tenant_id": "tenant-blue",
+      "source_instance": "splunk-e2e",
+      "raw_record": {"alert_row_id": "SOC-E2E-ALERT-002", "notable_id": "SOC-E2E-NOTABLE-002", "network_scope": "vpc-a"},
+      "llm_payload": {
+        "alert_id": "SOC-E2E-NOTABLE-002",
+        "alert_time": "2026-10-21T11:00:00Z",
+        "event_time": "2026-10-21T10:59:00Z",
+        "event_time_source": "first_event",
+        "rule_name": "Synthetic E2E Shared Host",
+        "severity": "medium",
+        "entity": "shared.e2e.example",
+        "alert_fields": {"src_ip": "198.51.100.21"}
+      }
+    },
+    {
+      "scenario": "same_hostname_other_tenant",
+      "tenant_id": "tenant-red",
+      "source_instance": "splunk-e2e",
+      "raw_record": {"alert_row_id": "SOC-E2E-RED-ALERT-001", "notable_id": "SOC-E2E-RED-NOTABLE-001", "network_scope": "vpc-red"},
+      "llm_payload": {
+        "alert_id": "SOC-E2E-RED-NOTABLE-001",
+        "alert_time": "2026-10-21T12:00:00Z",
+        "event_time": "2026-10-21T11:59:00Z",
+        "rule_name": "Synthetic E2E Tenant Isolation",
+        "severity": "medium",
+        "entity": "shared.e2e.example",
+        "alert_fields": {"src_ip": "203.0.113.22"}
+      }
+    },
+    {
+      "scenario": "same_ip_scope_a",
+      "tenant_id": "tenant-blue",
+      "source_instance": "splunk-e2e",
+      "raw_record": {"alert_row_id": "SOC-E2E-IP-A", "notable_id": "SOC-E2E-IP-N-A", "network_scope": "vpc-a"},
+      "llm_payload": {
+        "alert_id": "SOC-E2E-IP-N-A", "alert_time": "2026-10-23T09:00:00Z", "event_time": "2026-10-23T08:59:00Z",
+        "rule_name": "Synthetic E2E IP Scope A", "severity": "low", "alert_fields": {"src_ip": "10.20.30.40"}
+      }
+    },
+    {
+      "scenario": "same_ip_scope_b",
+      "tenant_id": "tenant-blue",
+      "source_instance": "splunk-e2e",
+      "raw_record": {"alert_row_id": "SOC-E2E-IP-B", "notable_id": "SOC-E2E-IP-N-B", "network_scope": "vpc-b"},
+      "llm_payload": {
+        "alert_id": "SOC-E2E-IP-N-B", "alert_time": "2026-10-23T09:05:00Z", "event_time": "2026-10-23T09:04:00Z",
+        "rule_name": "Synthetic E2E IP Scope B", "severity": "low", "alert_fields": {"src_ip": "10.20.30.40"}
+      }
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+# Optional overlay for production.yml. Requires a separately qualified local model image.
+x-model: &model
+  image: ${SOORIN_MODEL_IMAGE:?Set a reviewed CPU model image digest}
+  user: '65532:65532'
+  init: true
+  read_only: true
+  restart: unless-stopped
+  tmpfs: [/tmp:size=256m,mode=1777]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 128
+  cpus: 2
+  mem_limit: 4g
+  networks: [models]
+  environment:
+    HF_HOME: /models
+    HF_HUB_OFFLINE: '1'
+    TRANSFORMERS_OFFLINE: '1'
+    SOORIN_MODEL_THREADS: '2'
+  healthcheck:
+    test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready',timeout=3)"]
+    interval: 30s
+    timeout: 5s
+    retries: 5
+    start_period: 120s
+services:
+  embedding:
+    <<: *model
+    profiles: [embedding]
+    command: [serve, --role, embedding, --host, 0.0.0.0]
+    volumes: [soorin_embedding_cache:/models:ro]
+  reranker:
+    <<: *model
+    profiles: [reranker]
+    command: [serve, --role, reranker, --host, 0.0.0.0]
+    volumes: [soorin_reranker_cache:/models:ro]
+  ner:
+    <<: *model
+    profiles: [ner]
+    command: [serve, --role, ner, --host, 0.0.0.0]
+    volumes: [soorin_ner_cache:/models:ro]
+volumes:
+  soorin_embedding_cache:
+  soorin_reranker_cache:
+  soorin_ner_cache:

@@ -22,7 +22,8 @@ Then in the Utopia UI, select the **Soorin SOC Lab** knowledge base, create a **
 
 ```bash
 export UTOPIA_SOURCE_ID='<uuid>'
-read -rsp 'Source token: ' UTOPIA_INGEST_TOKEN; echo
+# Zsh (Bash uses: read -rsp 'Source token: ' UTOPIA_INGEST_TOKEN)
+read -rs 'UTOPIA_INGEST_TOKEN?Source token: '; echo
 export UTOPIA_INGEST_TOKEN
 python3 soorin/tests/mock_splunk/scripts/soc_mock.py push --replay
 unset UTOPIA_INGEST_TOKEN

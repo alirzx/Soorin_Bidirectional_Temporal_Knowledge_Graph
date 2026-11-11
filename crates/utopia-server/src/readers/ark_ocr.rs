@@ -179,6 +179,7 @@ impl<'a> ArkOcr<'a> {
 
     async fn recognize(&self, image: &[u8], mime: &str) -> Result<String, PageError> {
         let endpoint = self.endpoint().map_err(PageError::Fatal)?;
+        utopia_llm::egress::require(endpoint.as_str()).map_err(PageError::Fatal)?;
         let body = json!({
             "model": self.model,
             "stream": false,

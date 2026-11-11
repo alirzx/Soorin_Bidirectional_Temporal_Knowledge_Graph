@@ -1,0 +1,15 @@
+{
+  "alert_row_id": "synthetic-alert-v1",
+  "notable_id": "synthetic-notable-v1",
+  "event_time": "2026-11-01T10:00:00Z",
+  "source_updated_at": "2026-11-01T10:30:00Z",
+  "host": "synthetic-host.example",
+  "src_ip": "192.0.2.10",
+  "network_scope": "qa-network",
+  "user": "EXAMPLE\\synthetic-user",
+  "rule_id": "synthetic-rule",
+  "technique_id": "T1110",
+  "case_id": "synthetic-case",
+  "ticket_id": "SYNTHETIC-001",
+  "description": "Synthetic preview fixture; contains no customer data."
+}

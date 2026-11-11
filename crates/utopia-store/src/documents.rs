@@ -1661,6 +1661,17 @@ pub async fn vector_search(
     limit: i64,
     as_of: Option<DateTime<Utc>>,
 ) -> AppResult<Vec<Uuid>> {
+    vector_search_model(pool, kb_id, embedding, limit, as_of, None).await
+}
+
+pub async fn vector_search_model(
+    pool: &PgPool,
+    kb_id: Uuid,
+    embedding: &[f32],
+    limit: i64,
+    as_of: Option<DateTime<Utc>>,
+    model: Option<&str>,
+) -> AppResult<Vec<Uuid>> {
     let dims = embedding.len();
     if dims == 0 {
         return Ok(Vec::new());
@@ -1672,6 +1683,7 @@ pub async fn vector_search(
         "WITH nearest AS MATERIALIZED (
              SELECT id, {distance} AS distance FROM chunks c
              WHERE c.kb_id = $1 AND c.embedding IS NOT NULL AND {live}
+               AND ($5::text IS NULL OR c.embedding_model=$5)
                AND {same_dims}
              ORDER BY {distance}
              LIMIT $3
@@ -1686,10 +1698,32 @@ pub async fn vector_search(
     .bind(&query_vec)
     .bind(limit)
     .bind(as_of)
+    .bind(model)
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// 按 id 集合取分块（带文档名），保持传入顺序。
+/// Versioned lexical fallback for historical queries. This is PostgreSQL text
+/// ranking, not Tantivy BM25, and it filters the record axis before LIMIT.
+pub async fn historical_lexical(
+    pool: &PgPool,
+    kb: Uuid,
+    query: &str,
+    as_of: DateTime<Utc>,
+    limit: i64,
+) -> AppResult<Vec<String>> {
+    Ok(sqlx::query_scalar(&format!(
+        "WITH query AS (SELECT to_tsquery('simple',array_to_string(ARRAY(SELECT quote_literal(term) FROM unnest(tsvector_to_array(to_tsvector('simple',$2))) term), ' | ')) AS terms)
+         SELECT c.id::text FROM chunks c JOIN documents d ON d.id=c.document_id CROSS JOIN query
+         WHERE c.kb_id=$1 AND {live} AND {doc_live}
+           AND to_tsvector('simple',c.text) @@ query.terms
+         ORDER BY ts_rank_cd(to_tsvector('simple',c.text),query.terms) DESC,c.id LIMIT $4",
+        live=crate::record_axis::chunk_live_at("c",Some(3)),
+        doc_live=crate::record_axis::document_live_at("d",Some(3))))
+        .bind(kb).bind(query).bind(as_of).bind(limit.clamp(1,100)).fetch_all(pool).await?)
 }
 
 /// 按 id 集合取分块（带文档名），保持传入顺序。

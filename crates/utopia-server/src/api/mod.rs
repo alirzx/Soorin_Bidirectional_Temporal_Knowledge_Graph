@@ -24,6 +24,12 @@ mod rule_expression_input;
 pub(crate) mod rule_routes;
 mod search_routes;
 mod settings_routes;
+mod soc_event_validation;
+pub(crate) mod soc_ingestion;
+mod soc_knowledge;
+#[cfg(test)]
+mod soc_runtime_tests;
+mod soc_settings;
 mod sources_routes;
 #[cfg(test)]
 mod static_files_tests;
@@ -101,6 +107,29 @@ fn with_static_files(mut app: Router, web_dist: &str) -> Router {
 pub fn router(state: AppState, cfg: &AppConfig) -> Router {
     let api = Router::new()
         .route("/health", get(health))
+        .route(
+            "/workspaces/{id}/settings/embedding/backfill",
+            post(soc_settings::backfill),
+        )
+        .route(
+            "/kbs/{id}/knowledge/binding",
+            put(soc_ingestion::bind_tenant),
+        )
+        .route(
+            "/sources/{id}/knowledge-events",
+            post(soc_ingestion::ingest),
+        )
+        .route("/kbs/{id}/knowledge/context", post(soc_knowledge::context))
+        .route("/kbs/{id}/knowledge/resolve", post(soc_knowledge::resolve))
+        .route("/kbs/{id}/knowledge/receipts", get(soc_ingestion::receipts))
+        .route(
+            "/kbs/{id}/knowledge/receipts/{receipt}/retry",
+            post(soc_ingestion::retry),
+        )
+        .route(
+            "/workspaces/{id}/settings/reranker",
+            get(soc_settings::get).put(soc_settings::put),
+        )
         .route("/auth/register", post(auth_routes::register))
         .route("/auth/login", post(auth_routes::login))
         .route("/auth/logout", post(auth_routes::logout))
@@ -598,18 +627,25 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/jobs/noop", post(jobs_noop))
         .with_state(state);
 
-    // 开发环境 CORS：Vite dev server 携带 cookie 跨端口访问
-    let cors = CorsLayer::new()
-        .allow_origin("http://localhost:5173".parse::<HeaderValue>().unwrap())
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PATCH,
-            Method::DELETE,
-            Method::PUT,
-        ])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
-        .allow_credentials(true);
+    // Deployment-owned exact origin. Malformed values grant no cross-origin access.
+    let cors = CorsLayer::new();
+    let cors = match cfg
+        .cors_origin
+        .as_deref()
+        .and_then(|value| value.parse::<HeaderValue>().ok())
+    {
+        Some(origin) if origin != "*" => cors.allow_origin(origin),
+        _ => cors,
+    }
+    .allow_methods([
+        Method::GET,
+        Method::POST,
+        Method::PATCH,
+        Method::DELETE,
+        Method::PUT,
+    ])
+    .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+    .allow_credentials(true);
 
     /* **`/api` 下面认不出来的路径是 404，不是首页。**
     下面那个 history fallback 是给页面路由用的：刷新 /graph 要拿到 index.html。

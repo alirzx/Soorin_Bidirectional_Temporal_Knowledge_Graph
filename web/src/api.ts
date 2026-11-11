@@ -2045,7 +2045,7 @@ export const api = {
     ),
 
   search: (kbId: string, q: string) =>
-    request<{ results: SearchResult[] }>(`/api/v1/kbs/${kbId}/search`, {
+    request<{ results: SearchResult[]; retrieval?: { dense_executed: boolean; reranker_status: string } }>(`/api/v1/kbs/${kbId}/search`, {
       method: "POST",
       body: JSON.stringify({ q }),
     }),

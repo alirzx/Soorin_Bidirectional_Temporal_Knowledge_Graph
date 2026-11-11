@@ -84,6 +84,13 @@ export function Search() {
         {results.isError && (
           <p className="text-body text-danger">{(results.error as Error).message}</p>
         )}
+        {results.data?.retrieval && (
+          <p className="text-small text-ink-2 mb-4" role="status">
+            {results.data.retrieval.dense_executed ? S.search.hybrid : S.search.lexicalOnly}
+            {results.data.retrieval.reranker_status === "complete" && ` · ${S.search.rerankerExecuted}`}
+            {results.data.retrieval.reranker_status === "fallback" && ` · ${S.search.rerankerFallback}`}
+          </p>
+        )}
         {results.data && results.data.results.length === 0 && (
           <p className="text-body text-ink-2">{S.search.noResults}</p>
         )}

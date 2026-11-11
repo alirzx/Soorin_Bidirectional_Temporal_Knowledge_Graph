@@ -1,0 +1,2 @@
+# Python foundation tests are deliberately separate from the Rust service runtime.
+jsonschema>=4.10,<5

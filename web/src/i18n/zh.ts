@@ -41,12 +41,12 @@ export const zh: Strings = {
     count: (n: number) => `已读取此知识库的 ${n} 个属性`,
   },
   app: {
-    name: "Utopia",
+    name: "Soorin TKG",
     /* 标语与出处都与 Utopia / Persona / Charter 同类：品牌的一部分，两种语言同值 */
-    tagline: "We rather wish than hope to see.",
-    taglineSource: "— Thomas More, 1516",
-    siteUrl: "https://utopia.bi",
-    docsUrl: "https://utopia.bi/docs",
+    tagline: "Evidence, identity and history for security operations.",
+    taglineSource: "",
+    siteUrl: "https://soorinsec.ir",
+    docsUrl: "/docs",
   },
   err: {
     bad_email: "这看起来不像一个邮箱地址。",
@@ -139,7 +139,7 @@ export const zh: Strings = {
     copyFailed: "无法复制，请选中文字后手动复制。",
   },
   account: {
-    brand: "Utopia Persona",
+    brand: "Soorin Account",
     titleTag: "Persona",
     profile: "个人资料",
     cancel: "取消",
@@ -192,7 +192,7 @@ export const zh: Strings = {
     kbSettingsBtn: "设置",
     tokensNav: "Agent 与令牌",
     tokensTitle: "个人访问令牌",
-    tokensHint: "令牌让 agent 以你的身份通过 MCP 访问 Utopia，权限不超过你自己。默认只读，限定在你选的库，可随时在这里撤销。",
+    tokensHint: "令牌让 agent 以你的身份通过 MCP 访问 Soorin TKG，权限不超过你自己。默认只读，限定在你选的库，可随时在这里撤销。",
     newToken: "新令牌",
     tokenName: "名字",
     tokenNamePlaceholder: "我的笔记本",
@@ -207,7 +207,7 @@ export const zh: Strings = {
     expiresNever: "不过期",
     issueToken: "创建令牌",
     issuedTitle: "现在就复制，之后不会再显示。",
-    issuedHint: "Utopia 只保存它的哈希。丢了就在这里撤销，再建一枚。",
+    issuedHint: "Soorin TKG 只保存它的哈希。丢了就在这里撤销，再建一枚。",
     copy: "复制",
     copied: "已复制",
     mcpTitle: "MCP 客户端配置",
@@ -235,8 +235,8 @@ export const zh: Strings = {
     },
   },
   docs: {
-    brand: "Utopia Charter",
-    backTitle: "返回 Utopia",
+    brand: "Soorin Docs",
+    backTitle: "返回 Soorin TKG",
     searchPlaceholder: "搜索文档…",
     noResults: "没有匹配。",
   },
@@ -307,6 +307,7 @@ export const zh: Strings = {
     myKbs: "我的知识库",
   },
   nav: {
+    primaryNavigation: "主导航",
     workspaceLabel: "工作区",
     kbLabel: "知识库",
     findKb: "查找知识库…",
@@ -324,8 +325,8 @@ export const zh: Strings = {
     signOut: "退出登录",
     docs: "文档",
     loading: "加载中…",
-    serverUnreachable: "罚则 500：Utopia 沉默了——它没有回应。",
-    notFound: "罚则 404：你在 Utopia 里迷了路。",
+    serverUnreachable: "罚则 500：Soorin TKG 沉默了——它没有回应。",
+    notFound: "罚则 404：你在 Soorin TKG 里迷了路。",
     returnHome: "回到首页",
     reportIssue: "反馈问题",
     refresh: "刷新",
@@ -370,7 +371,7 @@ export const zh: Strings = {
     agreePrefix: "继续即表示你同意",
     agreeAnd: "，并已知悉",
     agreeSuffix: "。",
-    githubUrl: "https://github.com/deeplethe/utopia",
+    githubUrl: "https://github.com/SoorinSecurity/Soorin_Bidirectional_Temporal_Knowledge_Graph",
   },
   legal: {
     privacyTitle: "隐私政策",
@@ -378,12 +379,12 @@ export const zh: Strings = {
     backToSignIn: "← 返回登录",
     privacy: {
       title: "隐私政策",
-      note: "Utopia 自带的默认文本。运营本部署的组织可以替换成自己的政策。",
+      note: "Soorin TKG 自带的默认文本。运营本部署的组织可以替换成自己的政策。",
       sections: [
         {
           h: "一个自部署的平台",
           body: [
-            "Utopia 完全运行在部署方（运营者）自行选择的基础设施上。Utopia 项目本身接触不到这个部署：软件不向任何人发送遥测、分析或崩溃报告。",
+            "Soorin TKG 完全运行在部署方（运营者）自行选择的基础设施上。Soorin TKG 项目本身接触不到这个部署：软件不向任何人发送遥测、分析或崩溃报告。",
           ],
         },
         {
@@ -423,12 +424,12 @@ export const zh: Strings = {
     },
     terms: {
       title: "使用条款",
-      note: "Utopia 自带的默认文本。运营本部署的组织可以替换成自己的条款。",
+      note: "Soorin TKG 自带的默认文本。运营本部署的组织可以替换成自己的条款。",
       sections: [
         {
           h: "关于这份条款",
           body: [
-            "这个 Utopia 实例由部署它的组织运营，而非 Utopia 项目。你对它的使用受该组织自身政策约束；在运营者替换之前，这份默认条款覆盖基本事项。",
+            "这个 Soorin TKG 实例由部署它的组织运营，而非 Soorin TKG 项目。你对它的使用受该组织自身政策约束；在运营者替换之前，这份默认条款覆盖基本事项。",
           ],
         },
         {
@@ -455,7 +456,7 @@ export const zh: Strings = {
         {
           h: "关于本软件",
           body: [
-            "Utopia 是开源软件，按「原样」提供，不附带任何形式的担保。运营本部署的责任——包括备份、可用性与合规——由运营者承担。",
+            "Soorin TKG 是开源软件，按「原样」提供，不附带任何形式的担保。运营本部署的责任——包括备份、可用性与合规——由运营者承担。",
           ],
         },
       ],
@@ -609,7 +610,7 @@ export const zh: Strings = {
       statements:
         "外部系统把已经是抽取契约形状的陈述推送到这里，不经模型；发事件，别发整张表的状态。",
       custom:
-        "按计划轮询一个你控制的 URL——你的服务返回 JSON 条目，Utopia 保持同步。",
+        "按计划轮询一个你控制的 URL——你的服务返回 JSON 条目，Soorin TKG 保持同步。",
       memory:
         "从「对话」中记下的片段。只追加：被推翻的记忆是闭合有效区间，而不是删除——" +
         "时间线保留完整的来龙去脉。",
@@ -735,6 +736,10 @@ export const zh: Strings = {
     dangerZone: "危险操作",
   },
   search: {
+    hybrid: "已执行词法和语义检索",
+    lexicalOnly: "仅词法检索",
+    rerankerExecuted: "已执行重排序",
+    rerankerFallback: "重排序不可用，保留原始排序",
     placeholder: "检索知识库…（关键词 + 语义）",
     button: "检索",
     searching: "检索中…",
@@ -751,7 +756,7 @@ export const zh: Strings = {
     loadEarlierConversations: "加载更早的会话",
     conversationsLoadFailed: "无法读取会话列表。",
     retryConversations: "重试",
-    greeting: "问问 Utopia 都记住了什么",
+    greeting: "问问 Soorin TKG 都记住了什么",
     emptyTitle: "对话",
     emptyBody:
       "与你的知识库对话——带引用的回答、关于时间的提问，而且它会记住。\n请先在「文库」上传文档，并在「管理 → 模型」里配置模型。",
@@ -1485,7 +1490,7 @@ export const zh: Strings = {
       iri ? `被 ${iri} 占用` : "被这个知识库里已有的条目占用",
     importUnprojected: "暂未投影",
     importUnprojectedBody:
-      "这个文件用到、而 Utopia 目前还不消费的公理。什么都没丢：原文按上传时的样子存着，将来的版本可以投影它们。",
+      "这个文件用到、而 Soorin TKG 目前还不消费的公理。什么都没丢：原文按上传时的样子存着，将来的版本可以投影它们。",
     importDone: (created: number, updated: number) =>
       `导入完成——新建 ${created} 个类，更新 ${updated} 个。`,
     importHistory: "历次导入",

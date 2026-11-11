@@ -31,8 +31,10 @@ mod pipeline;
 mod query_engine;
 mod rdf;
 mod readers;
+mod reranker;
 mod retrieval;
 mod rss_full_content;
+mod soc_alignment;
 mod state;
 mod time_resolution;
 mod time_text;
@@ -391,6 +393,28 @@ async fn reindex_if_empty(pool: &sqlx::PgPool, search: &SearchIndex) {
 /// 上面那层要在每次失败时看一眼错误链，内联的话每个分支都得自己记得。
 async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow::Result<()> {
     match job.kind.as_str() {
+        "soc_reembed_document" => {
+            let document = payload_document_id(&job.payload)?;
+            let doc = utopia_store::documents::get(&st.pool, document).await?;
+            if doc.deleted_at.is_some() {
+                return Ok(());
+            }
+            let kb = utopia_store::kbs::get(&st.pool, doc.kb_id).await?;
+            let settings = utopia_store::settings::get(&st.pool, kb.workspace_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("embedding_not_configured"))?;
+            let client = llm_util::embed_client(&settings)
+                .ok_or_else(|| anyhow::anyhow!("embedding_not_configured"))?;
+            pipeline::embed_pending(st, &settings, &client, document).await?;
+            Ok(())
+        }
+        "soc_ingest" => {
+            let id = job.payload["receipt_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("receipt_id required"))?
+                .parse()?;
+            api::soc_ingestion::process(st, id).await
+        }
         "noop" => {
             tracing::info!(job_id = job.id, "noop 任务执行成功");
             Ok(())

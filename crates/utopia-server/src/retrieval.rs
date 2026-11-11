@@ -1,11 +1,8 @@
 //! 混合检索：BM25（Tantivy）+ 向量（pgvector）→ RRF 融合。
 //! embedding 未配置或请求失败时静默降级为纯 BM25。
 //!
-//! **`as_of` 只在向量与取块这两处是完整的**（0019 开放问题②）。Tantivy 的索引
-//! 只有"现在"一个版本：重解析会把文档的块整批换掉，旧版本不在索引里。所以
-//! 带时刻检索时，BM25 找回来的东西**是对的**（随后按当时的活性过滤），但它
-//! 找不回当时有、如今已被顶掉的那些块——召回缺一角，命中不会出错。
-//! 要补那一角得给全文索引也建版本，那是另一件事，不在这一刀里。
+//! Historical lexical recall uses PostgreSQL versioned chunks; current recall
+//! uses Tantivy. Tokenization/ranking differ; both reload through KB/time filters.
 //!
 //! **两路并行，BM25 在阻塞线程池上跑**（#515）。`SearchIndex::search` 是同步的：
 //! 切词、走 mmap 段、逐条取文档，跑多久就占一条 runtime 线程多久；仓库里另外六处
@@ -22,6 +19,11 @@ use uuid::Uuid;
 
 const RECALL_PER_CHANNEL: usize = 24;
 
+pub struct Retrieval {
+    pub chunks: Vec<ChunkView>,
+    pub metadata: serde_json::Value,
+}
+
 pub async fn hybrid(
     state: &AppState,
     kb_id: Uuid,
@@ -31,22 +33,55 @@ pub async fn hybrid(
     as_of: Option<chrono::DateTime<chrono::Utc>>,
     embeddings: Option<&mut llm_util::EmbedCache>,
 ) -> AppResult<Vec<ChunkView>> {
-    let bm25 = {
+    Ok(
+        hybrid_detailed(state, kb_id, workspace_id, query, top_k, as_of, embeddings)
+            .await?
+            .chunks,
+    )
+}
+
+pub async fn hybrid_detailed(
+    state: &AppState,
+    kb_id: Uuid,
+    workspace_id: Uuid,
+    query: &str,
+    top_k: usize,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
+    embeddings: Option<&mut llm_util::EmbedCache>,
+) -> AppResult<Retrieval> {
+    let lexical = async {
+        if let Some(when) = as_of {
+            return utopia_store::documents::historical_lexical(
+                &state.pool,
+                kb_id,
+                query,
+                when,
+                RECALL_PER_CHANNEL as i64,
+            )
+            .await;
+        }
         let search = state.search.clone();
         let kb = kb_id.to_string();
         let query = query.to_string();
-        tokio::task::spawn_blocking(move || search.search(&kb, &query, RECALL_PER_CHANNEL))
+        let hits =
+            tokio::task::spawn_blocking(move || search.search(&kb, &query, RECALL_PER_CHANNEL))
+                .await
+                .map_err(|_| {
+                    utopia_core::AppError::Other(anyhow::anyhow!("lexical_worker_unavailable"))
+                })?
+                .map_err(utopia_core::AppError::Other)?;
+        Ok(hits.into_iter().map(|h| h.chunk_id).collect())
     };
     // `join!` 不是 `try_join!`：向量那一路失败是降级不是错误（见 vector_channel），
     // `try_join!` 会把模型故障变成检索报错
-    let (bm25, vector) = tokio::join!(
-        bm25,
+    let (lexical, vector) = tokio::join!(
+        lexical,
         vector_channel(state, kb_id, workspace_id, query, as_of, embeddings)
     );
-    let bm25 = bm25
-        .map_err(|e| utopia_core::AppError::Other(anyhow::anyhow!("BM25 检索线程退出：{e}")))?
-        .map_err(utopia_core::AppError::Other)?;
-    let lists = channel_lists(bm25.into_iter().map(|h| h.chunk_id).collect(), vector?);
+    let lexical = lexical?;
+    let vector = vector?;
+    let dense_executed = vector.is_some();
+    let lists = channel_lists(lexical, vector);
 
     // Keep the bounded channel candidates until their record-time and document
     // filters have run: newer hits must not consume a historical query's limit.
@@ -55,8 +90,12 @@ pub async fn hybrid(
     let ids: Vec<Uuid> = fused.iter().filter_map(|s| s.parse().ok()).collect();
     let mut chunks =
         utopia_store::documents::chunks_by_ids(&state.pool, kb_id, &ids, as_of).await?;
+    let reranker = crate::reranker::apply(&state.pool, workspace_id, query, &mut chunks).await?;
     chunks.truncate(top_k);
-    Ok(chunks)
+    Ok(Retrieval {
+        metadata: serde_json::json!({"schema_version":"soorin.retrieval-metadata.v1","dense_executed":dense_executed,"lexical_method":if as_of.is_some(){"postgres_versioned_lexical"}else{"tantivy_bm25"},"lexical":if as_of.is_some(){"postgres_versioned_lexical"}else{"tantivy_bm25"},"reranker_status":reranker,"candidate_count":candidate_limit,"score_type":"rank_fusion","returned":chunks.len()}),
+        chunks,
+    })
 }
 
 /// 向量那一路。没配嵌入模型、嵌入请求失败、回了空，都是 `Ok(None)`：检索照常，
@@ -73,11 +112,18 @@ async fn vector_channel(
     as_of: Option<chrono::DateTime<chrono::Utc>>,
     cache: Option<&mut llm_util::EmbedCache>,
 ) -> AppResult<Option<Vec<String>>> {
-    let vector = match cache.as_deref().and_then(|c| c.get(query)).cloned() {
+    let Some(settings) = utopia_store::settings::get(&state.pool, workspace_id).await? else {
+        return Ok(None);
+    };
+    let model_id = utopia_store::soorin_embeddings::identity(&settings);
+    let vector = match cache
+        .as_deref()
+        .and_then(|c| c.get(&settings, query))
+        .cloned()
+    {
         Some(v) => v,
         None => {
-            let settings = utopia_store::settings::get(&state.pool, workspace_id).await?;
-            let Some(client) = settings.as_ref().and_then(llm_util::embed_client) else {
+            let Some(client) = llm_util::embed_client(&settings) else {
                 return Ok(None);
             };
             let mut embeddings = match client.embed(&[query.to_string()]).await {
@@ -91,18 +137,22 @@ async fn vector_channel(
                 return Ok(None);
             }
             let v = embeddings.remove(0);
+            if !llm_util::EmbedCache::valid(&settings, &v) {
+                return Ok(None);
+            }
             if let Some(cache) = cache {
-                cache.insert(query.to_string(), v.clone());
+                cache.insert(&settings, query, v.clone());
             }
             v
         }
     };
-    let ids = utopia_store::documents::vector_search(
+    let ids = utopia_store::documents::vector_search_model(
         &state.pool,
         kb_id,
         &vector,
         RECALL_PER_CHANNEL as i64,
         as_of,
+        Some(&model_id),
     )
     .await?;
     Ok(Some(ids.into_iter().map(|id| id.to_string()).collect()))

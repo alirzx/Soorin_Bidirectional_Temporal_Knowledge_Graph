@@ -14,6 +14,8 @@ pub struct AppConfig {
     /// 不设则回落到 `database_url`：既有部署无需改动即可照常升级。
     pub migration_url: Option<String>,
     pub bind_addr: String,
+    /// Exact browser origin; absent disables cross-origin browser access.
+    pub cors_origin: Option<String>,
     /// JWT 签名密钥。留空则首次启动时自动生成并存进 deployment_settings——
     /// 要求部署者手填一个随机串，现实中的结果是默认值原样上生产。
     /// 显式给出时优先于库里那条：密钥轮换与多实例显式对齐走这条路。
@@ -50,6 +52,7 @@ impl Default for AppConfig {
             database_url: "postgres://utopia:utopia@localhost:1517/utopia".into(),
             migration_url: None,
             bind_addr: "0.0.0.0:1516".into(),
+            cors_origin: Some("http://localhost:5173".into()),
             jwt_secret: None,
             secret_key: None,
             web_dist: "web/dist".into(),

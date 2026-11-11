@@ -267,7 +267,8 @@ async fn mappings_search_and_the_graph_tools_share_one_embedding() -> anyhow::Re
                 .await?;
         assert!(mappings.is_empty());
         assert_eq!(embedder.requests(), vec![vec![QUESTION.to_string()]]);
-        assert!(cache.contains_key(QUESTION));
+        let settings = utopia_store::settings::get(&f.pool, ws).await?.unwrap();
+        assert!(cache.get(&settings, QUESTION).is_some());
 
         // 检索分块拿同一个向量：索引里没有块，向量那一路照样跑，只是不再嵌
         let chunks =
@@ -311,7 +312,7 @@ async fn mappings_search_and_the_graph_tools_share_one_embedding() -> anyhow::Re
             embedder.requests().last(),
             Some(&vec!["Acme lab address".to_string()])
         );
-        assert!(turn.embeddings.contains_key("Acme lab address"));
+        assert!(turn.embeddings.get(&settings, "Acme lab address").is_some());
 
         // 没有这一轮的调用方各嵌各的
         let _ = crate::retrieval::hybrid(&f.state, f.kb, ws, QUESTION, 8, None, None).await?;

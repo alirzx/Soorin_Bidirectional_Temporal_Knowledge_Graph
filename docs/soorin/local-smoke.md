@@ -1,14 +1,18 @@
 # Soorin SOC Lab: local smoke runbook
 
+> Historical checkpoint. Current behavior and evidence are in [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) and [Production architecture](PRODUCTION_ARCHITECTURE.md).
+
 ## Prerequisites and deployed baseline
 
 Run commands from the repository root. The baseline uses Docker Compose, the upstream `ghcr.io/deeplethe/utopia:0.1.0-rc9` image, PostgreSQL 16 and port 1516 on loopback. This project's local Compose file has an older default image tag, so explicitly set `UTOPIA_IMAGE` in your ignored local `.env`.
 
 ```bash
 cd /mnt/X/Soorin/soorin_bi_TKG/utopia
-printf '%s\n' 'UTOPIA_IMAGE=ghcr.io/deeplethe/utopia:0.1.0-rc9' >> .env
+export UTOPIA_IMAGE='ghcr.io/deeplethe/utopia:0.1.0-rc9'
 docker compose -f docker-compose.local.yml --profile app config --quiet
-docker compose -f docker-compose.local.yml --profile app up -d
+docker compose -f docker-compose.local.yml --profile app ps
+# Only start the stack if it is not already running and configuration/volumes have been verified:
+# docker compose -f docker-compose.local.yml --profile app up -d
 docker compose -f docker-compose.local.yml --profile app ps
 curl -fsS http://127.0.0.1:1516/api/v1/health
 ```
@@ -33,12 +37,18 @@ python3 soorin/tests/mock_splunk/scripts/soc_mock.py render --output-dir /tmp/so
 ```bash
 export UTOPIA_BASE_URL='http://127.0.0.1:1516'
 export UTOPIA_SOURCE_ID='<actual-statements-source-uuid>'
-read -rsp 'Enter source ingest token: ' UTOPIA_INGEST_TOKEN; echo
+# Zsh syntax (Bash uses: read -rsp 'Enter source ingest token: ' UTOPIA_INGEST_TOKEN)
+read -rs 'UTOPIA_INGEST_TOKEN?Enter source ingest token: '; echo
 export UTOPIA_INGEST_TOKEN
 python3 soorin/tests/mock_splunk/scripts/soc_mock.py push
 python3 soorin/tests/mock_splunk/scripts/soc_mock.py push --replay
 unset UTOPIA_INGEST_TOKEN
 ```
+
+The Compose files default to upstream rc8; the earlier verified lab used rc9. The commands above set `UTOPIA_IMAGE` for the current shell session without editing `.env`. An existing ignored local `.env` may also override it; inspect the resolved Compose configuration before starting or changing containers.
+Source changes are not present in that prebuilt container. For an isolated
+source build, use the build override described in `LOCAL_DEVELOPMENT.md`; do
+not replace the existing volume or run `down -v`.
 
 First push should report `created` for nine IDs. An identical replay should report `unchanged`. If you already pushed them, the first observed action may be `unchanged`. Any non-2xx response is a failure and prints a bounded error body. The Python sender uses only standard-library HTTPS/HTTP libraries and does not log source tokens.
 

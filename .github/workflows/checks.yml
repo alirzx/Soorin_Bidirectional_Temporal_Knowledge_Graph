@@ -6,7 +6,7 @@ on:
     # 而此前没有任何一次 CI 在 dev 上跑过，于是 PR 之间互相看不见对方存的东西，
     # 每次都从零编 300 多个依赖——今天 12 次 backend 运行，恢复缓存全是 No cache found。
     # 顺带把「合并后的 dev 从没被 CI 跑过」这个口子堵上（见下面 migrations job 的注释）
-    branches: [main, dev]
+    branches: [main, dev, feature/soc-knowledge-foundation-v1]
   pull_request:
 
 # **显式只读。** 没有这一块时它继承仓库级默认，而那个默认要为
@@ -17,14 +17,42 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Synthetic local mock servers only; never grants external provider access.
+  UTOPIA_MODEL_TEST_MODE: "1"
 
 jobs:
+  python-foundation:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: soorin/requirements-test.txt
+      - name: Install test-only dependencies
+        run: python -m pip install -r soorin/requirements-test.txt
+      - name: Compile Python sources
+        run: python -m compileall -q soorin
+      - name: Python foundation and synthetic fixtures
+        run: python -m unittest discover -s soorin/tests -p 'test_*.py' -v
+      - name: Reject whitespace errors in the submitted patch
+        if: github.event_name == 'pull_request'
+        run: git diff --check "${{ github.event.pull_request.base.sha }}...HEAD"
+      - name: Reject whitespace errors in the pushed commit
+        if: github.event_name == 'push'
+        run: git show --check --format= HEAD
+
   # lint / test / build 三个 job 并行。它们互不共享产物：clippy 是 check 模式，build 是
   # 非测试的 codegen，test 是 test profile——串在一个 job 里只是把 clippy 和 build
   # 排到了关键路径上（缓存命中后各 36s 和 39s，未命中 143s 和 51s）。
   # 分支保护按名字要求 backend 与 web 通过，所以 backend 保留为下面的汇总 job；
   # 直接改名会让 clippy 和 build 悄悄退出合并门槛
   lint:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +75,7 @@ jobs:
   # migrations 再编一遍才真的跑。给这个 job 也起一个 Postgres，一次编译全部跑完，
   # migrations job 只留迁移本身的检查。连库测试由此进了 backend 汇总，才真正成为合并门槛
   test:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -87,6 +116,7 @@ jobs:
           UTOPIA_TEST_REQUIRE_DB: "1"
 
   build:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,21 +131,26 @@ jobs:
   # 汇总。分支保护要求的检查名是 backend，上面三个 job 任何一个不是 success 它就红——
   # `if: always()` 是为了上游失败或取消时它也跑，而不是被跳过后显示为「未报告」
   backend:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
-    needs: [lint, test, build]
+    needs: [python-foundation, lint, test, build, migrations, web]
     if: always()
     steps:
       - name: 汇总
         run: |
-          echo "lint=${{ needs.lint.result }} test=${{ needs.test.result }} build=${{ needs.build.result }}"
+          echo "python=${{ needs.python-foundation.result }} lint=${{ needs.lint.result }} test=${{ needs.test.result }} build=${{ needs.build.result }}"
+          test "${{ needs.python-foundation.result }}" = success
           test "${{ needs.lint.result }}" = success
           test "${{ needs.test.result }}" = success
           test "${{ needs.build.result }}" = success
+          test "${{ needs.migrations.result }}" = success
+          test "${{ needs.web.result }}" = success
 
   # 迁移得真的在库上跑一遍。此前 CI 只有 fmt/clippy/test/build，于是两个 PR
   # 各带一个 0025、各自通过，合进 main 之后服务直接起不来——sqlx 按版本号索引，
   # 而**合并后的状态从来没有被任何一次 CI 跑过**。
   migrations:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -156,6 +191,7 @@ jobs:
       # 有库，代价是同一批测试二进制编两遍；这个 job 现在只管迁移本身能不能跑、能不能重放
 
   web:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     defaults:
       run:

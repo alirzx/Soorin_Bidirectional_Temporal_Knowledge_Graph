@@ -1823,3 +1823,24 @@ a:hover > .u-mark-arrow {
   --typeset-rule: var(--u-line);
   color: var(--u-text);
 }
+
+/* Company artwork is intentionally unchanged; its navy panel works in both themes. */
+.u-product-brand { display: inline-flex; align-items: center; gap: .5rem; flex-shrink: 0; color: var(--u-text); }
+.u-company-logo { width: 112px; height: auto; aspect-ratio: 674 / 230; object-fit: contain; border-radius: var(--radius-cell); }
+.u-product-name { font-size: var(--text-body); font-weight: 600; white-space: nowrap; }
+.u-product-brand:focus-visible, .u-tab:focus-visible { outline: 2px solid var(--u-accent); outline-offset: 2px; }
+.u-wordmark-hero .u-product-brand { flex-direction: column; gap: 1rem; }
+.u-wordmark-hero .u-company-logo { width: 240px; max-width: 70vw; }
+.u-wordmark-hero .u-product-name { font-size: var(--text-title); }
+.u-primary-tabs { overflow-x: auto; scrollbar-width: thin; }
+.u-primary-tabs .u-tab { flex-shrink: 0; white-space: nowrap; }
+@media (max-width: 900px) {
+  .u-wordmark-top .u-product-name { display: none; }
+  .u-app-header { gap: .5rem; }
+  .u-app-header .u-company-logo { width: 94px; }
+  .u-app-header .u-kb-switcher { min-width: 0; max-width: 30vw; flex-shrink: 1; }
+}
+@media (max-width: 480px) {
+  .u-app-header .u-header-docs, .u-app-header .u-header-version, .u-app-header .u-user-display { display: none; }
+  .u-app-header .u-product-brand { padding-left: 0; }
+}

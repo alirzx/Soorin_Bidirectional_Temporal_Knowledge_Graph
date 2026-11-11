@@ -56,31 +56,27 @@ impl ToolCtx<'_> {
         self.via_token.is_none()
     }
 
-    /// 一段文字的向量，用这个工作区配的嵌入模型。没配、或调用失败时 None：
-    /// 图谱工具照常按子串走，向量只是第二阶段
-    pub async fn embed(&self, text: &str) -> Option<Vec<f32>> {
+    /// Reuse only a finite, dimension-compatible vector from this workspace/model.
+    pub async fn embed_once(&self, sink: &mut ToolSink, text: &str) -> Option<Vec<f32>> {
         let settings = utopia_store::settings::get(&self.state.pool, self.workspace_id)
             .await
             .ok()
             .flatten()?;
-        let client = crate::llm_util::embed_client(&settings)?;
-        match client.embed(&[text.to_string()]).await {
-            Ok(mut v) if !v.is_empty() => Some(v.remove(0)),
-            Ok(_) => None,
-            Err(e) => {
-                tracing::warn!(error = %e, "嵌入失败，图谱工具按子串匹配");
-                None
-            }
-        }
-    }
-
-    /// [`Self::embed`]，同一轮里同样的文字只嵌一次（见 [`ToolSink::embeddings`]）
-    pub async fn embed_once(&self, sink: &mut ToolSink, text: &str) -> Option<Vec<f32>> {
-        if let Some(vec) = sink.embeddings.get(text) {
+        if let Some(vec) = sink.embeddings.get(&settings, text) {
             return Some(vec.clone());
         }
-        let vec = self.embed(text).await?;
-        sink.embeddings.insert(text.to_string(), vec.clone());
+        let mut vectors = crate::llm_util::embed_client(&settings)?
+            .embed(&[text.to_owned()])
+            .await
+            .ok()?;
+        if vectors.is_empty() {
+            return None;
+        }
+        let vec = vectors.remove(0);
+        if !crate::llm_util::EmbedCache::valid(&settings, &vec) {
+            return None;
+        }
+        sink.embeddings.insert(&settings, text, vec.clone());
         Some(vec)
     }
 }
@@ -312,10 +308,19 @@ pub async fn search_chunks(
     // 必填参数由 `chat::check_call` 在派发之前挡下，所以这里不再回落到
     // 用户那句原话——回落产出的是一个看起来没问题的错误答案
     let q = args["query"].as_str().unwrap_or_default().to_string();
-    // 记录轴（0019 / #347）：只搜那一刻库里有的东西。全文那一路仍是"现在"，
-    // 命中不会错但会缺——retrieval.rs 的头上写了
-    let as_of = args["as_of"].as_str().and_then(parse_when);
-    let chunks = match retrieval::hybrid(
+    let as_of = match super::graph_routes::parse_instant("as_of", args["as_of"].as_str()) {
+        Ok(value) => value,
+        Err(_) => {
+            return ToolResult::new(
+                "Invalid as_of timestamp.".into(),
+                Step::new("search", q.as_str(), "invalid time")
+                    .status("failed")
+                    .json(),
+            )
+            .error()
+        }
+    };
+    let result = match retrieval::hybrid_detailed(
         ctx.state,
         ctx.kb_id,
         ctx.workspace_id,
@@ -326,7 +331,7 @@ pub async fn search_chunks(
     )
     .await
     {
-        Ok(chunks) => chunks,
+        Ok(result) => result,
         Err(e) => {
             tracing::warn!(error = %e, "MCP chunk search failed");
             return ToolResult::new(
@@ -336,6 +341,7 @@ pub async fn search_chunks(
             .error();
         }
     };
+    let chunks = result.chunks;
     let mut lines = Vec::new();
     for c in &chunks {
         let n = cite(sink, c.id.to_string(), |n| source_json(n, c));
@@ -360,7 +366,7 @@ pub async fn search_chunks(
             .json(),
     )
     .structured(json!({
-        "kb_id": ctx.kb_id, "as_of": as_of,
+        "kb_id": ctx.kb_id, "as_of": as_of, "retrieval":result.metadata,
         "limit": SEARCH_TOP_K, "limit_reached": chunks.len() == SEARCH_TOP_K,
         "chunks": chunks.iter().map(|c| json!({
             "chunk_id": c.id, "document_id": c.document_id,

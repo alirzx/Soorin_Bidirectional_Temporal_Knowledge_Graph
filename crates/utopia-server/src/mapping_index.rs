@@ -145,7 +145,11 @@ async fn vector_channel(
     ) else {
         return Ok(None);
     };
-    let vector = match cache.as_deref().and_then(|c| c.get(query)).cloned() {
+    let vector = match cache
+        .as_deref()
+        .and_then(|c| c.get(&settings, query))
+        .cloned()
+    {
         Some(v) => v,
         None => {
             let mut vectors = {
@@ -156,8 +160,11 @@ async fn vector_channel(
                 return Ok(None);
             }
             let v = vectors.remove(0);
+            if !llm_util::EmbedCache::valid(&settings, &v) {
+                return Ok(None);
+            }
             if let Some(cache) = cache {
-                cache.insert(query.to_string(), v.clone());
+                cache.insert(&settings, query, v.clone());
             }
             v
         }

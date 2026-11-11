@@ -5,6 +5,7 @@ use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
+pub mod egress;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -27,8 +28,9 @@ pub struct ToolCall {
 }
 
 /// 工具对话的一个 assistant 回合：文本与工具调用至少其一。
-#[derive(Debug)]
 pub struct AssistantTurn {
+    /// Protocol-only state for thinking tool rounds; never emit to the UI/logs.
+    pub reasoning_content: Option<String>,
     /// Preserve the provider value; absent is not an implicit `stop`.
     pub finish_reason: Option<String>,
     pub content: Option<String>,
@@ -39,6 +41,9 @@ impl AssistantTurn {
     /// 还原为 OpenAI 协议的 assistant 消息（回灌对话历史用）。
     pub fn to_message(&self) -> serde_json::Value {
         let mut msg = json!({ "role": "assistant", "content": self.content });
+        if let Some(reasoning) = &self.reasoning_content {
+            msg["reasoning_content"] = json!(reasoning);
+        }
         if !self.tool_calls.is_empty() {
             msg["tool_calls"] = json!(self
                 .tool_calls
@@ -57,6 +62,15 @@ impl AssistantTurn {
                 .collect::<Vec<_>>());
         }
         msg
+    }
+}
+
+impl std::fmt::Debug for AssistantTurn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AssistantTurn")
+            .field("finish_reason", &self.finish_reason)
+            .field("tool_call_count", &self.tool_calls.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -111,9 +125,15 @@ pub enum ToolStreamItem {
 ///
 /// 有类型而不是匹配错误文本：调用链上任何一层加一句 context 都会改文本，
 /// 而 `anyhow` 的 source 链让 `downcast_ref` 一路都认得出来。
-#[derive(Debug, thiserror::Error)]
-#[error("LLM endpoint gave no usable answer: {0}")]
-pub struct Unreachable(#[from] pub reqwest::Error);
+#[derive(thiserror::Error)]
+#[error("LLM endpoint gave no usable answer")]
+pub struct Unreachable(pub reqwest::Error);
+
+impl From<reqwest::Error> for Unreachable {
+    fn from(error: reqwest::Error) -> Self {
+        Self(error)
+    }
+}
 
 /// anyhow 错误链里有没有 [`Unreachable`]。
 pub fn is_unreachable(err: &anyhow::Error) -> bool {
@@ -125,8 +145,8 @@ pub fn is_unreachable(err: &anyhow::Error) -> bool {
 ///
 /// 限流与其他 4xx 的区别是**它会自己好**。密钥错了重试一万次还是错，配额满了
 /// 等一分钟就过去——两者混在一起，重试预算就会花在永远不会好的那一类上。
-#[derive(Debug, thiserror::Error)]
-#[error("LLM endpoint is rate limiting ({status}): {detail}")]
+#[derive(thiserror::Error)]
+#[error("LLM endpoint is rate limiting ({status})")]
 pub struct RateLimited {
     pub status: u16,
     /// **常常是 `None`。** 多数厂商的 429 不带 `Retry-After`（实测 SiliconFlow
@@ -182,8 +202,8 @@ pub struct Interrupted {
 /// 混在 [`Rejected`] 里的代价实测过：本地代理对上游的一次 `fetch failed` 回 502，
 /// 32 块的一篇文档里随机几块就此报废，整篇抽取失败重来——一次调用 5% 的失败率，
 /// 一篇长文档第一遍几乎必失败（1 − 0.95³² ≈ 81%），而任务只重试三次。
-#[derive(Debug, thiserror::Error)]
-#[error("LLM endpoint is unavailable ({status}): {detail}")]
+#[derive(thiserror::Error)]
+#[error("LLM endpoint is unavailable ({status})")]
 pub struct Unavailable {
     pub status: u16,
     /// 端点给的 `Retry-After`（有则更准，多数不给）
@@ -204,8 +224,8 @@ pub fn unavailable(err: &anyhow::Error) -> Option<&Unavailable> {
 ///
 /// 实测：一次跑测里 14 篇文档因为它整篇失败，而当时它跟普通失败走同一条路，
 /// 唯一能知道原因的办法是去数据库里翻 `graph_error`。
-#[derive(Debug, thiserror::Error)]
-#[error("LLM account cannot pay for this request ({status}): {detail}")]
+#[derive(thiserror::Error)]
+#[error("LLM account cannot pay for this request ({status})")]
 pub struct OutOfCredit {
     pub status: u16,
     pub detail: String,
@@ -223,8 +243,8 @@ pub fn out_of_credit(err: &anyhow::Error) -> Option<&OutOfCredit> {
 /// RAG 还能答，后者退了也答不了。从前这一类只剩一段文本，状态码埋在字符串里，
 /// 于是循环把**任何**首轮错误都当成不支持工具——一次网络抖动就退成了 RAG，
 /// 然后 RAG 也死在同一个抖动上。
-#[derive(Debug, thiserror::Error)]
-#[error("{kind} request failed ({reason}): {detail}")]
+#[derive(thiserror::Error)]
+#[error("{kind} request failed ({reason})")]
 pub struct Rejected {
     /// 哪一类请求（`LLM` / `Embedding`），只进错误文本
     pub kind: String,
@@ -243,8 +263,8 @@ pub fn rejected(err: &anyhow::Error) -> Option<&Rejected> {
 ///
 /// 文字保持中性并带着状态码：`failure` 是抽取、治理和对话共用的，一个超长的 chunk
 /// 不是「对话太长」；对话自己的那句话在界面文案里（错误码 `context_too_long`）
-#[derive(Debug, thiserror::Error)]
-#[error("LLM request failed ({reason}): the prompt exceeds the model's context window: {detail}")]
+#[derive(thiserror::Error)]
+#[error("LLM request failed ({reason}): the prompt exceeds the model's context window")]
 pub struct ContextTooLong {
     pub status: u16,
     /// 状态码带原因短语，同 `Rejected`
@@ -268,6 +288,20 @@ const MIN_CONTEXT_WINDOW_TOKENS: u32 = 1024;
 pub fn context_too_long(err: &anyhow::Error) -> Option<&ContextTooLong> {
     err.chain().find_map(|e| e.downcast_ref::<ContextTooLong>())
 }
+
+macro_rules! redacted_error_debug {
+    ($($name:ty),+) => { $(impl std::fmt::Debug for $name {
+        fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {std::fmt::Display::fmt(self,f)}
+    })+ };
+}
+redacted_error_debug!(
+    Unreachable,
+    RateLimited,
+    Unavailable,
+    OutOfCredit,
+    Rejected,
+    ContextTooLong
+);
 
 /// `Retry-After` 的整数秒形态。
 ///
@@ -428,6 +462,7 @@ impl SseBuffer {
 
 #[derive(Clone)]
 pub struct LlmClient {
+    gateway: Option<egress::Gateway>,
     http: reqwest::Client,
     base_url: String,
     api_key: Option<String>,
@@ -506,6 +541,72 @@ fn strip_reasoning(reply: &str) -> &str {
 }
 
 impl LlmClient {
+    /// Tenant mapping is deployment-owned, never a model-request boolean.
+    pub fn with_gateway_from_env(mut self, workspace: &str) -> Self {
+        if egress::trusted(
+            &self.base_url,
+            &std::env::var("UTOPIA_MODEL_TRUSTED_ORIGINS").unwrap_or_default(),
+        ) {
+            return self;
+        }
+        let config = (
+            std::env::var("UTOPIA_PRIVACY_GATEWAY_URL"),
+            std::env::var("UTOPIA_PRIVACY_GATEWAY_KEY"),
+            std::env::var("UTOPIA_PRIVACY_TENANT_MAP"),
+        );
+        if let (Ok(base_url), Ok(api_key), Ok(mapping)) = config {
+            if let Ok(mapping) = serde_json::from_str::<serde_json::Value>(&mapping) {
+                if let Some(tenant) = mapping[workspace].as_str() {
+                    self.gateway = Some(egress::Gateway {
+                        base_url,
+                        api_key,
+                        tenant_id: tenant.to_string(),
+                        profile: std::env::var("UTOPIA_PRIVACY_PROFILE")
+                            .unwrap_or_else(|_| "agentic-soc-v1".into()),
+                    });
+                }
+            }
+        }
+        self
+    }
+
+    async fn json_response(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        if let Some(gateway) = &self.gateway {
+            return gateway
+                .exchange(
+                    body,
+                    &format!("{}{path}", self.base_url),
+                    self.api_key.as_deref(),
+                )
+                .await;
+        }
+        let response = self
+            .request(path)?
+            .json(body)
+            .send()
+            .await
+            .map_err(Unreachable)?;
+        let status = response.status();
+        let retry = retry_after_of(response.headers());
+        if !status.is_success() {
+            return Err(response_failure(
+                if path == "/embeddings" {
+                    "Embedding"
+                } else {
+                    "LLM"
+                },
+                status,
+                retry,
+                response,
+            )
+            .await?);
+        }
+        Ok(response.json().await.map_err(Unreachable)?)
+    }
     pub fn new(base_url: &str, api_key: Option<&str>, model: &str) -> Self {
         Self::with_timeouts(base_url, api_key, model, CONNECT_TIMEOUT, READ_TIMEOUT)
     }
@@ -520,7 +621,11 @@ impl LlmClient {
 
     fn with_effort(&self, mut body: serde_json::Value) -> serde_json::Value {
         if let Some(e) = &self.reasoning_effort {
-            body["reasoning_effort"] = json!(e);
+            if self.model.starts_with("deepseek") && e == "none" {
+                body["thinking"] = json!({"type":"disabled"});
+            } else {
+                body["reasoning_effort"] = json!(e);
+            }
         }
         body
     }
@@ -535,16 +640,13 @@ impl LlmClient {
         read: Duration,
     ) -> Self {
         Self {
+            gateway: None,
             http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(connect)
                 .read_timeout(read)
                 .build()
-                // 只在 TLS 后端起不来时失败，那种情况下退回默认客户端也没有意义，
-                // 但也不该让整个进程崩在这里
-                .unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "HTTP 客户端建不起来，退回无超时的默认客户端");
-                    reqwest::Client::new()
-                }),
+                .expect("secure model HTTP transport initialization failed"),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.map(String::from),
             model: model.to_string(),
@@ -575,12 +677,25 @@ impl LlmClient {
         }
     }
 
-    fn request(&self, path: &str) -> reqwest::RequestBuilder {
+    fn request(&self, path: &str) -> anyhow::Result<reqwest::RequestBuilder> {
+        anyhow::ensure!(
+            self.gateway.is_none(),
+            "protected requests must pass encode/decode"
+        );
+        if std::env::var_os("UTOPIA_PRIVACY_GATEWAY_URL").is_some()
+            && !egress::trusted(
+                &self.base_url,
+                &std::env::var("UTOPIA_MODEL_TRUSTED_ORIGINS").unwrap_or_default(),
+            )
+        {
+            anyhow::bail!("privacy_tenant_mapping_or_gateway_credential_missing");
+        }
+        egress::require(&self.base_url)?;
         let mut req = self.http.post(format!("{}{path}", self.base_url));
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        req
+        Ok(req)
     }
 
     /// 非流式对话（连通性测试等轻量场景）。不传温度：请求体与从前一字不变，端点用它的缺省
@@ -600,18 +715,7 @@ impl LlmClient {
         if let Some(t) = temperature {
             body["temperature"] = json!(t);
         }
-        let resp = self
-            .request("/chat/completions")
-            .json(&body)
-            .send()
-            .await
-            .map_err(Unreachable)?;
-        let status = resp.status();
-        let retry_after = retry_after_of(resp.headers());
-        if !status.is_success() {
-            return Err(response_failure("LLM", status, retry_after, resp).await?);
-        }
-        let body: serde_json::Value = resp.json().await.map_err(Unreachable)?;
+        let body = self.json_response("/chat/completions", &body).await?;
         log_usage(&self.model, &call_label(messages), &body);
         body["choices"][0]["message"]["content"]
             .as_str()
@@ -636,6 +740,18 @@ impl LlmClient {
         messages: &[ChatMessage],
         temperature: Option<f32>,
     ) -> anyhow::Result<Reply> {
+        if self.gateway.is_some() {
+            let wire: Vec<_> = messages
+                .iter()
+                .map(|m| serde_json::to_value(m).unwrap_or_default())
+                .collect();
+            let turn = self.chat_tools_with(&wire, None, None).await?;
+            return Ok(Reply {
+                text: turn.content.unwrap_or_default(),
+                finish_reason: turn.finish_reason,
+                usage: None,
+            });
+        }
         let body = json!({
             "model": self.model,
             "messages": messages,
@@ -661,7 +777,7 @@ impl LlmClient {
         let resp = loop {
             body["max_tokens"] = json!(ceiling);
             let resp = self
-                .request("/chat/completions")
+                .request("/chat/completions")?
                 .json(&body)
                 .send()
                 .await
@@ -844,21 +960,15 @@ impl LlmClient {
         tools: Option<&serde_json::Value>,
         tool_choice: Option<&serde_json::Value>,
     ) -> anyhow::Result<AssistantTurn> {
-        let resp = self
-            .request("/chat/completions")
-            .json(&self.tools_body(messages, tools, tool_choice, false))
-            .send()
-            .await
-            .map_err(Unreachable)?;
-        let status = resp.status();
-        let retry_after = retry_after_of(resp.headers());
-        if !status.is_success() {
-            return Err(response_failure("LLM", status, retry_after, resp).await?);
-        }
-        let body: serde_json::Value = resp.json().await.map_err(Unreachable)?;
+        let body = self
+            .json_response(
+                "/chat/completions",
+                &self.tools_body(messages, tools, tool_choice, false),
+            )
+            .await?;
         let msg = &body["choices"][0]["message"];
         if msg.is_null() {
-            anyhow::bail!("Unexpected LLM response shape: {body}");
+            anyhow::bail!("Unexpected LLM response shape");
         }
         let content = msg["content"]
             .as_str()
@@ -884,6 +994,7 @@ impl LlmClient {
             })
             .unwrap_or_default();
         Ok(AssistantTurn {
+            reasoning_content: msg["reasoning_content"].as_str().map(String::from),
             content,
             tool_calls,
             finish_reason: body["choices"][0]["finish_reason"]
@@ -909,9 +1020,18 @@ impl LlmClient {
         messages: &[serde_json::Value],
         tools: Option<&serde_json::Value>,
         tool_choice: Option<&serde_json::Value>,
-    ) -> anyhow::Result<impl Stream<Item = anyhow::Result<ToolStreamItem>> + Send + use<>> {
+    ) -> anyhow::Result<std::pin::Pin<Box<dyn Stream<Item = anyhow::Result<ToolStreamItem>> + Send>>>
+    {
+        if self.gateway.is_some() {
+            let turn = self.chat_tools_with(messages, tools, tool_choice).await?;
+            let stream = async_stream::try_stream! {
+                if let Some(text)=&turn.content { yield ToolStreamItem::Delta(text.clone()); }
+                yield ToolStreamItem::Turn(turn);
+            };
+            return Ok(Box::pin(stream));
+        }
         let resp = self
-            .request("/chat/completions")
+            .request("/chat/completions")?
             .json(&self.tools_body(messages, tools, tool_choice, true))
             .send()
             .await
@@ -927,6 +1047,7 @@ impl LlmClient {
             let mut buf = SseBuffer::default();
             let mut content = String::new();
             let mut calls: Vec<ToolCall> = Vec::new();
+            let mut reasoning = String::new();
             let mut finish_reason = None;
             let mut done = false;
             'outer: while let Some(part) = bytes.next().await {
@@ -950,6 +1071,9 @@ impl LlmClient {
                             done = true;
                         }
                         let delta = &v["choices"][0]["delta"];
+                        if let Some(text) = delta["reasoning_content"].as_str() {
+                            reasoning.push_str(text);
+                        }
                         if let Some(text) = delta["content"].as_str() {
                             if !text.is_empty() {
                                 content.push_str(text);
@@ -992,9 +1116,9 @@ impl LlmClient {
             }
             calls.retain(|c| !c.name.is_empty());
             let content = if content.is_empty() { None } else { Some(content) };
-            yield ToolStreamItem::Turn(AssistantTurn { content, tool_calls: calls, finish_reason });
+            yield ToolStreamItem::Turn(AssistantTurn { content, tool_calls: calls, finish_reason, reasoning_content: if reasoning.is_empty() { None } else { Some(reasoning) } });
         };
-        Ok(stream)
+        Ok(Box::pin(stream))
     }
 
     /// 流式对话：产出增量文本片段。
@@ -1013,9 +1137,15 @@ impl LlmClient {
     pub async fn chat_stream_raw(
         &self,
         messages: &[serde_json::Value],
-    ) -> anyhow::Result<impl Stream<Item = anyhow::Result<String>> + Send + use<>> {
+    ) -> anyhow::Result<std::pin::Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>>> {
+        if self.gateway.is_some() {
+            let turn = self.chat_tools_with(messages, None, None).await?;
+            return Ok(Box::pin(futures_util::stream::iter(vec![Ok(turn
+                .content
+                .unwrap_or_default())])));
+        }
         let resp =
-            self.request("/chat/completions")
+            self.request("/chat/completions")?
                 .json(&self.with_effort(
                     json!({ "model": self.model, "messages": messages, "stream": true }),
                 ))
@@ -1064,23 +1194,14 @@ impl LlmClient {
                 Err(Interrupted { got })?;
             }
         };
-        Ok(stream)
+        Ok(Box::pin(stream))
     }
 
     /// 批量 embedding。
     pub async fn embed(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-        let resp = self
-            .request("/embeddings")
-            .json(&json!({ "model": self.model, "input": texts }))
-            .send()
-            .await
-            .map_err(Unreachable)?;
-        let status = resp.status();
-        let retry_after = retry_after_of(resp.headers());
-        if !status.is_success() {
-            return Err(response_failure("Embedding", status, retry_after, resp).await?);
-        }
-        let body: serde_json::Value = resp.json().await.map_err(Unreachable)?;
+        let body = self
+            .json_response("/embeddings", &json!({"model":self.model,"input":texts}))
+            .await?;
         let data = body["data"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Unexpected embedding response shape"))?;
@@ -1148,27 +1269,11 @@ fn ordered_by_index(
 /// 读数、时间解释）从日志里分不出来，只能按时间窗口猜。系统消息是各处写死的常量，头一句
 /// 各不相同，拿它当标签不必改任何一个调用方。没有系统消息的（对话）标 `-`
 fn call_label(messages: &[ChatMessage]) -> String {
-    let Some(system) = messages.iter().find(|m| m.role == "system") else {
-        return "-".into();
-    };
-    let first = system
-        .content
-        .split(['.', '。', '\n'])
-        .next()
-        .unwrap_or("")
-        .trim();
-    // 标签里不留空格和引号：日志是 `key=value` 的一行，拆的人按空格拆
-    first
-        .chars()
-        .take(60)
-        .map(|c| {
-            if c.is_whitespace() || c == '"' {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect()
+    if messages.iter().any(|m| m.role == "system") {
+        "system".into()
+    } else {
+        "-".into()
+    }
 }
 
 fn log_usage(model: &str, call: &str, body: &serde_json::Value) {
@@ -1488,7 +1593,7 @@ mod tests {
             assert!(rejected(&err).is_none());
             assert!(transient(&err).is_none());
             assert!(
-                err.root_cause().to_string().starts_with("LLM request failed (400 Bad Request): the prompt exceeds the model's context window: "),
+                err.root_cause().to_string()=="LLM request failed (400 Bad Request): the prompt exceeds the model's context window",
                 "{err:#}"
             );
             let client = LlmClient::new("http://unused", None, "m");
@@ -1544,7 +1649,7 @@ mod tests {
                 ),
                 m("user", "Passage: ..."),
             ]),
-            "You_read_one_passage_of_a_document_and_write_down_what_it_st"
+            "system"
         );
         assert_eq!(call_label(&[m("user", "hello")]), "-");
         assert!(!call_label(&[m("system", "Say \"ok\" now")]).contains('"'));
@@ -1946,7 +2051,9 @@ mod tests {
             Err(error) => error,
         };
         assert!(!is_unreachable(&error));
-        assert!(error.to_string().contains(diagnosis), "{error:#}");
+        assert!(unavailable(&error).unwrap().detail.contains(diagnosis));
+        assert!(!format!("{error:#}").contains(diagnosis));
+        assert!(!format!("{:?}", unavailable(&error).unwrap()).contains(diagnosis));
     }
 
     #[tokio::test]
@@ -2356,7 +2463,8 @@ data: {\"choices\":[{\"delta\":{\"content\":\"tail\"},\"finish_reason\":\"stop\"
         request.await.unwrap();
 
         let err = failed.expect_err("an unrelated 400 must reach the caller");
-        assert!(err.to_string().contains("temperature"), "{err}");
+        assert!(rejected(&err).unwrap().detail.contains("temperature"));
+        assert!(!err.to_string().contains("temperature"));
     }
 
     /// 上限归我们，被截断这件事说得出来（#760）。
@@ -2452,10 +2560,8 @@ data: [DONE]
             let hit = crate::unavailable(&err)
                 .unwrap_or_else(|| panic!("{status} 该是会自己好的那一类：{err:#}"));
             assert_eq!(hit.status, status[..3].parse::<u16>().unwrap());
-            assert!(
-                format!("{err:#}").contains("upstream hiccup"),
-                "原话要带出来：{err:#}"
-            );
+            assert!(hit.detail.contains("upstream hiccup"));
+            assert!(!format!("{err:#}").contains("upstream hiccup"));
         }
 
         // 请求根本没送到（连不上）：也是会自己好的一类

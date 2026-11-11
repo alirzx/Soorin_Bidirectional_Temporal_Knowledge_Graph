@@ -1,5 +1,7 @@
 # Synthetic Splunk ES -> Soorin TKG field mapping
 
+> Historical checkpoint. Current behavior and evidence are in [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) and [Production architecture](PRODUCTION_ARCHITECTURE.md).
+
 **No production export is included.** The examples approximate fields observed in Agentic SOC's Splunk normalizer and earlier password-spray investigations. All IPs use RFC 5737 TEST-NET ranges; hosts use the reserved `example` domain.
 
 | Record | Splunk / Agentic SOC fields | TKG interpretation |
@@ -12,7 +14,10 @@
 
 Normalization precedence in the lab: `host` then `hostname` then `Computer`; `src_ip` then `src` then `source_ip` then `ClientIP` then `IpAddress`; `user` then `username` then `user_name` then `AccountName` then `User`; `EventID` then `EventCode`.
 
-Agentic SOC also uses nested OCSF `device.name`, `actor.user.name`, `src_endpoint.ip` and `dst_endpoint.ip`. That **separate normalization adapter is not implemented** in this rc9 mock generator.
+Agentic SOC also uses nested OCSF envelopes. The Sprint 1 adapter at
+`soorin/adapters/splunk/llm_payload_normalizer.py` unwraps the canonical
+envelope and curated `llm_payload`; the older rc9 mock generator remains
+unchanged as a regression fixture.
 
 ## Seeded investigation scenario
 
