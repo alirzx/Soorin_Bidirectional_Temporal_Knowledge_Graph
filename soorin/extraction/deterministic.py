@@ -77,7 +77,8 @@ def _normalize(entity_type: str, raw: str, field: str) -> str:
             return raw.strip()
         if leaf in {"sha256", "sha1", "md5", "hash", "file_hash"}:
             value = raw.casefold()
-            if not re.fullmatch(r"[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}", value):
+            lengths = {"sha256": 64, "sha1": 40, "md5": 32}
+            if (leaf in lengths and len(value) != lengths[leaf]) or not re.fullmatch(r"[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}", value):
                 raise IdentityNormalizationError("invalid file hash")
             return value
         return normalize_text(raw)
@@ -122,11 +123,14 @@ def extract_entities(
             for raw in _values(value):
                 # ``entity`` and ``risk_object`` types are context sensitive.
                 context_type = entity_type
+                context = data
+                for part in field.split(".")[:-1]:
+                    context = context.get(part, {}) if isinstance(context, Mapping) else {}
                 if leaf == "entity":
-                    hinted = str(data.get("entity_type") or "").casefold()
+                    hinted = str(context.get("entity_type") or "").casefold()
                     context_type = "UserAccount" if "user" in hinted else "IPAddress" if "ip" in hinted else "Host"
                 if leaf == "risk_object":
-                    hinted = str(data.get("risk_object_type") or "").casefold()
+                    hinted = str(context.get("risk_object_type") or "").casefold()
                     context_type = "Host" if hinted in {"system", "host", "device"} else "IPAddress" if "ip" in hinted else "UserAccount"
                 add(context_type, raw, field, "structured_field", "observed")
 

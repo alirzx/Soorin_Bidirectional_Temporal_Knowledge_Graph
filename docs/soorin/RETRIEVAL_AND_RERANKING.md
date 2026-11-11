@@ -83,3 +83,7 @@ first candidates are ineligible; the result remains explicitly partial, not exha
 `model_versions` reports `usage=none` / `deterministic_graph_lookup` because this
 endpoint does not invoke embeddings, reranking or an LLM. Search model lineage
 remains a separate native retrieval concern.
+
+## V1 baseline update
+
+V1 baseline exposes `lexical_method` additively (retaining `lexical`) and includes retrieval diagnostics in MCP search_chunks structuredContent. Invalid MCP as_of errors instead of searching today. REST search accepts KB-scoped read PATs. UI displays reranker_status=complete as executed. Exact authority lookup is `/knowledge/resolve`; BM25/name similarity is never exact resolution. See [agent contracts](AGENT_TOOL_CONTRACTS.md).

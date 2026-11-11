@@ -1,11 +1,8 @@
 //! 混合检索：BM25（Tantivy）+ 向量（pgvector）→ RRF 融合。
 //! embedding 未配置或请求失败时静默降级为纯 BM25。
 //!
-//! **`as_of` 只在向量与取块这两处是完整的**（0019 开放问题②）。Tantivy 的索引
-//! 只有"现在"一个版本：重解析会把文档的块整批换掉，旧版本不在索引里。所以
-//! 带时刻检索时，BM25 找回来的东西**是对的**（随后按当时的活性过滤），但它
-//! 找不回当时有、如今已被顶掉的那些块——召回缺一角，命中不会出错。
-//! 要补那一角得给全文索引也建版本，那是另一件事，不在这一刀里。
+//! Historical lexical recall uses PostgreSQL versioned chunks; current recall
+//! uses Tantivy. Tokenization/ranking differ; both reload through KB/time filters.
 //!
 //! **两路并行，BM25 在阻塞线程池上跑**（#515）。`SearchIndex::search` 是同步的：
 //! 切词、走 mmap 段、逐条取文档，跑多久就占一条 runtime 线程多久；仓库里另外六处
@@ -96,7 +93,7 @@ pub async fn hybrid_detailed(
     let reranker = crate::reranker::apply(&state.pool, workspace_id, query, &mut chunks).await?;
     chunks.truncate(top_k);
     Ok(Retrieval {
-        metadata: serde_json::json!({"schema_version":"soorin.retrieval-metadata.v1","dense_executed":dense_executed,"lexical":if as_of.is_some(){"postgres_versioned_lexical"}else{"tantivy_bm25"},"reranker_status":reranker,"candidate_count":candidate_limit,"score_type":"rank_fusion","returned":chunks.len()}),
+        metadata: serde_json::json!({"schema_version":"soorin.retrieval-metadata.v1","dense_executed":dense_executed,"lexical_method":if as_of.is_some(){"postgres_versioned_lexical"}else{"tantivy_bm25"},"lexical":if as_of.is_some(){"postgres_versioned_lexical"}else{"tantivy_bm25"},"reranker_status":reranker,"candidate_count":candidate_limit,"score_type":"rank_fusion","returned":chunks.len()}),
         chunks,
     })
 }

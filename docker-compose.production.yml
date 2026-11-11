@@ -55,7 +55,7 @@ services:
       UTOPIA_PRIVACY_PROVIDER_ORIGINS: ${UTOPIA_PRIVACY_PROVIDER_ORIGINS:-}
       UTOPIA_PRIVACY_PROFILE: ${UTOPIA_PRIVACY_PROFILE:-agentic-soc-v1}
       RUST_LOG: info
-    ports: ['127.0.0.1:2516:1516']
+    ports: ['${SOORIN_APP_BIND:-127.0.0.1:2516}:1516']
     volumes: [soorin_production_data:/app/data]
     networks: [database, models, egress]
     depends_on:

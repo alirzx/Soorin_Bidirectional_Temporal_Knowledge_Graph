@@ -168,6 +168,16 @@ fn rpc_err(id: Option<Value>, code: i64, message: &str) -> Json<Value> {
     }))
 }
 
+fn valid_envelope(req: &Value) -> bool {
+    req.is_object()
+        && req["jsonrpc"] == "2.0"
+        && req["method"].is_string()
+        && req
+            .get("id")
+            .is_none_or(|id| id.is_null() || id.is_string() || id.is_number())
+        && req.get("params").is_none_or(Value::is_object)
+}
+
 pub async fn handle(
     State(state): State<AppState>,
     Path(kb_id): Path<Uuid>,
@@ -175,6 +185,9 @@ pub async fn handle(
     Json(req): Json<Value>,
 ) -> ApiResult<Json<Value>> {
     let (user, auth, kb, can_write) = authorize(&state, &headers, kb_id).await?;
+    if !valid_envelope(&req) {
+        return Ok(rpc_err(None, -32600, "Invalid JSON-RPC 2.0 request"));
+    }
     let id = req.get("id").cloned();
     let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
     let params = req.get("params").cloned().unwrap_or(json!({}));

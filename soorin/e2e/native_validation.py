@@ -11,13 +11,25 @@ from pathlib import Path
 from soorin.e2e.local_validation import (_request_json,select_isolated_api,DEFAULT_FIXTURE,normalize_fixture,_load_fixture,ValidationError)
 from soorin.ontology.importer import OntologyImporter,load_and_validate
 from soorin.ops.ingest import submit
+from soorin.e2e.qa_target import verify_qa_target
 from soorin.contracts.grounded_context import extractive_answer
+
+def acceptance_events():
+    """Explicit source clocks for synthetic revision acceptance, not delivery clocks."""
+    rows = _load_fixture(DEFAULT_FIXTURE)
+    clocks = {'changed_status':'2026-10-20T10:30:00Z', 'corrected_source_event':'2026-10-20T11:00:00Z'}
+    for row in rows:
+        if row['scenario'] in clocks:
+            row['raw_record']['source_updated_at'] = clocks[row['scenario']]
+    return [(name,event) for name,event in normalize_fixture(rows) if event.tenant_id=='tenant-blue']
+
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true');p.add_argument('--base-url',default='http://127.0.0.1:2516');p.add_argument('--report',type=Path,required=True)
     p.add_argument('--deadline',type=float,default=120)
-    args=p.parse_args();base=select_isolated_api(args.base_url)
+    p.add_argument('--qa-project');p.add_argument('--approved-port',type=int)
+    args=p.parse_args();base=select_isolated_api(args.base_url,qa_project=args.qa_project,approved_port=args.approved_port)
     report={'schema_version':'soorin.native-acceptance.v1','synthetic':True,'checks':[]}
     def save(name,status,**evidence):
         report['checks'].append({'name':name,'status':status,'evidence':evidence})
@@ -27,6 +39,7 @@ def main():
     if not args.execute:save('live_execution','NOT RUN');return
     if os.environ.get('SOORIN_DISPOSABLE_ACCEPTANCE')!='1':p.error('requires SOORIN_DISPOSABLE_ACCEPTANCE=1 in a private disposable runtime')
     try:
+        verify_qa_target(base,args.qa_project)
         registered=_request_json(base,'/api/v1/auth/register',method='POST',body={'email':f'{uuid.uuid4()}@synthetic.example','password':secrets.token_urlsafe(24),'display_name':'Synthetic acceptance','org_name':'Disposable SOC acceptance'})
         token=registered['token'];workspace=registered['workspace']['id']
         def api(path,body=None,method=None):return _request_json(base,path,token=token,body=body,method=method or ('POST' if body is not None else 'GET'))
@@ -50,7 +63,7 @@ def main():
                     raise AssertionError('receipt_terminal_before_expected_state')
                 time.sleep(1)
             raise TimeoutError('receipt_materialization_deadline')
-        events=[(name,event) for name,event in normalize_fixture(_load_fixture(DEFAULT_FIXTURE)) if event.tenant_id=='tenant-blue']
+        events=acceptance_events()
         initial=events[0][1];initial_context=None;snapshot=None;entity_uuid=None
         for name,event in events:
             receipt=submit(base,source,ingest,event)
@@ -59,10 +72,21 @@ def main():
             assert replay['receipt_id']==receipt['receipt_id'] and replay['job_id']==row['job_id']
             save('ingest_'+name,'PASS',receipt_id=receipt['receipt_id'],status=row['status'],replay_deduplicated=True)
             if initial_context is None:
-                initial_context=api(f'/api/v1/kbs/{kb}/knowledge/context',{'tenant_id':'tenant-blue','entity':'SOC-E2E-ALERT-001','limit':100})
+                alert = next(e for e in event.entities if e.entity_type=='SecurityAlert')
+                authority,identifier = next(iter(alert.source_identifiers.items()))
+                resolution=api(f'/api/v1/kbs/{kb}/knowledge/resolve',{'tenant_id':'tenant-blue',
+                    'source_system':'splunk','source_instance':'splunk-e2e','entity_type':'SecurityAlert',
+                    'authority_name':authority,'source_identifier':identifier})
+                assert resolution['status']=='resolved' and resolution['automatic']
+                entity_uuid=resolution['candidates'][0]['entity_id']
+                initial_context=api(f'/api/v1/kbs/{kb}/knowledge/context',{'tenant_id':'tenant-blue','entity':entity_uuid,'limit':100})
                 assert initial_context['resolved_entities']
-                entity_uuid=initial_context['resolved_entities'][0]['id']
                 snapshot=datetime.now(UTC).isoformat()
+        late=replace(initial, observed_at='2026-10-20T09:00:00Z', source_revision_id='synthetic-late-revision', content_checksum=None)
+        late_receipt=submit(base,source,ingest,late)
+        late_status=wait_receipt(late_receipt,'quarantined')
+        assert late_status['failure_code']=='late_or_ambiguous_revision_retained_for_review'
+        save('late_revision_quarantine','PASS',receipt_id=late_receipt['receipt_id'])
         # Re-run failed import-time jobs through their real handlers, not SQL status edits.
         api(f'/api/v1/kbs/{kb}/jobs/requeue',{})
         end=time.monotonic()+args.deadline

@@ -64,3 +64,7 @@ present weight files now; this is not evidence of successful loading or inferenc
 No reranker cache volume was present in the inspected inventory. No artifacts were
 downloaded, modified or deleted in this pass. Model image rebuild, offline load,
 real inference and resource measurements are deferred.
+
+## V1 baseline update
+
+This V1 baseline pass did not inventory or alter existing model volumes and did not download/load/serve/infer. Earlier cache findings are historical, not current readiness proof. Compose volume names default to `<project>_soorin_embedding_cache`, `_soorin_reranker_cache`, `_soorin_ner_cache`; a new QA project does not automatically reuse soorin_master caches. In the future phase explicitly verify manifests, pinned revisions, UID 65532 read permission and chosen cache ownership before offline serving. Do not copy or rename existing caches implicitly.

@@ -161,3 +161,128 @@ pub async fn context(
         "limitations":["bounded to five entity candidates and 100 facts","open facts have inferred=true; this describes alignment, not security confidence","historical evidence excludes legacy links with unknown attachment time","no generated claim is approved by this endpoint"]
     })))
 }
+
+/// Exact current authority lookup. No alias, fuzzy or similarity fallback.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveQuery {
+    tenant_id: String,
+    source_system: String,
+    source_instance: String,
+    entity_type: String,
+    authority_name: String,
+    source_identifier: String,
+    scope: Option<String>,
+}
+
+impl ResolveQuery {
+    fn authority_key(&self) -> Result<String, utopia_core::AppError> {
+        for (value, max) in [
+            (&self.tenant_id, 512),
+            (&self.source_system, 512),
+            (&self.source_instance, 512),
+            (&self.entity_type, 128),
+            (&self.authority_name, 128),
+            (&self.source_identifier, 512),
+        ] {
+            if value.trim().is_empty() || value.len() > max {
+                return Err(utopia_core::AppError::Validation(
+                    "invalid identity query".into(),
+                ));
+            }
+        }
+        if self
+            .scope
+            .as_ref()
+            .is_some_and(|s| s.trim().is_empty() || s.len() > 512)
+        {
+            return Err(utopia_core::AppError::Validation(
+                "invalid identity scope".into(),
+            ));
+        }
+        Ok(format!(
+            "authority-v1:{}",
+            json!([self.authority_name, self.source_identifier, self.scope])
+        ))
+    }
+}
+
+pub async fn resolve(
+    State(state): State<AppState>,
+    reader: DocumentReader,
+    Path(kb): Path<Uuid>,
+    Json(query): Json<ResolveQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    super::documents_routes::require_reader_kb(&state, &reader, kb).await?;
+    let key = query.authority_key()?;
+    let binding: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM soorin_kb_tenants WHERE kb_id=$1 AND tenant_id=$2
+         AND source_system=$3 AND source_instance=$4)",
+    )
+    .bind(kb)
+    .bind(&query.tenant_id)
+    .bind(&query.source_system)
+    .bind(&query.source_instance)
+    .fetch_one(&state.pool)
+    .await?;
+    if !binding {
+        return Err(utopia_core::AppError::NotFound.into());
+    }
+    let row: Option<(Uuid, String, Option<Uuid>, String, bool)> = sqlx::query_as(
+        "SELECT i.id,i.canonical_key,e.id,i.status,
+          EXISTS(SELECT 1 FROM soorin_identity_conflicts c WHERE c.authority_id=a.id AND c.resolved_at IS NULL)
+         FROM soorin_identity_authorities a
+         JOIN soorin_canonical_identities i ON i.id=a.identity_id AND i.kb_id=a.kb_id AND i.tenant_id=a.tenant_id
+         LEFT JOIN entities e ON e.id=i.utopia_entity_id AND e.kb_id=i.kb_id AND e.merged_into IS NULL
+         WHERE a.kb_id=$1 AND a.tenant_id=$2 AND a.source_system=$3 AND a.source_instance=$4
+           AND a.entity_type=$5 AND a.source_identifier=$6",
+    ).bind(kb).bind(&query.tenant_id).bind(&query.source_system).bind(&query.source_instance)
+        .bind(&query.entity_type).bind(key).fetch_optional(&state.pool).await?;
+    let (status, candidates) = match row {
+        None => ("not_found", vec![]),
+        Some((id, key, entity, state, conflict)) => {
+            let status = if conflict || state == "ambiguous" {
+                "ambiguous"
+            } else if state != "active" {
+                "unavailable"
+            } else if entity.is_none() {
+                "pending_materialization"
+            } else {
+                "resolved"
+            };
+            (
+                status,
+                vec![
+                    json!({"identity_id":id,"canonical_key":key,"entity_id":entity,
+                "identity_status":state,"has_conflict":conflict}),
+                ],
+            )
+        }
+    };
+    Ok(Json(
+        json!({"schema_version":"soorin.identity-resolution.v1", "knowledge_base_id":kb,
+        "tenant_id":query.tenant_id,"status":status,"automatic":status=="resolved","candidates":candidates,
+        "limitations":["current authority mapping only; use returned UUID with context at/as_of",
+        "provisional names without source authority are not exact matches",
+        "not_found does not establish absence of a threat"]}),
+    ))
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+
+    #[test]
+    fn authority_tuple_retains_scope_and_rejects_empty_values() {
+        let mut q: ResolveQuery =
+            serde_json::from_value(json!({"tenant_id":"blue","source_system":"splunk",
+            "source_instance":"one","entity_type":"IPAddress","authority_name":"ip_id",
+            "source_identifier":"10.0.0.1","scope":"a"}))
+            .unwrap();
+        let a = q.authority_key().unwrap();
+        q.scope = Some("b".into());
+        assert_ne!(a, q.authority_key().unwrap());
+        q.source_identifier.clear();
+        assert!(q.authority_key().is_err());
+    }
+}

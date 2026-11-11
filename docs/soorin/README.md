@@ -31,3 +31,7 @@ means an omitted or skipped gate succeeded.
 Earlier `SPRINT1_*`, foundation gap/capability reports and old lab notes are
 historical checkpoints; they do not override current implementation/evidence.
 Preserve all existing labs, KBs, caches, Graphify output and database volumes.
+
+## V1 baseline update
+
+Latest V1 source/configuration pass: [Baseline hardening](V1_BASELINE_HARDENING.md). Operator workflow: [Manual SOC ingestion](MANUAL_SOC_INGESTION.md). Current-main Agentic consumer/producer mapping: [Agent tool contracts](AGENT_TOOL_CONTRACTS.md). Prior reports remain historical checkpoints.

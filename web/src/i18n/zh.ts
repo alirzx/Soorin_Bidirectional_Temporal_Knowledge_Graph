@@ -738,6 +738,7 @@ export const zh: Strings = {
   search: {
     hybrid: "已执行词法和语义检索",
     lexicalOnly: "仅词法检索",
+    rerankerExecuted: "已执行重排序",
     rerankerFallback: "重排序不可用，保留原始排序",
     placeholder: "检索知识库…（关键词 + 语义）",
     button: "检索",

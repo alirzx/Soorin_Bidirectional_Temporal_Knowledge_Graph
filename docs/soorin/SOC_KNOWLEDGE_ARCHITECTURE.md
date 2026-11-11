@@ -45,3 +45,7 @@ Native relation validation now rejects unknown keys, invalid domains/ranges and
 missing required evidence before persistence; older incompatible queued receipts
 are retained in quarantine. No ontology or receipt-state expansion was introduced.
 See [current hardening evidence](PREBUILD_HARDENING_REPORT.md).
+
+## V1 baseline update
+
+Current API-enriched Agentic payloads mark `_meta.mode=enriched_from_api`: their `alert_id` is the durable SOC row. Legacy curated Splunk semantics remain supported explicitly. See [manual ingestion](MANUAL_SOC_INGESTION.md) and [V1 ownership constraints](AGENT_TOOL_CONTRACTS.md); ontology and canonical identity/checksum versions remain unchanged.

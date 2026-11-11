@@ -6,7 +6,7 @@ use utopia_core::models::Role;
 use utopia_core::AppError;
 use uuid::Uuid;
 
-use crate::auth::AuthUser;
+use super::documents_routes::{require_reader_kb, DocumentReader};
 use crate::error::ApiResult;
 use crate::retrieval;
 use crate::state::AppState;
@@ -24,7 +24,7 @@ pub struct SearchReq {
 
 pub async fn search(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    reader: DocumentReader,
     Path(kb_id): Path<Uuid>,
     Json(req): Json<SearchReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
@@ -32,7 +32,9 @@ pub async fn search(
     if q.is_empty() {
         return Err(AppError::invalid("empty_query", "Search query cannot be empty").into());
     }
-    let kb = utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Viewer).await?;
+    require_reader_kb(&state, &reader, kb_id).await?;
+    let kb =
+        utopia_store::access::require_kb(&state.pool, &reader.user, kb_id, Role::Viewer).await?;
 
     let top_k = req.top_k.unwrap_or(10).min(50);
     let as_of = super::graph_routes::parse_instant("as_of", req.as_of.as_deref())?;

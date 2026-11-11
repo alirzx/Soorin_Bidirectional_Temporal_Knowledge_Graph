@@ -173,6 +173,71 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     assert_eq!(status, "bound");
     assert!(linked.is_some());
     let entity_id = linked.unwrap();
+    let (pat_view, pat) =
+        utopia_store::tokens::issue(&pool, user, "SOC read test", "read", Some(&[kb]), None)
+            .await?;
+    let search_path = format!("/api/v1/kbs/{kb}/search");
+    assert_eq!(
+        call(app.clone(), search_path.clone(), &pat, json!({"q":"A1"}))
+            .await?
+            .0,
+        200
+    );
+    assert!(matches!(
+        call(
+            app.clone(),
+            format!("/api/v1/kbs/{other_kb}/search"),
+            &pat,
+            json!({"q":"A1"})
+        )
+        .await?
+        .0,
+        403 | 404
+    ));
+    utopia_store::tokens::revoke(&pool, user, pat_view.id).await?;
+    assert_eq!(
+        call(app.clone(), search_path, &pat, json!({"q":"A1"}))
+            .await?
+            .0,
+        401
+    );
+
+    let resolve_path = format!("/api/v1/kbs/{kb}/knowledge/resolve");
+    let authority = json!({"tenant_id":"tenant-blue","source_system":"splunk","source_instance":"splunk-e2e",
+        "entity_type":"SecurityAlert","authority_name":"alert_id","source_identifier":"A1"});
+    let (status, resolution) = call(
+        app.clone(),
+        resolve_path.clone(),
+        &session,
+        authority.clone(),
+    )
+    .await?;
+    assert_eq!(status, 200, "{resolution}");
+    assert_eq!(resolution["status"], "resolved", "{resolution}");
+    assert_eq!(resolution["candidates"][0]["entity_id"], json!(entity_id));
+    for (field, value, expected) in [
+        ("tenant_id", "red", 404),
+        ("source_instance", "other", 404),
+        ("source_identifier", "unknown", 200),
+        ("scope", "different-network", 200),
+    ] {
+        let mut query = authority.clone();
+        query[field] = json!(value);
+        let (status, result) = call(app.clone(), resolve_path.clone(), &session, query).await?;
+        assert_eq!(status, expected);
+        if status == 200 {
+            assert_eq!(result["status"], "not_found");
+        }
+    }
+    let (status, _) = call(
+        app.clone(),
+        format!("/api/v1/kbs/{other_kb}/knowledge/resolve"),
+        &session,
+        authority,
+    )
+    .await?;
+    assert!(matches!(status, 403 | 404));
+
     let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
         .fetch_one(&pool)
         .await?;

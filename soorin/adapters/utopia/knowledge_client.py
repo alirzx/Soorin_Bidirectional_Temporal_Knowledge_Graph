@@ -51,14 +51,14 @@ class KnowledgeClient:
         except ValueError:
             raise KnowledgeClientError('invalid_json_response') from None
 
-    def _request(self, path, payload, token, schema):
+    def _request(self, path, payload, token, schema, method="POST"):
         if not token:
             raise KnowledgeClientError('credential_required')
-        body = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode()
+        body = None if payload is None else json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode()
         headers = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', 'Accept': 'application/json'}
         for attempt in range(self.retries + 1):
             try:
-                status, result = self.transport('POST', self.base + '/api/v1' + path, headers, body)
+                status, result = self.transport(method, self.base + '/api/v1' + path, headers, body)
                 if not 200 <= status < 300:
                     raise KnowledgeClientError('api_rejected', status, status in {408, 429, 500, 502, 503, 504})
                 if not isinstance(result, dict) or result.get('schema_version') != schema:
@@ -88,3 +88,12 @@ class KnowledgeClient:
             payload['as_of'] = as_of
         return self._request('/kbs/' + str(UUID(kb_id)) + '/knowledge/context', payload,
                              self.session_token, 'soorin.knowledge-context.v2')
+
+    def receipts(self, kb_id: str):
+        """Admin-only, payload-free receipt and job status, newest 100 rows."""
+        return self._request('/kbs/' + str(UUID(kb_id)) + '/knowledge/receipts', None,
+                             self.session_token, 'soorin.ingestion-status.v1', method='GET')
+
+    def resolve(self, kb_id: str, **query):
+        return self._request('/kbs/' + str(UUID(kb_id)) + '/knowledge/resolve', query,
+                             self.session_token, 'soorin.identity-resolution.v1')

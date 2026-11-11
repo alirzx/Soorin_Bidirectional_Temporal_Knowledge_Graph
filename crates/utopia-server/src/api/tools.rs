@@ -308,10 +308,19 @@ pub async fn search_chunks(
     // 必填参数由 `chat::check_call` 在派发之前挡下，所以这里不再回落到
     // 用户那句原话——回落产出的是一个看起来没问题的错误答案
     let q = args["query"].as_str().unwrap_or_default().to_string();
-    // 记录轴（0019 / #347）：只搜那一刻库里有的东西。全文那一路仍是"现在"，
-    // 命中不会错但会缺——retrieval.rs 的头上写了
-    let as_of = args["as_of"].as_str().and_then(parse_when);
-    let chunks = match retrieval::hybrid(
+    let as_of = match super::graph_routes::parse_instant("as_of", args["as_of"].as_str()) {
+        Ok(value) => value,
+        Err(_) => {
+            return ToolResult::new(
+                "Invalid as_of timestamp.".into(),
+                Step::new("search", q.as_str(), "invalid time")
+                    .status("failed")
+                    .json(),
+            )
+            .error()
+        }
+    };
+    let result = match retrieval::hybrid_detailed(
         ctx.state,
         ctx.kb_id,
         ctx.workspace_id,
@@ -322,7 +331,7 @@ pub async fn search_chunks(
     )
     .await
     {
-        Ok(chunks) => chunks,
+        Ok(result) => result,
         Err(e) => {
             tracing::warn!(error = %e, "MCP chunk search failed");
             return ToolResult::new(
@@ -332,6 +341,7 @@ pub async fn search_chunks(
             .error();
         }
     };
+    let chunks = result.chunks;
     let mut lines = Vec::new();
     for c in &chunks {
         let n = cite(sink, c.id.to_string(), |n| source_json(n, c));
@@ -356,7 +366,7 @@ pub async fn search_chunks(
             .json(),
     )
     .structured(json!({
-        "kb_id": ctx.kb_id, "as_of": as_of,
+        "kb_id": ctx.kb_id, "as_of": as_of, "retrieval":result.metadata,
         "limit": SEARCH_TOP_K, "limit_reached": chunks.len() == SEARCH_TOP_K,
         "chunks": chunks.iter().map(|c| json!({
             "chunk_id": c.id, "document_id": c.document_id,

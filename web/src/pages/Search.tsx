@@ -87,6 +87,7 @@ export function Search() {
         {results.data?.retrieval && (
           <p className="text-small text-ink-2 mb-4" role="status">
             {results.data.retrieval.dense_executed ? S.search.hybrid : S.search.lexicalOnly}
+            {results.data.retrieval.reranker_status === "complete" && ` · ${S.search.rerankerExecuted}`}
             {results.data.retrieval.reranker_status === "fallback" && ` · ${S.search.rerankerFallback}`}
           </p>
         )}

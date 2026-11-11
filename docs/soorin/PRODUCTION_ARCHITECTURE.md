@@ -75,3 +75,7 @@ source observation clock independently of occurrence time. Provisional v1 keys
 retain their compatibility limit behind immutable native KB source bindings.
 Tantivy readers use manual reload under the existing writer mutex. See
 [Pre-build hardening](PREBUILD_HARDENING_REPORT.md) for selective upstream and UI evidence.
+
+## V1 baseline update
+
+V1 baseline adds a read-only exact authority resolver alongside context, and a local structured preview before native ingestion. Both reuse existing ownership/queue boundaries. Read [baseline trace](V1_BASELINE_HARDENING.md) and [consumer contracts](AGENT_TOOL_CONTRACTS.md). Separate source-bound KBs remain required for distinct native source authorities; no multi-source migration was added.

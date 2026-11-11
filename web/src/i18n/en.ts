@@ -805,6 +805,7 @@ export const en = {
   search: {
     hybrid: "Lexical and semantic retrieval executed",
     lexicalOnly: "Lexical retrieval only",
+    rerankerExecuted: "Reranker executed",
     rerankerFallback: "Reranker unavailable; original ranking retained",
     placeholder: "Search the knowledge base… (keyword + semantic)",
     button: "Search",

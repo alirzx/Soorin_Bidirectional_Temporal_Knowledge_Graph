@@ -8,6 +8,7 @@ from typing import Any, Iterable, Mapping
 from .deterministic import ExtractionBatch, extract_entities
 from .ner import DisabledNer, NerProposal, NerProvider
 from .soc_entities import SKIP_REGEX_FIELDS, UNSTRUCTURED_FIELDS
+from .cpu_cyber_ner import UNSUPPORTED_SCRIPT_RE
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,9 +49,14 @@ def enrich_entities(
         (item.entity_type, item.normalized_value.casefold()) for item in deterministic.entities
     }
     for text in _unstructured_text(data):
+        if ner is not None and UNSUPPORTED_SCRIPT_RE.search(text):
+            errors.append("ner_unsupported_script")
+            continue
         try:
-            rows = provider.extract(text)
-        except (RuntimeError, ValueError) as exc:
+            rows = provider.extract(text[:4000])
+            if not isinstance(rows, (list, tuple)) or len(rows) > 128:
+                raise ValueError("invalid proposal collection")
+        except (RuntimeError, ValueError, TimeoutError, OSError) as exc:
             errors.append(f"ner_provider_error:{type(exc).__name__}")
             continue
         for row in rows:

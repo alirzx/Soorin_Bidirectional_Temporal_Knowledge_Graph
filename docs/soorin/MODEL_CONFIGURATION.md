@@ -81,3 +81,7 @@ history and are not silently re-embedded or matched to incompatible vectors.
 Read [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) for actual model download,
 inference, cache restart, memory and latency results. Fake-model contract tests
 are not real-model acceptance.
+
+## V1 baseline update
+
+V1 baseline has no implicit NER activation in ingestion. `preview(..., ner=provider)` is an explicit review-only Python extension; CLI remains deterministic. Provider timeouts/errors preserve deterministic output. NER service proposal metadata uses the pinned public model@revision rather than a local cache path. These changes are MOCK TESTED; actual model inference is NOT RUN.

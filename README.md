@@ -220,3 +220,7 @@ The Utopia-derived implementation is distributed under the bundled
 The original documentation remains in [README.upstream.md](README.upstream.md).
 The company artwork is a supplied Soorin asset; software licensing does not imply
 redistribution rights for independently hosted demonstration footage.
+
+## V1 baseline update
+
+For the latest V1 baseline scope, read [Baseline hardening](docs/soorin/V1_BASELINE_HARDENING.md), [manual SOC preview](docs/soorin/MANUAL_SOC_INGESTION.md) and [agent contracts](docs/soorin/AGENT_TOOL_CONTRACTS.md). Real model inference and live integration remain NOT RUN.

@@ -3208,3 +3208,49 @@ async fn a_query_step_carries_its_sql_rows_and_failure() -> anyhow::Result<()> {
     let cleanup = f.clean().await;
     result.and(removed.map_err(Into::into)).and(cleanup)
 }
+
+#[test]
+fn invalid_json_rpc_envelopes_do_not_dispatch() {
+    assert!(valid_envelope(
+        &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})
+    ));
+    for request in [
+        json!([]),
+        json!({"method":"tools/list"}),
+        json!({"jsonrpc":"1.0","method":"tools/list"}),
+        json!({"jsonrpc":"2.0","method":"tools/list","id":true}),
+        json!({"jsonrpc":"2.0","method":"tools/call","params":[]}),
+    ] {
+        assert!(!valid_envelope(&request));
+    }
+}
+
+#[tokio::test]
+async fn search_reports_executed_channels_and_rejects_invalid_history() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let result = f
+        .call(
+            "search_chunks",
+            json!({"query":"orchard", "as_of":"2026-03-20"}),
+        )
+        .await?;
+    assert_eq!(
+        result["structuredContent"]["retrieval"]["dense_executed"],
+        false
+    );
+    assert_eq!(
+        result["structuredContent"]["retrieval"]["lexical_method"],
+        "postgres_versioned_lexical"
+    );
+    let bad = f
+        .call(
+            "search_chunks",
+            json!({"query":"orchard", "as_of":"not-a-time"}),
+        )
+        .await?;
+    assert_eq!(bad["isError"], true);
+    f.clean().await?;
+    Ok(())
+}

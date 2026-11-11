@@ -25,3 +25,15 @@ class CpuServiceTests(unittest.TestCase):
                 texts(value)
         with self.assertRaises(ValueError):
             Engine("embedding", "/missing", model=object()).infer("/v1/embeddings", {"model": "wrong"})
+
+
+    def test_ner_metadata_uses_pinned_identity_not_local_cache_path(self):
+        from soorin.extraction.ner import NerProposal
+        class Ner:
+            def extract(self, text):
+                return [NerProposal('Indicator', 'example', .9, '/private/cache/snapshot', 'MALWARE')]
+        engine = Engine('ner', '/missing', model=Ner())
+        result = engine.infer('/ner', {'text':'synthetic'})
+        self.assertEqual(result['proposals'][0]['model_version'], engine.name)
+        self.assertTrue(result['proposals'][0]['review_required'])
+        self.assertEqual(result['proposals'][0]['source_label'], 'MALWARE')
