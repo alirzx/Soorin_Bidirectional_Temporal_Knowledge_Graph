@@ -4,6 +4,12 @@
 ARG NODE_BASE_IMAGE=docker.arvancloud.ir/node:20-slim
 ARG RUST_BASE_IMAGE=docker.arvancloud.ir/rust:1.99.1-slim-bookworm
 ARG DEBIAN_BASE_IMAGE=docker.arvancloud.ir/debian:bookworm-slim
+# Rust's official Bookworm image already includes Debian CA roots; the minimal
+# debian:bookworm-slim runtime may not. Use a small independent trust stage so
+# the runtime's APT TLS bootstrap does not wait for cargo compilation.
+FROM ${RUST_BASE_IMAGE} AS apt-trust
+RUN test -s /etc/ssl/certs/ca-certificates.crt
+
 FROM ${NODE_BASE_IMAGE} AS web
 ARG NPM_REGISTRY_URL=https://package-mirror.liara.ir/repository/npm/
 ARG NPM_FALLBACK_REGISTRY_URL=https://registry.npmjs.org/
@@ -77,8 +83,13 @@ ENV APT_PRIMARY_DEBIAN_URL=${APT_PRIMARY_DEBIAN_URL} \
     APT_FALLBACK_SECURITY_URL=${APT_FALLBACK_SECURITY_URL} \
     APT_LAST_DEBIAN_URL=${APT_LAST_DEBIAN_URL} \
     APT_LAST_SECURITY_URL=${APT_LAST_SECURITY_URL}
+# Bootstrap HTTPS trust before apt-get: the base runtime layer has no usable
+# ca-certificates bundle yet. Source is the same pinned Bookworm Rust base,
+# independently of its expensive cargo build stage. Never disable TLS checks.
+COPY --from=apt-trust /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY docker/install-debian-packages.sh /usr/local/bin/install-debian-packages
-RUN sh /usr/local/bin/install-debian-packages ca-certificates curl poppler-utils poppler-data
+RUN test -s /etc/ssl/certs/ca-certificates.crt \
+    && sh /usr/local/bin/install-debian-packages ca-certificates curl poppler-utils poppler-data
 WORKDIR /app
 COPY --from=build /src/target/release/utopia-server /usr/local/bin/utopia-server
 COPY --from=web /src/dist /app/web-dist
