@@ -32,6 +32,15 @@ The published config exposes `Indicator`, `Malware`, `Organization`, `System`, a
 
 **Readiness:** Adapter and mock tests exist; actual CPU inference, model artifacts, and compatibility with installed Transformers/PyTorch are **unverified** in this branch.
 
+## Unified model deployment
+
+The optional NER checkpoint shares a single CPU serving container with
+BGE-M3 and the BGE reranker. The NER listener is `models:8082/ner`
+(loopback QA port 2813), and its immutable checkpoint is stored only in the
+dedicated read-only `soorin_ner_cache` volume. All three snapshots must pass
+offline verification before the combined service starts. No NER proposal is
+automatically materialized as an authoritative SOC graph fact.
+
 ## V1 baseline update
 
 Baseline preview integration is described in [Manual SOC ingestion](MANUAL_SOC_INGESTION.md). No proposal changes canonical identity or checksum; a human must review it before any graph fact. Mock timeout, malformed response, duplicate suppression and unsupported-script cases are covered; the synchronous provider must own its execution deadline.
