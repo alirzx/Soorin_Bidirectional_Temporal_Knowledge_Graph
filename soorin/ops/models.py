@@ -56,11 +56,11 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     sub=parser.add_subparsers(dest='command',required=True)
     probe=sub.add_parser('smoke');probe.add_argument('--role',choices=MODELS,required=True);probe.add_argument('--base-url',required=True)
-    config=sub.add_parser('configure');config.add_argument('--workspace',required=True);config.add_argument('--base-url',default='http://127.0.0.1:2516')
+    config=sub.add_parser('configure');config.add_argument('--workspace',required=True);config.add_argument('--base-url',default='http://127.0.0.1:2516');config.add_argument('--qa-project');config.add_argument('--approved-port',type=int)
     for role in ('chat','embedding','reranker'):config.add_argument('--'+role,action='store_true')
     args=parser.parse_args()
     if args.command=='smoke':print(json.dumps(smoke(args.role,args.base_url)));return
-    base=select_isolated_api(args.base_url);uuid.UUID(args.workspace)
+    base=select_isolated_api(args.base_url, qa_project=args.qa_project, approved_port=args.approved_port);uuid.UUID(args.workspace)
     token=os.environ.get('UTOPIA_SESSION_TOKEN','')
     if not token:parser.error('UTOPIA_SESSION_TOKEN is required; use a workspace administrator session')
     if not any((args.chat,args.embedding,args.reranker)):parser.error('select at least one model role')
