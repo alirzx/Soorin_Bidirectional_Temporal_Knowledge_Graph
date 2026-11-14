@@ -1,14 +1,14 @@
 # Local development
 
-Repository: `/mnt/X/Soorin/soorin_bi_TKG/utopia`; development branch:
-`feature/soc-knowledge-foundation-v1`. Preserve existing services and volumes.
+Repository: `/mnt/X/Soorin/soorin_bi_TKG/utopia`; active branch: `main`. Preserve existing services and volumes.
 Both the historical 1516/1517 lab and the 2516/2517 source-build project may already
 exist; inventory ports, container/project names and mounted volumes before startup.
 A new project name alone does not prevent a published-port collision.
 
 `docker-compose.soorin-dev.yml` builds this source and uses separate named database
-and data volumes. `docker-compose.models.yml` adds optional embedding/reranker/NER
-profiles, loopback ports 2811/2812/2813 and read-only cache mounts. Model download
+and data volumes. `docker-compose.models.yml` adds one optional `models` profile, a single
+CPU model container with loopback ports 2811/2812/2813 and three separate
+read-only cache mounts. Model download
 needs an explicitly writable cache mount and never loads weights.
 
 Start with [Pre-build validation](PREBUILD_VALIDATION.md). Perform expensive setup
@@ -44,7 +44,7 @@ and verify app/db labels, exact project-owned mounts and loopback mappings befor
 any HTTP mutation. Offline preflight remains available without Docker access.
 Use [manual preview](MANUAL_SOC_INGESTION.md) first; native_validation is the
 canonical receipt harness, local_validation remains a legacy Statements harness.
-Do not combine their sources. Optional model profiles remain absent by default;
+Do not combine their sources. The optional models profile remains absent by default;
 the development overlay's 2811–2813 bindings also need inventory before use.
 
 ## Makefile entry points for the disposable V1 QA build
@@ -70,6 +70,29 @@ before making HTTP mutations; a Makefile target does not certify a container's
 identity by itself. The older generic Makefile `build`, `up`, `health`, and
 `migrations` targets still use the legacy Sprint-1 defaults. Do not use those
 for V1 QA. Do not run destructive cleanup against any pre-existing stack.
+
+## Unified local model service
+
+The previous `embedding`, `reranker`, and `ner` Compose services are replaced
+with a single service named `models`. The shared image runs three separate role
+listeners on internal ports 8080/8081/8082 while preserving host-loopback ports
+2811/2812/2813. The app and DB containers remain unchanged. To build and
+create only the model container:
+
+```bash
+make qa-model-config
+make qa-model-build
+make qa-model-create
+docker volume ls --filter name=soorin-tkg-v1-qa_soorin_
+```
+
+Download and verify all three pinned snapshots separately using the exact
+commands in [Model artifact management](MODEL_ARTIFACT_MANAGEMENT.md).
+Then `make qa-model-up QA_EXECUTE=YES` starts only the consolidated model
+container, never the app or DB. Health checks require all three listeners.
+The old single embedding image is harmless but not required; never prune
+unrelated images or any cache volume. All three weights load on startup, so
+observe memory headroom before enabling the profile.
 
 ## Regional registry and package-mirror recovery
 
