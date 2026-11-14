@@ -2,17 +2,25 @@
 
 The Rust server reads authenticated **Workspace Settings** for Chat and
 Embedding. Python `SOORIN_*` evaluation variables do not configure that server.
-Reranking uses the administrator-only workspace runtime API. Optional model
-profiles do not affect basic application health or deterministic SOC alignment.
+Reranking uses the administrator-only workspace runtime API. The optional model
+profile does not affect basic application health or deterministic SOC alignment.
 
-| Role | Pinned model revision | Native endpoint | Cache volume suffix |
-| --- | --- | --- | --- |
-| embedding | BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181 | http://embedding:8080/v1 | soorin_embedding_cache |
-| reranker | BAAI/bge-reranker-v2-m3@953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e | http://reranker:8080 | soorin_reranker_cache |
-| NER | bnsapa/cybersecurity-ner@1ad52f1a7686a58da2a427c0706d8b868df47181 | http://ner:8080/ner | soorin_ner_cache |
+| Role | Pinned model revision | Container URL | QA loopback | Cache mount |
+| --- | --- | --- | --- | --- |
+| embedding | BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181 | http://models:8080/v1 | 127.0.0.1:2811 | /models/embedding |
+| reranker | BAAI/bge-reranker-v2-m3@953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e | http://models:8081 | 127.0.0.1:2812 | /models/reranker |
+| NER | bnsapa/cybersecurity-ner@1ad52f1a7686a58da2a427c0706d8b868df47181 | http://models:8082/ner | 127.0.0.1:2813 | /models/ner |
 
-Compose prefixes volumes with the project name. These are separate from the
-validation-only `soorin_master_*` caches. Never delete caches to repair startup.
+One build image and one service `models` now serve all three pinned roles in
+**one CPU-only Python process**. The three named cache volumes remain separate,
+read-only at runtime, and scoped to the Compose project. The complete model
+service requires all three verified snapshots and loads all three before
+binding its three role-specific HTTP listeners. Any failed integrity check or
+model load fails startup; it does not silently degrade. The shared inference
+semaphore serializes heavy requests. Expect coupled restart and larger peak RAM
+than three independently started services. The 7 GiB container limit is only a
+ceiling; benchmark on the host before production.
+
 
 ## Prepare artifacts, then serve in a separate acceptance phase
 
@@ -21,8 +29,8 @@ and offline `verify-artifacts` commands. `init` is a compatibility alias for
 **download only**. It never loads a model. Production caches are read-only;
 artifact preparation must explicitly mount the selected cache read-write.
 
-Each model profile has 2 CPUs, 4 GiB memory, UID/GID 65532, one inference slot,
-batches <=16, and bounded request text. `serve` loads pinned local files only;
+The consolidated service has 3 CPUs, 7 GiB memory, UID/GID 65532 and one shared inference slot,
+batches <=16, and bounded request text. `serve-all` verifies and loads all three pinned local snapshots offline;
 missing artifacts fail startup. `soorin.ops.models smoke` performs real inference
 and must only run in a separately authorized model acceptance phase. Development
 ports are loopback 2811/2812/2813. Production overlay publishes no model ports.
@@ -42,7 +50,7 @@ Supply UTOPIA_SESSION_TOKEN in the shell; never put credentials in Git or CLI
 arguments. The helper fetches existing nonsecret settings before updating them.
 
 ```bash
-python3 -m soorin.ops.models configure --workspace "$UTOPIA_WORKSPACE_ID" --embedding --reranker
+python3 -m soorin.ops.models configure --base-url http://127.0.0.1:2526 --workspace "$UTOPIA_WORKSPACE_ID" --embedding --reranker
 # Also supply DEEPSEEK_API_KEY securely, then:
 python3 -m soorin.ops.models configure --workspace "$UTOPIA_WORKSPACE_ID" --chat
 ```
