@@ -1,55 +1,47 @@
-# Add to docker-compose.soorin-dev.yml. Model profiles start independently.
-x-model: &model
-  build:
-    context: .
-    dockerfile: docker/models.Dockerfile
-    args:
-      PYTHON_BASE_IMAGE: ${SOORIN_PYTHON_BASE_IMAGE:-docker.arvancloud.ir/python:3.12-slim-bookworm}
-      PIP_PRIMARY_INDEX_URL: ${PIP_PRIMARY_INDEX_URL:-https://package-mirror.liara.ir/repository/pypi/simple}
-      PIP_FALLBACK_INDEX_URL: ${PIP_FALLBACK_INDEX_URL:-https://mirror2.chabokan.net/pypi/simple/}
-      TORCH_CPU_INDEX_URL: ${TORCH_CPU_INDEX_URL:-https://download.pytorch.org/whl/cpu}
-  init: true
-  restart: unless-stopped
-  read_only: true
-  # The default /tmp tmpfs mode is 1777. The old comma-separated string
-  # was parsed as a second invalid mount path by Docker Compose.
-  tmpfs:
-    - /tmp:size=256m
-  cap_drop: [ALL]
-  security_opt: [no-new-privileges:true]
-  pids_limit: 128
-  cpus: 2
-  mem_limit: 4g
-  environment:
-    HF_HOME: /models
-    HF_HUB_OFFLINE: "1"
-    TRANSFORMERS_OFFLINE: "1"
-    SOORIN_MODEL_THREADS: "2"
-  healthcheck:
-    test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready',timeout=3)"]
-    interval: 15s
-    timeout: 5s
-    retries: 5
-    start_period: 120s
+# Optional single CPU model container, added to docker-compose.soorin-dev.yml.
+# One image / one container / three persistent, independently managed snapshots.
 services:
-  embedding:
-    <<: *model
-    profiles: [embedding]
-    command: [serve, --role, embedding, --host, 0.0.0.0]
-    ports: [127.0.0.1:2811:8080]
-    volumes: [soorin_embedding_cache:/models:ro]
-  reranker:
-    <<: *model
-    profiles: [reranker]
-    command: [serve, --role, reranker, --host, 0.0.0.0]
-    ports: [127.0.0.1:2812:8080]
-    volumes: [soorin_reranker_cache:/models:ro]
-  ner:
-    <<: *model
-    profiles: [ner]
-    command: [serve, --role, ner, --host, 0.0.0.0]
-    ports: [127.0.0.1:2813:8080]
-    volumes: [soorin_ner_cache:/models:ro]
+  models:
+    profiles: [models]
+    image: soorin-tkg-v1-qa-models:latest
+    build:
+      context: .
+      dockerfile: docker/models.Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${SOORIN_PYTHON_BASE_IMAGE:-docker.arvancloud.ir/python:3.12-slim-bookworm}
+        PIP_PRIMARY_INDEX_URL: ${PIP_PRIMARY_INDEX_URL:-https://package-mirror.liara.ir/repository/pypi/simple}
+        PIP_FALLBACK_INDEX_URL: ${PIP_FALLBACK_INDEX_URL:-https://mirror2.chabokan.net/pypi/simple/}
+        TORCH_CPU_INDEX_URL: ${TORCH_CPU_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+    command: [serve-all, --host, 0.0.0.0, --cache, /models]
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    cpus: 3
+    mem_limit: 7g
+    environment:
+      HF_HOME: /models
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      SOORIN_MODEL_THREADS: "2"
+    ports:
+      - "127.0.0.1:2811:8080"
+      - "127.0.0.1:2812:8081"
+      - "127.0.0.1:2813:8082"
+    volumes:
+      - soorin_embedding_cache:/models/embedding:ro
+      - soorin_reranker_cache:/models/reranker:ro
+      - soorin_ner_cache:/models/ner:ro
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; [urllib.request.urlopen('http://127.0.0.1:%s/ready'%p,timeout=3) for p in (8080,8081,8082)]"]
+      interval: 20s
+      timeout: 12s
+      retries: 6
+      start_period: 240s
 volumes:
   soorin_embedding_cache:
   soorin_reranker_cache:
