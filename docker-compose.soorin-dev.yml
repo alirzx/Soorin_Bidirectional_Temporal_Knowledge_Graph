@@ -43,7 +43,7 @@ services:
       # registration closed. The port remains loopback-only as a second guard.
       UTOPIA_OPEN_REGISTRATION: "false"
       UTOPIA_DB_MAX_CONNECTIONS: ${SOORIN_DEV_DB_MAX_CONNECTIONS:-8}
-      UTOPIA_MODEL_TRUSTED_ORIGINS: ${UTOPIA_MODEL_TRUSTED_ORIGINS:-http://embedding:8080,http://reranker:8080,http://ner:8080}
+      UTOPIA_MODEL_TRUSTED_ORIGINS: ${UTOPIA_MODEL_TRUSTED_ORIGINS:-http://models:8080,http://models:8081,http://models:8082}
       UTOPIA_PRIVACY_GATEWAY_URL: ${UTOPIA_PRIVACY_GATEWAY_URL:-}
       UTOPIA_PRIVACY_GATEWAY_KEY: ${UTOPIA_PRIVACY_GATEWAY_KEY:-}
       UTOPIA_PRIVACY_TENANT_MAP: ${UTOPIA_PRIVACY_TENANT_MAP:-}
