@@ -4,7 +4,18 @@ Status: configuration prepared and statically validated. No image built, release
 published, stack started, or production acceptance claimed in this pass.
 
 Use `docker-compose.production.yml`, optionally with
-`docker-compose.models-production.yml`. The generic `docker-compose.yml` defaults
+`docker-compose.models-production.yml`.
+The optional `models` profile now runs **one** CPU-only container with a
+qualified image and three verified, read-only cache volumes. Its internal
+listeners are `models:8080` (embedding), `models:8081` (reranker) and
+`models:8082` (review-only NER); none are published to host. Set
+`UTOPIA_MODEL_TRUSTED_ORIGINS` to the three corresponding `http://models`
+origins, and update workspace settings to the exact same internal model URLs.
+The three models must ALL be present at immutable pinned revisions: the
+container fails startup if even one is absent. Provision 7 GiB max memory and
+3 CPUs in the current template; benchmark real peak memory and latency before
+production, as all models share a fate and one inference semaphore.
+ The generic `docker-compose.yml` defaults
 to an upstream Utopia image and must not be used as the Soorin production path.
 
 1. Qualify the exact feature commit using [Build and test handoff](BUILD_AND_TEST_HANDOFF.md).
