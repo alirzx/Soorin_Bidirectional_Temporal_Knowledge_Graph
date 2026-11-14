@@ -28,10 +28,9 @@ services:
     init: true
     restart: unless-stopped
     read_only: true
-    # The default /tmp tmpfs mode is 1777. The old comma-separated string
-  # was parsed as a second invalid mount path by Docker Compose.
-  tmpfs:
-    - /tmp:size=256m
+    # Docker defaults to safe 1777 mode for /tmp; keep this as one tmpfs mount.
+    tmpfs:
+      - /tmp:size=256m
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 256
