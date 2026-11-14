@@ -91,8 +91,7 @@ proxy does not imply that its Debian APT directory is mirrored.
 
 The UI installs its committed pnpm lockfile from Liara npm, falling back
 to the official registry. Optional CPU model images install the pinned
-`torch==2.6.0+cpu` wheel from the PyTorch CPU index, then their dependencies
-through Liara PyPI with Chabokan fallback. The locked CPU wheel is never
+`torch==2.6.0+cpu` wheel from the PyTorch CPU index **with `--no-deps`**, then resolve its transitive dependencies and the remaining service requirements through Liara PyPI with Chabokan fallback. The separation is necessary because the PyTorch index may direct dependencies to `files.pythonhosted.org` even when the CPU wheel itself downloads from `download-r2.pytorch.org`. After installation, `pip check` and an exact `2.6.0+cpu` / no-CUDA assertion reject mismatched installations. If the PyTorch wheel CDN itself cannot be reached, this fix does not bypass that separate network dependency. The locked CPU wheel is never
 replaced by a GPU build. Hugging Face snapshots and the Rust crates.io registry
 are **separate network dependencies** and do not use these mirrors automatically.
 
