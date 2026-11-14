@@ -26,7 +26,7 @@ qa-env-init:
 	@test '$(QA_PROJECT)' = soorin-tkg-v1-qa || { echo 'Refusing non-QA project'; exit 1; }
 	@test ! -e '$(QA_ENV_FILE)' || { echo 'QA environment exists; refusing overwrite'; exit 1; }
 	@command -v openssl >/dev/null
-	@umask 077; { printf 'COMPOSE_PROJECT_NAME=soorin-tkg-v1-qa\n'; printf 'SOORIN_DEV_DB_PASSWORD=%s\n' "$(openssl rand -hex 24)"; printf 'SOORIN_DEV_APP_BIND=127.0.0.1:%s\nSOORIN_DEV_DB_BIND=127.0.0.1:%s\n' '$(QA_APP_PORT)' '$(QA_DB_PORT)'; printf 'UTOPIA_DB_IMAGE=pgvector/pgvector:pg16\nSOORIN_BUILD_JOBS=1\nSOORIN_DEV_DB_MAX_CONNECTIONS=8\n'; } > '$(QA_ENV_FILE)'
+	@umask 077; { printf 'COMPOSE_PROJECT_NAME=soorin-tkg-v1-qa\n'; printf 'SOORIN_DEV_DB_PASSWORD=%s\n' "$$(openssl rand -hex 24)"; printf 'SOORIN_DEV_APP_BIND=127.0.0.1:%s\nSOORIN_DEV_DB_BIND=127.0.0.1:%s\n' '$(QA_APP_PORT)' '$(QA_DB_PORT)'; printf 'UTOPIA_DB_IMAGE=pgvector/pgvector:pg16\nSOORIN_BUILD_JOBS=1\nSOORIN_DEV_DB_MAX_CONNECTIONS=8\n'; } > '$(QA_ENV_FILE)'
 	@chmod 600 '$(QA_ENV_FILE)'
 	@echo 'Created $(QA_ENV_FILE); verify ownership, volumes and free ports before QA build.'
 qa-config:

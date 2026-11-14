@@ -3092,6 +3092,50 @@ data: [DONE]
         assert!(embedding_vector(&json!({"embedding":[1,2]}), &mut Some(1024)).is_err());
     }
 
+    #[tokio::test]
+    async fn large_embedding_calls_are_batched_without_reassigning_vectors() {
+        use wiremock::{
+            matchers::{method, path},
+            Mock, MockServer, ResponseTemplate,
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/embeddings"))
+            .respond_with(|request: &wiremock::Request| {
+                assert!(request.body.len() <= 280_000);
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let texts = body["input"].as_array().unwrap();
+                assert!(texts.len() <= 16);
+                let data: Vec<_> = texts
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .map(|(i, text)| {
+                        let text = text.as_str().unwrap();
+                        assert!(text.chars().count() <= 16_000);
+                        let value = text.parse::<f32>().unwrap_or(3.0);
+                        json!({"index": i, "embedding": [value, 4.0]})
+                    })
+                    .collect();
+                ResponseTemplate::new(200).set_body_json(json!({"data":data}))
+            })
+            .expect(5)
+            .mount(&server)
+            .await;
+        let mut texts: Vec<_> = (0..64).map(|i| i.to_string()).collect();
+        texts.push("م".repeat(16_681));
+        let vectors = LlmClient::new(&server.uri(), None, "m")
+            .embed(&texts)
+            .await
+            .unwrap();
+        assert_eq!(vectors.len(), texts.len());
+        for (i, vector) in vectors[..64].iter().enumerate() {
+            assert_eq!(vector, &vec![i as f32, 4.0]);
+        }
+        assert!((vectors[64][0] - 0.6).abs() < 1e-6);
+        assert!((vectors[64][1] - 0.8).abs() < 1e-6);
+    }
+
     async fn embeddings_from(data: serde_json::Value) -> anyhow::Result<Vec<Vec<f32>>> {
         let body = json!({ "data": data }).to_string();
         let (addr, server) = an_http_response("200 OK", "application/json", &body).await;

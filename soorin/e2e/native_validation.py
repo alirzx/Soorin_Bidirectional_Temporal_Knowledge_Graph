@@ -24,10 +24,30 @@ def acceptance_events():
     return [(name,event) for name,event in normalize_fixture(rows) if event.tenant_id=='tenant-blue']
 
 
+def assert_receipt_graph(event, diagnostics):
+    if diagnostics.get('status') != 'bound':
+        raise AssertionError('receipt_not_bound')
+    document = diagnostics.get('document') or {}
+    if document.get('status') != 'ready' or document.get('graph_status') != 'done':
+        raise AssertionError('document_not_complete')
+    expected = sorted(r.relation_type.lower() for r in event.relations)
+    actual = diagnostics.get('relations', [])
+    if sorted(r['expected_relation_key'] for r in actual) != expected:
+        raise AssertionError('expected_relation_set_mismatch')
+    for relation in actual:
+        binding = relation['binding']
+        if (binding.get('type_binding_status') != 'bound' or
+            binding.get('phrase_binding_status') != 'bound' or
+            binding.get('evidence_link_status') is not True):
+            raise AssertionError('typed_relation_or_evidence_missing')
+    return len(actual)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true');p.add_argument('--base-url',default='http://127.0.0.1:2516');p.add_argument('--report',type=Path,required=True)
-    p.add_argument('--deadline',type=float,default=120)
+    p.add_argument('--deadline',type=float,default=300)
+    p.add_argument('--with-cpu-models',action='store_true')
     p.add_argument('--qa-project');p.add_argument('--approved-port',type=int)
     args=p.parse_args();base=select_isolated_api(args.base_url,qa_project=args.qa_project,approved_port=args.approved_port)
     report={'schema_version':'soorin.native-acceptance.v1','synthetic':True,'checks':[]}
@@ -46,6 +66,12 @@ def main():
         kb=api(f'/api/v1/workspaces/{workspace}/kbs',{'name':'Native SOC synthetic acceptance','visibility':'restricted'})['id']
         other=api(f'/api/v1/workspaces/{workspace}/kbs',{'name':'Other synthetic tenant','visibility':'restricted'})['id']
         save('isolated_bootstrap','PASS',knowledge_base_id=kb,other_kb_id=other)
+        if args.with_cpu_models:
+            from soorin.services.cpu_models import MODELS
+            api(f'/api/v1/workspaces/{workspace}/settings', {'embed_base_url':'http://models:8080/v1',
+                'embed_model':'@'.join(MODELS['embedding']), 'embed_dim':1024}, 'PUT')
+            api(f'/api/v1/workspaces/{workspace}/settings/reranker', {'enabled':True,
+                'base_url':'http://models:8081', 'model':'@'.join(MODELS['reranker']), 'fallback':False}, 'PUT')
         importer=OntologyImporter(base,kb,token,request=lambda method,path,body:api(f'/api/v1/kbs/{kb}'+path,body,method))
         ontology=load_and_validate(Path(__file__).parents[1]/'ontology/soc_ontology_v1.yaml')
         importer.apply(ontology)
@@ -68,6 +94,9 @@ def main():
         for name,event in events:
             receipt=submit(base,source,ingest,event)
             row=wait_receipt(receipt)
+            diagnostic=api(f'/api/v1/kbs/{kb}/knowledge/receipts/{receipt["receipt_id"]}')
+            relation_count=assert_receipt_graph(event,diagnostic)
+            save('evidence_'+name,'PASS',expected_relations=relation_count,document_id=diagnostic['document']['document_id'])
             replay=submit(base,source,ingest,event)
             assert replay['receipt_id']==receipt['receipt_id'] and replay['job_id']==row['job_id']
             save('ingest_'+name,'PASS',receipt_id=receipt['receipt_id'],status=row['status'],replay_deduplicated=True)
@@ -87,8 +116,6 @@ def main():
         late_status=wait_receipt(late_receipt,'quarantined')
         assert late_status['failure_code']=='late_or_ambiguous_revision_retained_for_review'
         save('late_revision_quarantine','PASS',receipt_id=late_receipt['receipt_id'])
-        # Re-run failed import-time jobs through their real handlers, not SQL status edits.
-        api(f'/api/v1/kbs/{kb}/jobs/requeue',{})
         end=time.monotonic()+args.deadline
         while True:
             graph=api(f'/api/v1/kbs/{kb}/graph/overview?limit=1000')
@@ -105,6 +132,13 @@ def main():
         save('grounded_context','PASS',facts=len(current['facts']),citations=len(current['evidence_references']),extractive_claims=len(answer['claims']),generated=False)
         search=api(f'/api/v1/kbs/{kb}/search',{'q':'SOC-E2E-ALERT-001','top_k':20});assert search['results']
         save('native_search','PASS',result_count=len(search['results']),retrieval=search['retrieval'])
+        if args.with_cpu_models:
+            assert search['retrieval']['dense_executed'] is True
+            assert search['retrieval']['lexical_method']=='tantivy_bm25'
+            assert search['retrieval']['reranker_status']=='complete'
+            save('cpu_retrieval_execution','PASS',quality='NOT MEASURED')
+        else:
+            save('cpu_retrieval_execution','NOT RUN',reason='requires --with-cpu-models')
         for target,tenant in [(kb,'tenant-red'),(other,'tenant-blue')]:
             try:api(f'/api/v1/kbs/{target}/knowledge/context',{'tenant_id':tenant,'entity':'SOC-E2E-ALERT-001'})
             except ValidationError as error:assert 'HTTP 404' in str(error)
@@ -114,6 +148,7 @@ def main():
         save('failed_jobs','PASS',diagnostics=failed)
     except (Exception,KeyboardInterrupt) as error:
         save('execution','FAIL' if not isinstance(error,KeyboardInterrupt) else 'BLOCKED',category=type(error).__name__,reason=str(error) if isinstance(error,(ValidationError,TimeoutError)) else 'assertion_or_runtime_failure')
+        save('dependent_checks','BLOCKED',reason='prerequisite_failed; subsequent API calls were not made')
         raise SystemExit(1)
 
 if __name__=='__main__':main()
