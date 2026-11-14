@@ -19,8 +19,11 @@ Commands:
 - `verify-artifacts --role ROLE --cache PATH [--hashes]`: offline filesystem-only
   inspection. Checks the expected snapshot, manifest identity, required config,
   tokenizer and weights, file coverage/sizes and optional SHA256/git-blob hashes.
-- `serve --role ROLE`: deployment-only command; loads the local snapshot and
-  starts the API. Never use it as an artifact inspection command.
+- `serve --role ROLE`: legacy isolated single-role launcher.
+- `serve-all --cache /models`: deployment command; integrity-verifies and loads
+  embedding, reranker and NER from `/models/<role>` **before opening ports**
+  8080/8081/8082. Each snapshot is a separate read-only volume. The three
+  listeners share one process and one bounded inference slot. Never use it as an artifact inspection command.
 - Legacy `init` is retained as a **download-only** alias. It no longer establishes
   model/dependency compatibility or inference readiness.
 
@@ -54,6 +57,35 @@ Cache writers run explicitly with write access. Production serving is UID/GID
 are readable by that UID; do not use world-writable permissions. Compose prefixes
 cache volumes with its project name; validation caches are separate. Never prune
 or remove a cache as a startup repair.
+
+## Consolidated QA deployment (one image, one container)
+
+Use `make qa-model-build`, then `make qa-model-create`. Compose creates
+three independent named volumes: `soorin-tkg-v1-qa_soorin_embedding_cache`,
+`soorin-tkg-v1-qa_soorin_reranker_cache`, and
+`soorin-tkg-v1-qa_soorin_ner_cache`. Model download must mount each volume
+**writable** at `/models` in a temporary `docker run` and pass
+`--cache /models`; never write to the read-only serving mounts.
+
+```bash
+# Replace ROLE with embedding, reranker or ner, one role at a time.
+ROLE=embedding
+VOLUME="soorin-tkg-v1-qa_soorin_${ROLE}_cache"
+IMAGE=soorin-tkg-v1-qa-models:latest
+timeout 1800s docker run --rm --pull never --user 0 --entrypoint python \
+  -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 \
+  -v "$VOLUME:/models" "$IMAGE" -m soorin.services.cpu_models \
+  download --role "$ROLE" --cache /models
+docker run --rm --pull never --network none --read-only --user 65532:65532 \
+  --entrypoint python -e PYTHONDONTWRITEBYTECODE=1 \
+  -v "$VOLUME:/models:ro" "$IMAGE" -m soorin.services.cpu_models \
+  verify-artifacts --role "$ROLE" --cache /models --hashes
+```
+
+Repeat for **all three** roles and require three PASS reports before
+`make qa-model-up QA_EXECUTE=YES`. One missing cache blocks the unified service.
+Do not delete the existing `soorin-tkg-v1-qa-embedding` image or legacy
+caches to make this work. The model container has no access to TKG DB volumes.
 
 ## Observed during this pass
 
