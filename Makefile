@@ -9,10 +9,11 @@ QA_PROJECT ?= soorin-tkg-v1-qa
 QA_APP_PORT ?= 2526
 QA_DB_PORT ?= 2527
 QA_DC = docker compose --env-file $(QA_ENV_FILE) -p $(QA_PROJECT) -f docker-compose.soorin-dev.yml
+QA_MODELS_DC = $(QA_DC) -f docker-compose.models.yml --profile models
 OLD_IMAGE := ghcr.io/deeplethe/utopia:0.1.0-rc9
-.PHONY: qa-env-init qa-config qa-build qa-up qa-native-e2e help env-init preflight config old-inspect old-remove image-remove build build-fresh up down ps health logs migrations offline mock-check e2e-offline e2e-live ner-install ner-smoke rust-check web-check
+.PHONY: qa-model-config qa-model-build qa-model-create qa-model-up qa-model-ps qa-model-logs qa-env-init qa-config qa-build qa-up qa-native-e2e help env-init preflight config old-inspect old-remove image-remove build build-fresh up down ps health logs migrations offline mock-check e2e-offline e2e-live ner-install ner-smoke rust-check web-check
 help:
-	@echo 'Targets: qa-env-init qa-config qa-build qa-up qa-native-e2e env-init preflight old-inspect old-remove image-remove build build-fresh up down ps health logs migrations offline mock-check e2e-offline e2e-live ner-install ner-smoke rust-check web-check'
+	@echo 'Targets: qa-model-config qa-model-build qa-model-create qa-model-up qa-model-ps qa-model-logs qa-env-init qa-config qa-build qa-up qa-native-e2e env-init preflight old-inspect old-remove image-remove build build-fresh up down ps health logs migrations offline mock-check e2e-offline e2e-live ner-install ner-smoke rust-check web-check'
 env-init:
 	@test ! -e '$(ENV_FILE)' || { echo 'Environment file exists, refusing overwrite'; exit 1; }
 	@command -v openssl >/dev/null
@@ -31,6 +32,23 @@ qa-env-init:
 qa-config:
 	@test '$(QA_PROJECT)' = soorin-tkg-v1-qa || { echo 'Refusing non-QA project'; exit 1; }
 	@$(QA_DC) config --quiet
+# Model-only commands never recreate the running Rust app/DB.
+# All three model roles share one container with separate persistent cache volumes.
+qa-model-config:
+	@test '$(QA_PROJECT)' = soorin-tkg-v1-qa || { echo 'Refusing non-QA project'; exit 1; }
+	@$(QA_MODELS_DC) config --quiet
+qa-model-build: qa-model-config
+	@$(QA_MODELS_DC) build models
+qa-model-create: qa-model-config
+	@$(QA_MODELS_DC) create --no-build --pull never models
+qa-model-up: qa-model-config
+	@test '$(QA_EXECUTE)' = YES || { echo 'Set QA_EXECUTE=YES only after all three offline model artifact checks PASS'; exit 1; }
+	@$(QA_MODELS_DC) up -d --no-build --no-deps models
+qa-model-ps:
+	@$(QA_MODELS_DC) ps
+qa-model-logs:
+	@$(QA_MODELS_DC) logs --tail=120 models
+
 qa-build: qa-config
 	@$(QA_DC) build app
 qa-up: qa-config
