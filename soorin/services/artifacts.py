@@ -91,10 +91,14 @@ def verify(role: str, cache: str, *, hashes: bool = False) -> dict:
 
 def _retryable_download_error(exc: Exception) -> bool:
     """Retry transient Hub/CDN failures, never auth, bad pins, or bad inputs."""
-    from requests.exceptions import RequestException
     if isinstance(exc, (TimeoutError, ConnectionError)):
         return True
-    if isinstance(exc, RequestException):
+    # Python-only foundation tests do not install requests. Detect RequestException
+    # by its inheritance chain instead of importing this optional dependency.
+    is_requests_error = any(
+        cls.__name__ == 'RequestException' and cls.__module__.startswith('requests.')
+        for cls in type(exc).__mro__)
+    if is_requests_error:
         status = getattr(getattr(exc, 'response', None), 'status_code', None)
         return status is None or status in {408, 429, 500, 502, 503, 504}
     # hf-xet's Rust client may surface its network failures as RuntimeError.
