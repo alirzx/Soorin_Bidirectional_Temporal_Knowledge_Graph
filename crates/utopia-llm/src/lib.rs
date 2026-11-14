@@ -1199,25 +1199,106 @@ impl LlmClient {
 
     /// 批量 embedding。
     pub async fn embed(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-        let body = self
-            .json_response("/embeddings", &json!({"model":self.model,"input":texts}))
-            .await?;
-        let data = body["data"]
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("Unexpected embedding response shape"))?;
-        let items = ordered_by_index(data, texts.len())?;
-        let mut out = Vec::with_capacity(items.len());
-        for item in items {
-            let v = item["embedding"]
+        // All consumers (including ontology/name/query indexing) share the CPU
+        // wire limits. Long texts are windowed without changing stored evidence.
+        let windows = embedding_windows(texts)?;
+        let mut out: Vec<Vec<f32>> = vec![Vec::new(); texts.len()];
+        let mut counts = vec![0usize; texts.len()];
+        let mut dimension = None;
+        let mut offset = 0;
+        while offset < windows.len() {
+            let mut end = (offset + 16).min(windows.len());
+            let body = loop {
+                let inputs: Vec<_> = windows[offset..end].iter().map(|(_, text)| text).collect();
+                let body = json!({"model": self.model, "input": inputs});
+                if serde_json::to_vec(&body)?.len() <= 280_000 {
+                    break body;
+                }
+                anyhow::ensure!(end > offset + 1, "Embedding request exceeds byte limit");
+                end -= 1;
+            };
+            let body = self.json_response("/embeddings", &body).await?;
+            let data = body["data"]
                 .as_array()
-                .ok_or_else(|| anyhow::anyhow!("Embedding 响应缺少向量"))?
-                .iter()
-                .filter_map(|x| x.as_f64().map(|f| f as f32))
-                .collect();
-            out.push(v);
+                .ok_or_else(|| anyhow::anyhow!("Unexpected embedding response shape"))?;
+            for (item, (owner, _)) in ordered_by_index(data, end - offset)?
+                .into_iter()
+                .zip(&windows[offset..end])
+            {
+                let vector = embedding_vector(item, &mut dimension)?;
+                if out[*owner].is_empty() {
+                    out[*owner] = vector;
+                } else {
+                    for (sum, value) in out[*owner].iter_mut().zip(vector) {
+                        *sum += value;
+                    }
+                }
+                counts[*owner] += 1;
+            }
+            offset = end;
+        }
+        // Mean-pool only multi-window documents; ordinary provider vectors keep
+        // their original magnitude. BGE callers still validate dimension 1024.
+        for (vector, count) in out.iter_mut().zip(counts) {
+            if count > 1 {
+                for value in vector.iter_mut() {
+                    *value /= count as f32;
+                }
+                let norm = vector
+                    .iter()
+                    .map(|v| (*v as f64).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                anyhow::ensure!(norm.is_finite() && norm > 0.0, "Invalid pooled embedding");
+                for value in vector {
+                    *value = (*value as f64 / norm) as f32;
+                }
+            }
         }
         Ok(out)
     }
+}
+
+// Unicode scalar boundaries match Python's character limit, not UTF-8 bytes.
+fn embedding_windows(texts: &[String]) -> anyhow::Result<Vec<(usize, String)>> {
+    let mut windows = Vec::new();
+    for (owner, text) in texts.iter().enumerate() {
+        anyhow::ensure!(!text.trim().is_empty(), "Embedding text must be nonempty");
+        let mut chars = text.chars().peekable();
+        while chars.peek().is_some() {
+            let window: String = chars.by_ref().take(16_000).collect();
+            if !window.trim().is_empty() {
+                windows.push((owner, window));
+            }
+        }
+    }
+    Ok(windows)
+}
+
+fn embedding_vector(
+    item: &serde_json::Value,
+    dimension: &mut Option<usize>,
+) -> anyhow::Result<Vec<f32>> {
+    let values = item["embedding"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Embedding response lacks a vector"))?;
+    anyhow::ensure!(!values.is_empty(), "Empty embedding vector");
+    anyhow::ensure!(
+        dimension.is_none_or(|d| d == values.len()),
+        "Inconsistent embedding dimension"
+    );
+    *dimension = Some(values.len());
+    values
+        .iter()
+        .map(|v| {
+            let value = v
+                .as_f64()
+                .ok_or_else(|| anyhow::anyhow!("Nonnumeric embedding value"))?
+                as f32;
+            anyhow::ensure!(value.is_finite(), "Nonfinite embedding value");
+            Ok(value)
+        })
+        .collect()
 }
 
 /// 把返回的向量和输入的文本配对。响应里写了数字 `index` 的条目归到那个输入；
@@ -2982,6 +3063,35 @@ data: [DONE]
         let e = anyhow::anyhow!("LLM request failed (401 Unauthorized): bad key");
         assert!(!is_unreachable(&e));
     }
+    #[test]
+    fn embedding_windows_preserve_unicode_and_input_ownership() {
+        let texts = vec!["م".repeat(16_681), "tail".into()];
+        let windows = embedding_windows(&texts).unwrap();
+        assert_eq!(
+            windows
+                .iter()
+                .map(|(i, s)| (*i, s.chars().count()))
+                .collect::<Vec<_>>(),
+            vec![(0, 16000), (0, 681), (1, 4)]
+        );
+        assert_eq!(
+            windows[..2]
+                .iter()
+                .map(|(_, s)| s.as_str())
+                .collect::<String>(),
+            texts[0]
+        );
+        assert!(embedding_windows(&["  ".into()]).is_err());
+    }
+
+    #[test]
+    fn embedding_vectors_reject_corruption_instead_of_dropping_values() {
+        for value in [json!([]), json!([1, "x"]), json!([1e100])] {
+            assert!(embedding_vector(&json!({"embedding":value}), &mut None).is_err());
+        }
+        assert!(embedding_vector(&json!({"embedding":[1,2]}), &mut Some(1024)).is_err());
+    }
+
     async fn embeddings_from(data: serde_json::Value) -> anyhow::Result<Vec<Vec<f32>>> {
         let body = json!({ "data": data }).to_string();
         let (addr, server) = an_http_response("200 OK", "application/json", &body).await;

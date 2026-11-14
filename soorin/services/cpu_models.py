@@ -103,10 +103,30 @@ def initialize(role: str, cache: str) -> str:
     return download(role, cache)["cache"]
 
 
+class InferenceGate:
+    """One inference plus at most four waiters across all model roles."""
+    def __init__(self, capacity: int = 5, wait_seconds: float = 20):
+        self.slots = threading.BoundedSemaphore(capacity)
+        self.active = threading.BoundedSemaphore(1)
+        self.wait_seconds = wait_seconds
+
+    def acquire(self) -> bool:
+        if not self.slots.acquire(blocking=False):
+            return False
+        if self.active.acquire(timeout=self.wait_seconds):
+            return True
+        self.slots.release()
+        return False
+
+    def release(self) -> None:
+        self.active.release()
+        self.slots.release()
+
+
 def serve(engine: Engine, host: str, port: int,
-          shared_gate: threading.BoundedSemaphore | None = None) -> None:
+          shared_gate: InferenceGate | None = None) -> None:
     engine.load()  # Missing weights fail at startup, never on a first real request.
-    gate = shared_gate or threading.BoundedSemaphore(1)
+    gate = shared_gate or InferenceGate()
     token = os.environ.get("SOORIN_MODEL_API_KEY", "")
 
     class Handler(BaseHTTPRequestHandler):
@@ -118,6 +138,8 @@ def serve(engine: Engine, host: str, port: int,
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(raw)))
+            if status == 429:
+                self.send_header("Retry-After", "2")
             self.end_headers()
             self.wfile.write(raw)
 
@@ -127,7 +149,8 @@ def serve(engine: Engine, host: str, port: int,
             elif self.path in {"/health", "/ready"}:
                 self.respond(200, {"ready": True, "role": engine.role, "model": engine.name,
                     "device": "cpu", "dimension": 1024 if engine.role == "embedding" else None,
-                    "max_batch": MAX_BATCH, "max_tokens": 512,
+                    "max_batch": MAX_BATCH, "max_chars": MAX_CHARS, "max_bytes": MAX_BYTES,
+                    "max_tokens": 512, "inference_concurrency": 1, "queue_capacity": 4,
                     "calls": engine.calls, "inference_seconds": engine.total_seconds})
             else:
                 self.respond(404, {"error": "not_found"})
@@ -141,14 +164,14 @@ def serve(engine: Engine, host: str, port: int,
                 size = int(self.headers.get("Content-Length", "0"))
                 if not 0 < size <= MAX_BYTES:
                     raise ValueError("invalid request size")
-                if not gate.acquire(blocking=False):
+                self.connection.settimeout(15)
+                body = json.loads(self.rfile.read(size))
+                if not isinstance(body, dict):
+                    raise ValueError("body must be an object")
+                if not gate.acquire():
                     self.respond(429, {"error": "busy"})
                     return
                 try:
-                    self.connection.settimeout(15)
-                    body = json.loads(self.rfile.read(size))
-                    if not isinstance(body, dict):
-                        raise ValueError("body must be an object")
                     self.respond(200, engine.infer(self.path, body))
                 finally:
                     gate.release()
@@ -182,7 +205,7 @@ def serve_all(cache_root: str, host: str) -> None:
         engine.load()
         engines[role] = engine
     # A common semaphore prevents simultaneous heavy inference on a CPU host.
-    gate = threading.BoundedSemaphore(1)
+    gate = InferenceGate()
     with ThreadPoolExecutor(max_workers=3, thread_name_prefix="soorin-model") as pool:
         futures = [
             pool.submit(serve, engines[role], host, port, gate)

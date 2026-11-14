@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch
-from soorin.services.cpu_models import Engine, texts, serve_all
+from soorin.services.cpu_models import Engine, texts, serve_all, InferenceGate
 
 
 class Scores:
@@ -13,6 +13,20 @@ class Scores:
 
 
 class CpuServiceTests(unittest.TestCase):
+    def test_backpressure_wait_is_bounded_and_timeout_releases_capacity(self):
+        gate = InferenceGate(capacity=2, wait_seconds=0.001)
+        self.assertTrue(gate.acquire())
+        self.assertFalse(gate.acquire())
+        gate.release()
+        self.assertTrue(gate.acquire())
+        gate.release()
+
+    def test_capacity_overflow_does_not_wait(self):
+        gate = InferenceGate(capacity=1, wait_seconds=10)
+        self.assertTrue(gate.acquire())
+        self.assertFalse(gate.acquire())
+        gate.release()
+
     def test_reranker_preserves_all_indexes_and_model_revision(self):
         engine = Engine("reranker", "/missing", model=Scores())
         rows = engine.infer("/rerank", {"query": "q", "texts": ["one", "two"]})
