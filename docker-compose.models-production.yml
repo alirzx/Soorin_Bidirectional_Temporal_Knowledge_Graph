@@ -1,47 +1,37 @@
-# Optional overlay for production.yml. Requires a separately qualified local model image.
-x-model: &model
-  image: ${SOORIN_MODEL_IMAGE:?Set a reviewed CPU model image digest}
-  user: '65532:65532'
-  init: true
-  read_only: true
-  restart: unless-stopped
-  # The default /tmp tmpfs mode is 1777. The old comma-separated string
-  # was parsed as a second invalid mount path by Docker Compose.
-  tmpfs:
-    - /tmp:size=256m
-  cap_drop: [ALL]
-  security_opt: [no-new-privileges:true]
-  pids_limit: 128
-  cpus: 2
-  mem_limit: 4g
-  networks: [models]
-  environment:
-    HF_HOME: /models
-    HF_HUB_OFFLINE: '1'
-    TRANSFORMERS_OFFLINE: '1'
-    SOORIN_MODEL_THREADS: '2'
-  healthcheck:
-    test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready',timeout=3)"]
-    interval: 30s
-    timeout: 5s
-    retries: 5
-    start_period: 120s
+# Production overlay: one qualified CPU model image, one process, three
+# read-only persistent model snapshots. No ports published on the host.
 services:
-  embedding:
-    <<: *model
-    profiles: [embedding]
-    command: [serve, --role, embedding, --host, 0.0.0.0]
-    volumes: [soorin_embedding_cache:/models:ro]
-  reranker:
-    <<: *model
-    profiles: [reranker]
-    command: [serve, --role, reranker, --host, 0.0.0.0]
-    volumes: [soorin_reranker_cache:/models:ro]
-  ner:
-    <<: *model
-    profiles: [ner]
-    command: [serve, --role, ner, --host, 0.0.0.0]
-    volumes: [soorin_ner_cache:/models:ro]
+  models:
+    image: ${SOORIN_MODEL_IMAGE:?Set reviewed CPU model image digest}
+    profiles: [models]
+    user: '65532:65532'
+    command: [serve-all, --host, 0.0.0.0, --cache, /models]
+    init: true
+    read_only: true
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:size=256m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    cpus: 3
+    mem_limit: 7g
+    networks: [models]
+    environment:
+      HF_HOME: /models
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      SOORIN_MODEL_THREADS: '2'
+    volumes:
+      - soorin_embedding_cache:/models/embedding:ro
+      - soorin_reranker_cache:/models/reranker:ro
+      - soorin_ner_cache:/models/ner:ro
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; [urllib.request.urlopen('http://127.0.0.1:%s/ready'%p,timeout=3) for p in (8080,8081,8082)]"]
+      interval: 30s
+      timeout: 12s
+      retries: 6
+      start_period: 240s
 volumes:
   soorin_embedding_cache:
   soorin_reranker_cache:
