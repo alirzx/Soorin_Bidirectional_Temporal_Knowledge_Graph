@@ -3,4 +3,7 @@ torch==2.6.0
 transformers==4.51.3
 sentence-transformers==4.1.0
 huggingface-hub==0.30.2
+# Hugging Face 0.30.x requires a separate Xet client for chunked Hub downloads.
+# Pin to a reproducible Linux/Python-3.12 wheel; network fallback stays available.
+hf-xet==1.7.1
 sentencepiece==0.2.0
