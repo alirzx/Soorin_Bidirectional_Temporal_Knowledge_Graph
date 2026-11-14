@@ -2,7 +2,9 @@
 from __future__ import annotations
 import hashlib
 import json
+import os
 from pathlib import Path
+import time
 
 
 def snapshot_path(cache: str, model: str, revision: str) -> Path:
@@ -87,12 +89,54 @@ def verify(role: str, cache: str, *, hashes: bool = False) -> dict:
             'partial_blobs_preserved': incomplete, 'model_loading': 'NOT RUN', 'model_inference': 'NOT RUN'}
 
 
+def _retryable_download_error(exc: Exception) -> bool:
+    """Retry transient Hub/CDN failures, never auth, bad pins, or bad inputs."""
+    from requests.exceptions import RequestException
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    if isinstance(exc, RequestException):
+        status = getattr(getattr(exc, 'response', None), 'status_code', None)
+        return status is None or status in {408, 429, 500, 502, 503, 504}
+    # hf-xet's Rust client may surface its network failures as RuntimeError.
+    # Restrict these retries to known transient transfer diagnostics.
+    if isinstance(exc, RuntimeError):
+        message = str(exc).lower()
+        return any(term in message for term in (
+            'timed out', 'timeout', 'connection reset', 'connection error',
+            'network error', 'dns error', 'too many requests', 'service unavailable',
+            'http 429', 'http 502', 'http 503', 'http 504'))
+    return False
+
+
+def _bounded_attempts(name: str, fn):
+    try:
+        retries = int(os.environ.get('SOORIN_HF_RETRIES', '3'))
+    except ValueError as exc:
+        raise ValueError('SOORIN_HF_RETRIES must be an integer') from exc
+    if not 0 <= retries <= 8:
+        raise ValueError('SOORIN_HF_RETRIES must be between 0 and 8')
+    for attempt in range(retries + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            if attempt >= retries or not _retryable_download_error(exc):
+                raise
+            wait = min(30, 5 * 2**attempt)
+            print(f'HF {name} transient failure ({type(exc).__name__}); '
+                  f'retrying {attempt + 1}/{retries} after {wait}s',
+                  flush=True)
+            time.sleep(wait)
+
+
 def download(role: str, cache: str) -> dict:
-    """Resume the pinned snapshot; caller must bound this command with timeout."""
+    """Download pinned files with bounded retries, retaining resumable blobs."""
     from .cpu_models import MODELS
     from huggingface_hub import HfApi, snapshot_download
     model, revision = MODELS[role]
-    info = HfApi().model_info(model, revision=revision, files_metadata=True, timeout=15)
+    info = _bounded_attempts(
+        'metadata',
+        lambda: HfApi().model_info(model, revision=revision, files_metadata=True, timeout=30),
+    )
     if info.sha != revision:
         raise ValueError('artifact_revision_mismatch')
     siblings = info.siblings
@@ -100,8 +144,10 @@ def download(role: str, cache: str) -> dict:
     rows = [row for row in siblings if not row.rfilename.startswith(('onnx/', 'imgs/', 'openvino/'))
             and (row.rfilename.endswith(('.json', '.model', '.txt'))
                  or (row.rfilename.endswith('.safetensors') if safe_weights else row.rfilename == 'pytorch_model.bin'))]
-    path = Path(snapshot_download(model, revision=revision, cache_dir=cache,
-                                 allow_patterns=[row.rfilename for row in rows], max_workers=2))
+    path = Path(_bounded_attempts(
+        'snapshot',
+        lambda: snapshot_download(model, revision=revision, cache_dir=cache,
+                                  allow_patterns=[row.rfilename for row in rows], max_workers=2)))
     entries = []
     for row in rows:
         lfs = row.lfs
