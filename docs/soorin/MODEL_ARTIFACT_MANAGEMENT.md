@@ -87,6 +87,56 @@ Repeat for **all three** roles and require three PASS reports before
 Do not delete the existing `soorin-tkg-v1-qa-embedding` image or legacy
 caches to make this work. The model container has no access to TKG DB volumes.
 
+## Slow Hugging Face CDN and terminal disconnect recovery
+
+The model image pins `hf-xet==1.7.1` alongside `huggingface-hub==0.30.2`
+and uses bounded `HF_HUB_DOWNLOAD_TIMEOUT=120`,
+`HF_HUB_ETAG_TIMEOUT=30`, `SOORIN_HF_RETRIES=3`. Download and verify
+operations remain **separate from offline model serving**. Xet can transfer
+chunks more efficiently when its storage endpoints are reachable. Setting
+`HF_XET_HIGH_PERFORMANCE=1` increases resource usage and is not a default
+for constrained CPU hosts. If Xet itself fails due to DNS/TLS or a blocked
+endpoint, pass `HF_HUB_DISABLE_XET=1` only to the download container
+to use the regular HTTP fallback. Liara/Chabokan mirror *Python packages*,
+not model weights on Hugging Face storage/CDN.
+
+The downloader resumes the same pinned cache and allows only transient
+network failures to trigger application-level retries. Existing completed
+blobs and `.incomplete` files must not be manually deleted. Missing or bad
+model revisions, authentication failures and malformed metadata are not
+retried as connection timeouts.
+
+For downloads likely to outlive a terminal session, use a **tmux session**
+on the host and keep each role independent:
+
+```bash
+tmux new -s soorin-model-download
+cd /mnt/X/Soorin/soorin_bi_TKG/utopia
+ROLE=reranker
+MODEL_IMAGE=soorin-tkg-v1-qa-models:latest
+VOLUME="soorin-tkg-v1-qa_soorin_${ROLE}_cache"
+set -o pipefail
+timeout --signal=INT --kill-after=20s 3600s docker run --rm \
+  --pull never --user 0 --entrypoint python \
+  -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 \
+  -e HF_HUB_DOWNLOAD_TIMEOUT=120 -e HF_HUB_ETAG_TIMEOUT=30 \
+  -e SOORIN_HF_RETRIES=3 \
+  -v "$VOLUME:/models" "$MODEL_IMAGE" \
+  -m soorin.services.cpu_models download --role "$ROLE" --cache /models \
+  2>&1 | tee "/tmp/soorin-${ROLE}-download.log"
+```
+
+Detach with `Ctrl+b`, then `d`, and reattach using
+`tmux attach -t soorin-model-download`. If a transfer is interrupted,
+rerun the exact same role and volume command to resume; do not launch
+two writers concurrently against the same cache. The log contains transfer
+details and may include diagnostic URLs: keep it local and sanitized.
+
+Only after a successful download, run the **offline** `verify-artifacts
+--hashes` on that role's cache. Download-time `PASS` with
+`hashes_checked=false` is not a full hash verification. Do not start the
+unified `models` container until all three cache verifications pass.
+
 ## Observed during this pass
 
 `soorin_master_embedding_cache` and `soorin_master_ner_cache` contain required
