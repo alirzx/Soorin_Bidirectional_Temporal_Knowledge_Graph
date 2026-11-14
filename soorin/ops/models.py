@@ -76,7 +76,7 @@ def main():
         if args.embedding:body.update(embed_base_url='http://models:8080/v1',embed_model='@'.join(MODELS['embedding']),embed_dim=1024)
         _request_json(base,path,token=token,method='PUT',body=body)
     if args.reranker:
-        _request_json(base,path+'/reranker',token=token,method='PUT',body={'enabled':True,'base_url':'http://reranker:8080','model':'@'.join(MODELS['reranker']),'fallback':False})
+        _request_json(base,path+'/reranker',token=token,method='PUT',body={'enabled':True,'base_url':'http://models:8081','model':'@'.join(MODELS['reranker']),'fallback':False})
     print(json.dumps({'status':'configured','workspace':args.workspace,'connectivity':'NOT RUN','secrets':'omitted'}))
 
 
