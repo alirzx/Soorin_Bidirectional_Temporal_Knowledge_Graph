@@ -94,7 +94,12 @@ Never use `down -v`, pruning or an old lab source as test cleanup.
    [Artifact management](MODEL_ARTIFACT_MANAGEMENT.md). Preserve partial downloads.
 2. Build/qualify the CPU image separately. Current source includes lifecycle fixes
    absent from earlier cached images. No large image pull is implicit in this plan.
-3. Load one model at a time, offline/read-only/non-root, with memory/CPU/PID limits.
+3. Download and verify each of the three model snapshots **separately**, using
+   the same image with three separate named cache volumes. The consolidated
+   `models` container then checks and loads all three snapshots before binding
+   role-specific ports 8080/8081/8082; memory/CPU/PID limits apply to the one
+   container. Do not attempt startup until all three artifact reports pass.
+   Benchmark its combined peak RAM; no independent per-model restart is possible.
 4. On a private test endpoint, run `python3 -m soorin.ops.models smoke --role ROLE
    --base-url URL` under a 60-second timeout. This command **does inference**.
 5. Validate BGE 1024 finite vectors, stable repeated text, multilingual probes;
