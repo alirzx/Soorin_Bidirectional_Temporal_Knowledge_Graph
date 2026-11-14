@@ -6,6 +6,18 @@ from soorin.extraction import extract_entities
 
 
 class ExtractionTests(unittest.TestCase):
+    def test_lists_of_objects_keep_local_hints_and_provenance(self):
+        batch = extract_entities({"assets": [
+            {"entity": "DC01.EXAMPLE", "entity_type": "system"},
+            {"entity": "LAB\\Alice", "entity_type": "user"},
+            {"entity": "192.0.2.1", "entity_type": "ip"},
+            {"entity": "opaque", "entity_type": "unknown"},
+        ], "affected_hosts": ["dc02.example", "dc03.example"]}, source_record_reference="synthetic")
+        self.assertEqual({e.entity_type for e in batch.entities}, {"Host", "UserAccount", "IPAddress"})
+        self.assertEqual(len(batch.entities), 5)
+        self.assertEqual(next(e.source_field for e in batch.entities if e.entity_type == "IPAddress"), "assets.2.entity")
+        self.assertEqual(batch.errors, ("assets.3.entity: unknown_or_missing_entity_type_hint",))
+
     def test_structured_field_variants_and_windows_identity(self):
         batch = extract_entities({
             "src_ip": "192.0.2.7", "destination_ip": "2001:db8::8", "Computer": "DC01.EXAMPLE",

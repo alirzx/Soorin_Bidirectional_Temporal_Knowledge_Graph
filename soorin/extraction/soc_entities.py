@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 FIELD_TYPES: dict[str, str] = {
+    "affected_hosts": "Host", "affected_assets": "Host",
+    "affected_users": "UserAccount", "affected_ips": "IPAddress",
     "host": "Host", "hostname": "Host", "computer": "Host", "device": "Host", "asset": "Host",
     "dvc": "Host", "dest": "Host", "entity": "Host",
     "src_ip": "IPAddress", "source_ip": "IPAddress", "clientip": "IPAddress", "ipaddress": "IPAddress",

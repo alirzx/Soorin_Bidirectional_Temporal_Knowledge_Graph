@@ -45,13 +45,36 @@ class ExtractionBatch:
     errors: tuple[str, ...] = ()
 
 
-def _flatten(data: Mapping[str, Any], prefix: str = "") -> Iterable[tuple[str, Any]]:
+def _flatten(data: Mapping[str, Any], prefix: str = "", depth: int = 0) -> Iterable[tuple[str, Any]]:
+    if depth > 32:
+        raise ValueError("extraction_nesting_limit")
     for key, value in data.items():
         path = f"{prefix}.{key}" if prefix else str(key)
         if isinstance(value, Mapping):
-            yield from _flatten(value, path)
+            yield from _flatten(value, path, depth + 1)
+        elif isinstance(value, (list, tuple)):
+            scalars = []
+            for index, item in enumerate(value):
+                if isinstance(item, Mapping):
+                    yield from _flatten(item, f"{path}.{index}", depth + 1)
+                else:
+                    scalars.append(item)
+            if scalars:
+                yield path, scalars
         else:
             yield path, value
+
+
+def _context(data: Mapping[str, Any], field: str) -> Mapping[str, Any]:
+    current = data
+    for part in field.split(".")[:-1]:
+        if isinstance(current, Mapping):
+            current = current.get(part, {})
+        elif isinstance(current, (list, tuple)) and part.isdigit() and int(part) < len(current):
+            current = current[int(part)]
+        else:
+            return {}
+    return current if isinstance(current, Mapping) else {}
 
 
 def _values(value: Any) -> Iterable[str]:
@@ -123,15 +146,17 @@ def extract_entities(
             for raw in _values(value):
                 # ``entity`` and ``risk_object`` types are context sensitive.
                 context_type = entity_type
-                context = data
-                for part in field.split(".")[:-1]:
-                    context = context.get(part, {}) if isinstance(context, Mapping) else {}
-                if leaf == "entity":
-                    hinted = str(context.get("entity_type") or "").casefold()
-                    context_type = "UserAccount" if "user" in hinted else "IPAddress" if "ip" in hinted else "Host"
-                if leaf == "risk_object":
-                    hinted = str(context.get("risk_object_type") or "").casefold()
-                    context_type = "Host" if hinted in {"system", "host", "device"} else "IPAddress" if "ip" in hinted else "UserAccount"
+                context = _context(data, field)
+                if leaf in {"entity", "risk_object"}:
+                    hint_field = "entity_type" if leaf == "entity" else "risk_object_type"
+                    hinted = str(context.get(hint_field) or "").casefold()
+                    hints = {"system": "Host", "host": "Host", "device": "Host",
+                             "ip": "IPAddress", "ip_address": "IPAddress", "ipaddress": "IPAddress",
+                             "user": "UserAccount", "account": "UserAccount", "useraccount": "UserAccount"}
+                    context_type = hints.get(hinted)
+                    if context_type is None:
+                        errors.append(f"{field}: unknown_or_missing_entity_type_hint")
+                        continue
                 add(context_type, raw, field, "structured_field", "observed")
 
     if include_unstructured:

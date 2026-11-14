@@ -98,10 +98,22 @@ def _unwrap_record(record: Mapping[str, Any] | None) -> dict[str, Any]:
         durable_id = _first(outer, "alert_row_id", "soc_alert_id", "id") or _first(alert, "alert_row_id", "soc_alert_id", "id")
         if durable_id:
             current["alert_row_id"] = durable_id
-    for key in ("raw_alert", "raw_event", "ocsf_event", "raw_data", "data"):
-        nested = current.get(key)
-        if isinstance(nested, Mapping):
-            current = {**nested, **current}
+    def unwrap(node: Mapping[str, Any], depth: int = 0) -> dict[str, Any]:
+        if depth > 8:
+            raise NormalizationError("envelope_nesting_limit", "source envelope is too deeply nested")
+        result: dict[str, Any] = {}
+        for key in ("raw_alert", "raw_event", "ocsf_event", "raw_data", "data"):
+            nested = node.get(key)
+            if key == "raw_data" and isinstance(nested, str):
+                from soorin.contracts.json_input import load_object
+                try:
+                    nested = load_object(nested)
+                except ValueError as exc:
+                    raise NormalizationError("invalid_raw_data", "raw_data must contain a bounded JSON object") from exc
+            if isinstance(nested, Mapping):
+                result.update(unwrap(nested, depth + 1))
+        return {**result, **node}
+    current = unwrap(current)
     return current
 
 
