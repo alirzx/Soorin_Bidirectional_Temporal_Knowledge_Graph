@@ -11,7 +11,10 @@ x-model: &model
   init: true
   restart: unless-stopped
   read_only: true
-  tmpfs: [/tmp:size=256m,mode=1777]
+  # The default /tmp tmpfs mode is 1777. The old comma-separated string
+  # was parsed as a second invalid mount path by Docker Compose.
+  tmpfs:
+    - /tmp:size=256m
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
   pids_limit: 128
