@@ -59,6 +59,49 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(calls[0]['revision'], revision)
             self.assertNotIn('pytorch_model.bin', calls[0]['allow_patterns'])
 
+    def test_transient_transfer_retry_reuses_pinned_cache(self):
+        from soorin.services.artifacts import download
+        from types import SimpleNamespace
+        from requests.exceptions import ReadTimeout
+        with tempfile.TemporaryDirectory() as cache:
+            model, revision = MODELS['ner']
+            root = snapshot_path(cache, model, revision)
+            root.mkdir(parents=True)
+            rows = []
+            for name in ('config.json', 'tokenizer_config.json', 'tokenizer.json', 'model.safetensors'):
+                (root / name).write_bytes(b'synthetic')
+                rows.append(SimpleNamespace(rfilename=name, size=9, lfs=None, blob_id=None))
+            calls = []
+            def flaky_snapshot(*args, **kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    raise ReadTimeout('synthetic CDN timeout')
+                return str(root)
+            hub = SimpleNamespace(HfApi=lambda: SimpleNamespace(
+                model_info=lambda *a, **kw: SimpleNamespace(sha=revision, siblings=rows)),
+                snapshot_download=flaky_snapshot)
+            with patch.dict('sys.modules', {'huggingface_hub': hub}), \
+                 patch('soorin.services.artifacts.time.sleep') as sleep, \
+                 patch.dict('os.environ', {'SOORIN_HF_RETRIES': '2'}):
+                self.assertEqual(download('ner', cache)['status'], 'PASS')
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(all(c['revision'] == revision and c['cache_dir'] == cache for c in calls))
+            sleep.assert_called_once_with(5)
+
+    def test_non_transient_download_error_does_not_retry(self):
+        from soorin.services.artifacts import _bounded_attempts
+        with patch('soorin.services.artifacts.time.sleep') as sleep:
+            with self.assertRaisesRegex(ValueError, 'artifact_revision_mismatch'):
+                _bounded_attempts('snapshot', lambda: (_ for _ in ()).throw(
+                    ValueError('artifact_revision_mismatch')))
+            sleep.assert_not_called()
+
+    def test_retries_are_explicitly_bounded(self):
+        from soorin.services.artifacts import _bounded_attempts
+        with patch.dict('os.environ', {'SOORIN_HF_RETRIES': '99'}):
+            with self.assertRaisesRegex(ValueError, 'between 0 and 8'):
+                _bounded_attempts('metadata', lambda: None)
+
     def test_malformed_manifest_is_not_certified(self):
         with tempfile.TemporaryDirectory() as cache:
             root = snapshot_path(cache, *MODELS['ner'])
