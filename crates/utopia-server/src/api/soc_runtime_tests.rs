@@ -126,6 +126,26 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
         .header("content-type", "application/json").header("authorization", format!("Bearer {session}"))
         .body(Body::from(json!({"tenant_id":"tenant-blue","source_system":"edr","source_instance":"another-source"}).to_string()))?).await?;
     assert_eq!(response.status().as_u16(), 409);
+    let curated = json!({"profile":"agentic-soc.splunk-curated.v1", "record":{
+        "alert_row_id":"synthetic-preview", "event_time":"2026-11-01T10:00:00Z", "host":"host.example"}});
+    let preview_path = format!("/api/v1/sources/{source}/soc/preview");
+    assert_eq!(
+        call(app.clone(), preview_path.clone(), "wrong", curated.clone())
+            .await?
+            .0,
+        401
+    );
+    let (preview_status, preview) =
+        call(app.clone(), preview_path, "synthetic-only-token", curated).await?;
+    assert_eq!(preview_status, 200);
+    assert_eq!(preview["persistent_writes"], false);
+    assert_eq!(preview["canonical_event"]["tenant_id"], "tenant-blue");
+    let receipt_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM soorin_ingestion_receipts WHERE source_id=$1")
+            .bind(source)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(receipt_count, 0);
     let event = fixture();
     let path = format!("/api/v1/sources/{source}/knowledge-events");
     assert_eq!(
@@ -161,7 +181,30 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     }
     let id = receipt["receipt_id"].as_str().unwrap().parse()?;
     // No asynchronous graph yet: durable receipt remains submitted for retry.
-    assert!(soc_ingestion::process(&state, id).await.is_err());
+    // A competing owner is preserved, and contention does not consume retries.
+    let lease_owner = Uuid::now_v7();
+    sqlx::query("INSERT INTO soorin_ingestion_leases(source_id,owner,expires_at) VALUES($1,$2,now()+interval '2 minutes')")
+        .bind(source).bind(lease_owner).execute(&pool).await?;
+    let busy = soc_ingestion::process(&state, id).await.unwrap_err();
+    assert!(utopia_core::is_deferred(&busy).is_some());
+    let owner: Uuid =
+        sqlx::query_scalar("SELECT owner FROM soorin_ingestion_leases WHERE source_id=$1")
+            .bind(source)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(owner, lease_owner);
+    // Crash/cancellation recovery takes over an expired lease.
+    sqlx::query("UPDATE soorin_ingestion_leases SET expires_at=now()-interval '1 second' WHERE source_id=$1")
+        .bind(source).execute(&pool).await?;
+    let pending = soc_ingestion::process(&state, id).await.unwrap_err();
+    assert!(utopia_core::is_deferred(&pending).is_some());
+    let leased: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM soorin_ingestion_leases WHERE source_id=$1)",
+    )
+    .bind(source)
+    .fetch_one(&pool)
+    .await?;
+    assert!(!leased);
     let doc: Uuid = sqlx::query_scalar("SELECT id FROM documents WHERE source_id=$1")
         .bind(source)
         .fetch_one(&pool)

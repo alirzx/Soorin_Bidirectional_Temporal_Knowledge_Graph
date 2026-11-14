@@ -152,6 +152,14 @@ pub async fn phrases(pool: &PgPool, kb_id: Uuid) -> anyhow::Result<bool> {
         )
         .await?;
     }
+    // Existing bindings also apply to newly extracted statements. Coalesce only
+    // queued work: a running projection may already have read its snapshot.
+    utopia_store::jobs::enqueue_unless_queued(
+        pool,
+        utopia_store::phrase_bindings::MATERIALIZE_KIND,
+        serde_json::json!({"kb_id": kb_id}),
+    )
+    .await?;
     Ok(true)
 }
 
@@ -270,6 +278,20 @@ mod tests {
         utopia_store::materialize::materialize(&pool, kb).await?;
         let count:i64=sqlx::query_scalar("SELECT count(*) FROM facts WHERE kb_id=$1 AND predicate_id=$2 AND layer='typed' AND invalidated_at IS NULL").bind(kb).bind(relation).fetch_one(&pool).await?;
         assert_eq!(count, 1);
+        // A new extraction with the same signature must deliver projection work
+        // even though the reviewed phrase binding is unchanged.
+        sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
+            .bind(kb.to_string())
+            .execute(&pool)
+            .await?;
+        assert!(phrases(&pool, kb).await?);
+        let deliveries: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE payload->>'kb_id'=$1 AND kind='materialize_typed' AND status='queued'")
+            .bind(kb.to_string()).fetch_one(&pool).await?;
+        assert_eq!(deliveries, 1);
+        assert!(phrases(&pool, kb).await?);
+        let coalesced: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE payload->>'kb_id'=$1 AND kind='materialize_typed' AND status='queued'")
+            .bind(kb.to_string()).fetch_one(&pool).await?;
+        assert_eq!(coalesced, 1);
         sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
             .bind(kb.to_string())
             .execute(&pool)

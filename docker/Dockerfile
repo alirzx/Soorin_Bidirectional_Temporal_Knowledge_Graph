@@ -89,8 +89,9 @@ ENV APT_PRIMARY_DEBIAN_URL=${APT_PRIMARY_DEBIAN_URL} \
 COPY --from=apt-trust /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY docker/install-debian-packages.sh /usr/local/bin/install-debian-packages
 RUN test -s /etc/ssl/certs/ca-certificates.crt \
-    && sh /usr/local/bin/install-debian-packages ca-certificates curl poppler-utils poppler-data
+    && sh /usr/local/bin/install-debian-packages ca-certificates curl poppler-utils poppler-data python3
 WORKDIR /app
+COPY soorin/ /app/soorin/
 COPY --from=build /src/target/release/utopia-server /usr/local/bin/utopia-server
 COPY --from=web /src/dist /app/web-dist
 RUN groupadd --gid 65532 soorin && useradd --uid 65532 --gid 65532 --no-create-home soorin \

@@ -481,7 +481,11 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
     let owner = Uuid::now_v7();
     let acquired=sqlx::query("INSERT INTO soorin_ingestion_leases(source_id,owner,expires_at) VALUES($1,$2,now()+interval '2 minutes') ON CONFLICT(source_id) DO UPDATE SET owner=$2,expires_at=now()+interval '2 minutes' WHERE soorin_ingestion_leases.expires_at<now()")
         .bind(source_id).bind(owner).execute(&state.pool).await?;
-    anyhow::ensure!(acquired.rows_affected() == 1, "soc_source_busy_retry");
+    if acquired.rows_affected() != 1 {
+        sqlx::query("UPDATE soorin_ingestion_receipts SET failure_code='soc_source_busy_retry',updated_at=now() WHERE id=$1")
+            .bind(id).execute(&state.pool).await?;
+        return Err(wait_for_dependency("soc_source_busy_retry"));
+    }
     let status: String =
         sqlx::query_scalar("SELECT status FROM soorin_ingestion_receipts WHERE id=$1")
             .bind(id)
@@ -515,6 +519,13 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
     result
 }
 
+fn wait_for_dependency(code: &'static str) -> anyhow::Error {
+    anyhow::Error::new(utopia_core::Deferred::new(std::time::Duration::from_secs(
+        15,
+    )))
+    .context(code)
+}
+
 fn source_clock_advances(
     incoming: chrono::DateTime<chrono::Utc>,
     previous: Option<chrono::DateTime<chrono::Utc>>,
@@ -540,12 +551,31 @@ async fn process_locked(
             .bind(id).execute(&state.pool).await?;
         return Ok(());
     }
+    // Serialize revisions of one record in admission order. A submitted version
+    // must finish before its document is replaced. This also prevents a retry
+    // from quarantining itself against a newer, partially submitted version.
+    if status != "submitted" {
+        let predecessor: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM soorin_ingestion_receipts r
+             JOIN soorin_ingestion_receipts current ON current.id=$2
+             WHERE r.source_id=$1 AND r.source_key=current.source_key AND r.id<>$2
+               AND r.status IN ('pending','registered','submitted')
+               AND (r.status='submitted' OR (r.created_at,r.id)<(current.created_at,current.id)))",
+        )
+        .bind(source_id)
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await?;
+        if predecessor {
+            return Err(wait_for_dependency("soc_revision_predecessor_pending"));
+        }
+    }
     // Delivery order is not source order. Opaque revision IDs are identities,
     // not sortable clocks. Equal source clocks with changed content are ambiguous.
     let previous: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
         "SELECT (payload->>'observed_at')::timestamptz FROM soorin_ingestion_receipts
          WHERE source_id=$1 AND source_key=(SELECT source_key FROM soorin_ingestion_receipts WHERE id=$2)
-           AND id<>$2 AND status IN ('submitted','bound')
+           AND id<>$2 AND status='bound'
          ORDER BY (payload->>'observed_at')::timestamptz DESC LIMIT 1",
     ).bind(source_id).bind(id).fetch_optional(&state.pool).await?;
     let observed = chrono::DateTime::parse_from_rfc3339(field(event, "observed_at")?)?.to_utc();
@@ -672,15 +702,18 @@ async fn process_locked(
         }
     }
     if missing {
-        anyhow::bail!("soc_materialization_pending; receipt remains submitted for retry");
+        return Err(wait_for_dependency(
+            "soc_materialization_pending; identities pending",
+        ));
     }
     let payload = render(event)?;
     let key = format!("statements:{}", field(&payload, "external_id")?);
     let ready:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE source_id=$1 AND external_key=$2 AND deleted_at IS NULL AND status='ready' AND graph_status='done')").bind(source_id).bind(&key).fetch_one(&state.pool).await?;
-    anyhow::ensure!(
-        ready,
-        "soc_materialization_pending; receipt remains submitted for retry"
-    );
+    if !ready {
+        return Err(wait_for_dependency(
+            "soc_materialization_pending; document pending",
+        ));
+    }
     // Open graph completion alone does not prove reviewed SOC relations were
     // materialized. Human-rejected/unknown bindings are never auto-approved here.
     let ontology: Value = serde_json::from_str(include_str!(
@@ -713,7 +746,7 @@ async fn process_locked(
              JOIN documents d ON d.id=fe.document_id
              WHERE f.kb_id=$1 AND f.invalidated_at IS NULL AND p.key=$2
                AND s.canonical_name=$3 AND o.canonical_name=$4
-               AND d.source_id=$5 AND d.external_key=$6 AND d.deleted_at IS NULL)",
+               AND d.source_id=$5 AND d.external_key=$6 AND d.deleted_at IS NULL AND fe.doc_version=(SELECT COALESCE(MAX(version),1) FROM document_versions WHERE document_id=d.id))",
         )
         .bind(kb)
         .bind(kind["key"].as_str().unwrap())
@@ -723,10 +756,11 @@ async fn process_locked(
         .bind(&key)
         .fetch_one(&state.pool)
         .await?;
-        anyhow::ensure!(
-            typed,
-            "soc_materialization_pending; reviewed SOC relation not materialized"
-        );
+        if !typed {
+            return Err(wait_for_dependency(
+                "soc_materialization_pending; reviewed SOC relation not materialized",
+            ));
+        }
     }
     sqlx::query("UPDATE soorin_ingestion_receipts SET status='bound',failure_code=NULL,updated_at=now() WHERE id=$1")
         .bind(id)
@@ -746,6 +780,89 @@ pub async fn receipts(
     let counts:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('status',status,'count',count(*)) FROM soorin_ingestion_receipts WHERE kb_id=$1 GROUP BY status ORDER BY status").bind(kb).fetch_all(&state.pool).await?;
     Ok(Json(
         json!({"schema_version":"soorin.ingestion-status.v1","counts":counts,"receipts":rows,"limit":100}),
+    ))
+}
+
+/// A bounded, payload-free explanation of one receipt's graph dependencies.
+pub async fn diagnostics(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb, id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<Value>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb, Role::Admin).await?;
+    let (source, event, status, failure): (Uuid, Value, String, Option<String>) = sqlx::query_as(
+        "SELECT source_id,payload,status,failure_code FROM soorin_ingestion_receipts WHERE kb_id=$1 AND id=$2"
+    ).bind(kb).bind(id).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
+    let rendered = render(&event)?;
+    let key = format!("statements:{}", field(&rendered, "external_id")?);
+    let document: Option<Value> = sqlx::query_scalar(
+        "SELECT jsonb_build_object('document_id',id,'status',status,'graph_status',graph_status)
+         FROM documents WHERE kb_id=$1 AND source_id=$2 AND external_key=$3 AND deleted_at IS NULL",
+    )
+    .bind(kb)
+    .bind(source)
+    .bind(&key)
+    .fetch_optional(&state.pool)
+    .await?;
+    let jobs: Vec<Value> = sqlx::query_scalar(
+        "SELECT jsonb_build_object('job_id',id,'kind',kind,'status',status,'attempts',attempts,
+          'max_attempts',max_attempts,'run_at',run_at,'updated_at',updated_at,
+          'deferred_since',payload->'deferred_since') FROM jobs
+         WHERE payload->>'receipt_id'=$1 OR (payload->>'kb_id'=$2 AND kind IN ('align_types','align_phrases','materialize_typed'))
+         OR payload->>'document_id'=$3 ORDER BY id DESC LIMIT 30"
+    ).bind(id.to_string()).bind(kb.to_string())
+        .bind(document.as_ref().and_then(|d| d["document_id"].as_str()))
+        .fetch_all(&state.pool).await?;
+    let ontology: Value = serde_json::from_str(include_str!(
+        "../../../../soorin/ontology/soc_ontology_v1.yaml"
+    ))
+    .map_err(anyhow::Error::from)?;
+    let mut relations = Vec::new();
+    for relation in event["relations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(128)
+    {
+        let key = relation["relation_type"]
+            .as_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !ontology["relation_types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["key"] == key)
+        {
+            continue;
+        }
+        let phrase = key.replace('_', " ");
+        let detail: Value = sqlx::query_scalar(
+            "SELECT jsonb_build_object('subject_type',st.key,'object_type',ot.key,
+              'type_binding_status',CASE WHEN s.type_id IS NOT NULL AND o.type_id IS NOT NULL THEN 'bound' ELSE 'pending' END,
+              'phrase_binding_status',COALESCE(pb.status,'missing'),
+              'decided_by',pb.decided_by,
+              'evidence_link_status',EXISTS(SELECT 1 FROM facts f
+                JOIN relation_types rt ON rt.id=f.predicate_id JOIN fact_evidence fe ON fe.fact_id=f.id
+                WHERE f.subject_id=s.id AND f.object_id=o.id AND rt.key=$4 AND f.invalidated_at IS NULL
+                  AND fe.document_id=$6))
+             FROM (SELECT 1) singleton
+             LEFT JOIN entities s ON s.kb_id=$1 AND s.canonical_name=$2 AND s.merged_into IS NULL
+             LEFT JOIN entities o ON o.kb_id=$1 AND o.canonical_name=$3 AND o.merged_into IS NULL
+             LEFT JOIN entity_types st ON st.id=s.type_id LEFT JOIN entity_types ot ON ot.id=o.type_id
+             LEFT JOIN phrase_bindings pb ON pb.kb_id=$1 AND pb.phrase=$5
+                AND pb.subject_type_id=s.type_id AND pb.object_type_id=o.type_id AND NOT pb.object_is_value LIMIT 1"
+        ).bind(kb).bind(relation["subject_entity_id"].as_str()).bind(relation["object_entity_id"].as_str())
+            .bind(&key).bind(&phrase)
+            .bind(document.as_ref().and_then(|d| d["document_id"].as_str()).and_then(|v| v.parse::<Uuid>().ok()))
+            .fetch_one(&state.pool).await?;
+        relations
+            .push(json!({"expected_relation_key":key,"source_phrase":phrase,"binding":detail}));
+    }
+    Ok(Json(
+        json!({"schema_version":"soorin.receipt-diagnostics.v1","receipt_id":id,
+        "source_id":source,"status":status,"failure_code":failure,"document":document,
+        "relations":relations,"jobs":jobs,"job_limit":30,"relation_limit":128}),
     ))
 }
 

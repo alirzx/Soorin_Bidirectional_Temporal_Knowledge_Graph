@@ -24,6 +24,7 @@ mod rule_expression_input;
 pub(crate) mod rule_routes;
 mod search_routes;
 mod settings_routes;
+mod soc_curated;
 mod soc_event_validation;
 pub(crate) mod soc_ingestion;
 mod soc_knowledge;
@@ -119,9 +120,15 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/sources/{id}/knowledge-events",
             post(soc_ingestion::ingest),
         )
+        .route("/sources/{id}/soc/preview", post(soc_curated::preview))
+        .route("/sources/{id}/soc/ingest", post(soc_curated::ingest))
         .route("/kbs/{id}/knowledge/context", post(soc_knowledge::context))
         .route("/kbs/{id}/knowledge/resolve", post(soc_knowledge::resolve))
         .route("/kbs/{id}/knowledge/receipts", get(soc_ingestion::receipts))
+        .route(
+            "/kbs/{id}/knowledge/receipts/{receipt}",
+            get(soc_ingestion::diagnostics),
+        )
         .route(
             "/kbs/{id}/knowledge/receipts/{receipt}/retry",
             post(soc_ingestion::retry),
