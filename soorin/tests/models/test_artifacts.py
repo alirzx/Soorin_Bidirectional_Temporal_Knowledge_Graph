@@ -62,7 +62,6 @@ class ArtifactTests(unittest.TestCase):
     def test_transient_transfer_retry_reuses_pinned_cache(self):
         from soorin.services.artifacts import download
         from types import SimpleNamespace
-        from requests.exceptions import ReadTimeout
         with tempfile.TemporaryDirectory() as cache:
             model, revision = MODELS['ner']
             root = snapshot_path(cache, model, revision)
@@ -75,7 +74,7 @@ class ArtifactTests(unittest.TestCase):
             def flaky_snapshot(*args, **kwargs):
                 calls.append(kwargs)
                 if len(calls) == 1:
-                    raise ReadTimeout('synthetic CDN timeout')
+                    raise TimeoutError('synthetic CDN timeout')
                 return str(root)
             hub = SimpleNamespace(HfApi=lambda: SimpleNamespace(
                 model_info=lambda *a, **kw: SimpleNamespace(sha=revision, siblings=rows)),
