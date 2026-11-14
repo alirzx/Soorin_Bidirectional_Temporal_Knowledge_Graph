@@ -73,7 +73,7 @@ def main():
             key=os.environ.get('DEEPSEEK_API_KEY','')
             if not key:parser.error('DEEPSEEK_API_KEY is required for --chat')
             body.update(chat_base_url='https://api.deepseek.com',chat_model=os.environ.get('DEEPSEEK_MODEL','deepseek-flash'),chat_reasoning_effort='none',chat_api_key=key)
-        if args.embedding:body.update(embed_base_url='http://embedding:8080/v1',embed_model='@'.join(MODELS['embedding']),embed_dim=1024)
+        if args.embedding:body.update(embed_base_url='http://models:8080/v1',embed_model='@'.join(MODELS['embedding']),embed_dim=1024)
         _request_json(base,path,token=token,method='PUT',body=body)
     if args.reranker:
         _request_json(base,path+'/reranker',token=token,method='PUT',body={'enabled':True,'base_url':'http://reranker:8080','model':'@'.join(MODELS['reranker']),'fallback':False})
