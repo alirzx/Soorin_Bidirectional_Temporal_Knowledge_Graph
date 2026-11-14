@@ -37,6 +37,16 @@ jobs:
         run: python -m pip install -r soorin/requirements-test.txt
       - name: Validate offline mirror installer syntax
         run: sh -n docker/install-debian-packages.sh
+      - name: Validate unified QA and production model Compose
+        run: |
+          docker compose --env-file soorin/config/qa.env.example \
+            -p soorin-tkg-v1-qa \
+            -f docker-compose.soorin-dev.yml -f docker-compose.models.yml \
+            --profile models config --quiet
+          docker compose --env-file soorin/config/production.env.example \
+            -p soorin-production \
+            -f docker-compose.production.yml -f docker-compose.models-production.yml \
+            --profile models config --quiet
       - name: Compile Python sources
         run: python -m compileall -q soorin
       - name: Python foundation and synthetic fixtures
