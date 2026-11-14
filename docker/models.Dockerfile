@@ -25,6 +25,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && python -m pip check \
     && python -c "import torch; assert torch.__version__ == '2.6.0+cpu', torch.__version__; assert torch.version.cuda is None, 'CUDA build prohibited'"
 COPY soorin /app/soorin
-ENV HF_HOME=/models HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 SOORIN_MODEL_THREADS=2
+# Download-only invocations override HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE to 0.
+# Increase idle CDN read timeouts; retries remain bounded in artifacts.py.
+# Serving stays offline and does not contact remote storage.
+ENV HF_HOME=/models HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_DOWNLOAD_TIMEOUT=120 HF_HUB_ETAG_TIMEOUT=30 \
+    SOORIN_HF_RETRIES=3 SOORIN_MODEL_THREADS=2
 USER 65532:65532
 ENTRYPOINT ["python", "-m", "soorin.services.cpu_models"]
