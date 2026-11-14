@@ -52,12 +52,34 @@ def smoke(role, base, *, request=None):
     return {'status':'PASS','synthetic':True,'role':role,'model':expected,'elapsed_seconds':time.perf_counter()-started,**result}
 
 
+def chat_settings(current, *, base_url=None, model=None, key_env='DEEPSEEK_API_KEY', reasoning=None, timeout=None):
+    from soorin.models.configuration import ChatConfig
+    base_url = base_url or os.environ.get('SOORIN_CHAT_BASE_URL') or current.get('chat_base_url')
+    model = model or os.environ.get('SOORIN_CHAT_MODEL') or os.environ.get('DEEPSEEK_MODEL') or current.get('chat_model')
+    key = os.environ.get(key_env, '')
+    if not key and not current.get('has_chat_key'):
+        raise ValueError('configured credential or selected credential environment variable required')
+    reasoning = reasoning if reasoning is not None else current.get('chat_reasoning_effort')
+    timeout = timeout if timeout is not None else current.get('chat_timeout_seconds', 300)
+    if type(timeout) is not int or not 1 <= timeout <= 3600:
+        raise ValueError('chat timeout must be 1..3600 seconds')
+    ChatConfig(enabled=True, base_url=base_url, model=model, reasoning_effort=reasoning).validate()
+    result = dict(chat_base_url=base_url, chat_model=model, chat_timeout_seconds=timeout)
+    if reasoning is not None: result['chat_reasoning_effort'] = reasoning
+    if key: result['chat_api_key'] = key
+    return result
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     sub=parser.add_subparsers(dest='command',required=True)
     probe=sub.add_parser('smoke');probe.add_argument('--role',choices=MODELS,required=True);probe.add_argument('--base-url',required=True)
     config=sub.add_parser('configure');config.add_argument('--workspace',required=True);config.add_argument('--base-url',default='http://127.0.0.1:2516');config.add_argument('--qa-project');config.add_argument('--approved-port',type=int)
     for role in ('chat','embedding','reranker'):config.add_argument('--'+role,action='store_true')
+    config.add_argument('--chat-base-url');config.add_argument('--chat-model')
+    config.add_argument('--chat-key-env',default='DEEPSEEK_API_KEY')
+    config.add_argument('--chat-reasoning-effort',choices=['none','minimal','low','medium','high'])
+    config.add_argument('--chat-timeout-seconds',type=int)
     args=parser.parse_args()
     if args.command=='smoke':print(json.dumps(smoke(args.role,args.base_url)));return
     base=select_isolated_api(args.base_url, qa_project=args.qa_project, approved_port=args.approved_port);uuid.UUID(args.workspace)
@@ -67,12 +89,13 @@ def main():
     path=f'/api/v1/workspaces/{args.workspace}/settings'
     if args.chat or args.embedding:
         current=_request_json(base,path,token=token)
-        fields=('chat_base_url','chat_model','chat_reasoning_effort','embed_base_url','embed_model','embed_dim')
+        fields=('chat_base_url','chat_model','chat_reasoning_effort','chat_timeout_seconds','embed_base_url','embed_model','embed_dim')
         body={k:current[k] for k in fields if k in current}
         if args.chat:
-            key=os.environ.get('DEEPSEEK_API_KEY','')
-            if not key:parser.error('DEEPSEEK_API_KEY is required for --chat')
-            body.update(chat_base_url='https://api.deepseek.com',chat_model=os.environ.get('DEEPSEEK_MODEL','deepseek-flash'),chat_reasoning_effort='none',chat_api_key=key)
+            try:
+                body.update(chat_settings(current,base_url=args.chat_base_url,model=args.chat_model,
+                    key_env=args.chat_key_env,reasoning=args.chat_reasoning_effort,timeout=args.chat_timeout_seconds))
+            except ValueError as error: parser.error(str(error))
         if args.embedding:body.update(embed_base_url='http://models:8080/v1',embed_model='@'.join(MODELS['embedding']),embed_dim=1024)
         _request_json(base,path,token=token,method='PUT',body=body)
     if args.reranker:

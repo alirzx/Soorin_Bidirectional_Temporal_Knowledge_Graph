@@ -25,6 +25,7 @@ pub async fn get(
             "chat_base_url": s.chat_base_url,
             "chat_model": s.chat_model,
             "chat_reasoning_effort": s.chat_reasoning_effort,
+            "chat_timeout_seconds": s.chat_timeout_seconds,
             "has_chat_key": s.chat_api_key.as_deref().is_some_and(|k| !k.is_empty()),
             "embed_base_url": s.embed_base_url,
             "embed_model": s.embed_model,
@@ -50,6 +51,7 @@ pub struct PutSettingsReq {
     pub chat_model: Option<String>,
     /// minimal | low | medium | high；空 = 不带字段，端点按默认。缺席 = 不改
     pub chat_reasoning_effort: Option<String>,
+    pub chat_timeout_seconds: Option<i32>,
     pub embed_base_url: Option<String>,
     pub embed_api_key: Option<String>,
     pub embed_model: Option<String>,
@@ -69,6 +71,28 @@ pub async fn put(
             .filter(|s| !s.is_empty())
             .map(String::from)
     };
+    if req
+        .chat_timeout_seconds
+        .is_some_and(|n| !(1..=3600).contains(&n))
+    {
+        return Err(utopia_core::AppError::invalid(
+            "bad_chat_timeout",
+            "chat timeout must be 1..3600 seconds",
+        )
+        .into());
+    }
+    if req.chat_reasoning_effort.as_deref().is_some_and(|e| {
+        !matches!(
+            e.trim(),
+            "" | "none" | "minimal" | "low" | "medium" | "high"
+        )
+    }) {
+        return Err(utopia_core::AppError::invalid(
+            "bad_reasoning_effort",
+            "unsupported reasoning effort",
+        )
+        .into());
+    }
     utopia_store::settings::upsert(
         &state.pool,
         workspace_id,
@@ -81,6 +105,10 @@ pub async fn put(
         req.embed_dim,
     )
     .await?;
+    if let Some(seconds) = req.chat_timeout_seconds {
+        sqlx::query("UPDATE llm_settings SET chat_timeout_seconds=$2,updated_at=now() WHERE workspace_id=$1")
+            .bind(workspace_id).bind(seconds).execute(&state.pool).await?;
+    }
     if let Some(effort) = &req.chat_reasoning_effort {
         let effort = nonempty(&Some(effort.clone()));
         if let Some(e) = effort.as_deref() {

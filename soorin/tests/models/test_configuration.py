@@ -11,6 +11,20 @@ from soorin.models.openai_compatible import ProviderError, _http_json
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_native_chat_configuration_is_explicit_and_preserves_key(self):
+        from soorin.ops.models import chat_settings
+        current = {'chat_base_url':'https://provider.example/v1', 'chat_model':'deployment-model',
+                   'has_chat_key':True, 'chat_reasoning_effort':'low', 'chat_timeout_seconds':120}
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertEqual(chat_settings(current), {k:v for k,v in current.items() if k != 'has_chat_key'})
+            with self.assertRaises(ValueError): chat_settings({})
+            with self.assertRaises(ValueError): chat_settings(current, timeout=0)
+        with patch.dict('os.environ', {'ARVAN_TEST_KEY':'synthetic-only'}, clear=True):
+            result = chat_settings(current, key_env='ARVAN_TEST_KEY', model='configured-model', timeout=60)
+            self.assertEqual(result['chat_model'], 'configured-model')
+            self.assertEqual(result['chat_api_key'], 'synthetic-only')
+            self.assertEqual(result['chat_timeout_seconds'], 60)
+
     def test_disabled_defaults_start_without_models(self):
         config = SoorinModelConfig.from_env({})
         self.assertFalse(config.chat.enabled)

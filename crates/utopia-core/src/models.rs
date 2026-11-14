@@ -478,6 +478,7 @@ pub struct LlmSettings {
     /// high；空 = 不带字段。**每一种调用都用它**：抽取、对齐、提规则、本体代理、勘误——没有哪一步
     /// 另外定一个。哪个值把思考关掉看端点：有的认 minimal，有的（DeepSeek）只认 none
     pub chat_reasoning_effort: Option<String>,
+    pub chat_timeout_seconds: i32,
 }
 
 impl LlmSettings {

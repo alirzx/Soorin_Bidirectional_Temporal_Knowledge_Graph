@@ -14,10 +14,12 @@ pub fn chat_client(s: &LlmSettings) -> Option<LlmClient> {
         return None;
     }
     Some(
-        LlmClient::new(
+        LlmClient::with_timeouts(
             s.chat_base_url.as_deref()?,
             s.chat_api_key.as_deref(),
             s.chat_model.as_deref()?,
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(s.chat_timeout_seconds.clamp(1, 3600) as u64),
         )
         .with_reasoning_effort(s.chat_reasoning_effort.clone())
         .with_gateway_from_env(&s.workspace_id.to_string()),
@@ -30,6 +32,7 @@ type ChatConfig = (
     Option<String>,
     Option<String>,
     Option<String>,
+    i32,
 );
 
 /// 各工作区的对话客户端，跨轮次留着。
@@ -54,6 +57,7 @@ impl ConversationClients {
             s.chat_api_key.clone(),
             s.chat_model.clone(),
             s.chat_reasoning_effort.clone(),
+            s.chat_timeout_seconds,
         );
         if let Some((previous, client)) = clients.get(&workspace) {
             if previous == &config {
@@ -123,6 +127,7 @@ mod cache_tests {
             chat_api_key: None,
             chat_model: None,
             chat_reasoning_effort: None,
+            chat_timeout_seconds: 300,
             ocr_base_url: None,
             ocr_api_key: None,
             ocr_backend: None,
