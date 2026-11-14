@@ -8,8 +8,14 @@ WORKDIR /app
 COPY soorin/services/requirements.txt /app/requirements.txt
 # Keep Torch explicitly CPU-only. Do not permit ordinary PyPI mirrors to
 # silently replace the pinned CPU wheel.
+# The PyTorch CPU wheel index is used ONLY for the pinned CPU wheel.
+# --no-deps is required: its transitive requirements otherwise resolve through
+# files.pythonhosted.org, which is unreachable on some regional Docker networks.
+# The following full requirements install resolves *all* missing dependencies
+# from Liara, falling back to Chabokan, without replacing the installed CPU wheel.
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m pip install --timeout 120 --retries 3 \
+    python -m pip install --no-deps --timeout 120 --retries 3 \
       --index-url "${TORCH_CPU_INDEX_URL}" 'torch==2.6.0+cpu'
 RUN --mount=type=cache,target=/root/.cache/pip \
     (python -m pip install --timeout 60 --retries 3 \
@@ -17,7 +23,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
      || python -m pip install --timeout 60 --retries 3 \
        --index-url "${PIP_FALLBACK_INDEX_URL}" -r /app/requirements.txt) \
     && python -m pip check \
-    && python -c "import torch; assert torch.version.cuda is None, 'CUDA build prohibited'"
+    && python -c "import torch; assert torch.__version__ == '2.6.0+cpu', torch.__version__; assert torch.version.cuda is None, 'CUDA build prohibited'"
 COPY soorin /app/soorin
 ENV HF_HOME=/models HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 SOORIN_MODEL_THREADS=2
 USER 65532:65532
