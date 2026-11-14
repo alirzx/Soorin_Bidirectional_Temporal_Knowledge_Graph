@@ -50,7 +50,9 @@ Supply UTOPIA_SESSION_TOKEN in the shell; never put credentials in Git or CLI
 arguments. The helper fetches existing nonsecret settings before updating them.
 
 ```bash
-python3 -m soorin.ops.models configure --base-url http://127.0.0.1:2526 --workspace "$UTOPIA_WORKSPACE_ID" --embedding --reranker
+python3 -m soorin.ops.models configure --base-url http://127.0.0.1:2526 \
+  --qa-project soorin-tkg-v1-qa --approved-port 2526 \
+  --workspace "$UTOPIA_WORKSPACE_ID" --embedding --reranker
 # Also supply DEEPSEEK_API_KEY securely, then:
 python3 -m soorin.ops.models configure --workspace "$UTOPIA_WORKSPACE_ID" --chat
 ```
