@@ -103,9 +103,10 @@ def initialize(role: str, cache: str) -> str:
     return download(role, cache)["cache"]
 
 
-def serve(engine: Engine, host: str, port: int) -> None:
+def serve(engine: Engine, host: str, port: int,
+          shared_gate: threading.BoundedSemaphore | None = None) -> None:
     engine.load()  # Missing weights fail at startup, never on a first real request.
-    gate = threading.BoundedSemaphore(1)
+    gate = shared_gate or threading.BoundedSemaphore(1)
     token = os.environ.get("SOORIN_MODEL_API_KEY", "")
 
     class Handler(BaseHTTPRequestHandler):
@@ -161,15 +162,47 @@ def serve(engine: Engine, host: str, port: int) -> None:
     server.serve_forever()
 
 
+def serve_all(cache_root: str, host: str) -> None:
+    """Serve all three pinned CPU models in one process on isolated role ports.
+
+    Load from three read-only caches before binding any port. Any missing or
+    incompatible snapshot prevents partial service readiness.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    ports = {"embedding": 8080, "reranker": 8081, "ner": 8082}
+    engines: dict[str, Engine] = {}
+    for role in ports:
+        from .artifacts import verify
+        cache = str(Path(cache_root) / role)
+        result = verify(role, cache, hashes=True)
+        if result["status"] != "PASS":
+            raise RuntimeError(f"{role}: artifact verification failed: {result['status']}")
+        engine = Engine(role, cache)
+        engine.load()
+        engines[role] = engine
+    # A common semaphore prevents simultaneous heavy inference on a CPU host.
+    gate = threading.BoundedSemaphore(1)
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="soorin-model") as pool:
+        futures = [
+            pool.submit(serve, engines[role], host, port, gate)
+            for role, port in ports.items()
+        ]
+        for future in futures:
+            future.result()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["init", "download", "verify-artifacts", "serve"])
-    parser.add_argument("--role", choices=list(MODELS), required=True)
+    parser.add_argument("command", choices=["init", "download", "verify-artifacts", "serve", "serve-all"])
+    parser.add_argument("--role", choices=list(MODELS), required=False)
     parser.add_argument("--cache", default=os.environ.get("HF_HOME", "/models"))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--hashes", action="store_true", help="Verify available SHA256 checksums without loading weights")
     args = parser.parse_args()
+    if args.command != "serve-all" and not args.role:
+        parser.error("--role is required except for serve-all")
     if args.command in {"init", "download", "verify-artifacts"}:
         from .artifacts import download, verify
         result = (verify(args.role, args.cache, hashes=args.hashes)
@@ -177,6 +210,8 @@ def main() -> None:
         print(json.dumps(result, indent=2))
         if result["status"] != "PASS":
             raise SystemExit(2)
+    elif args.command == "serve-all":
+        serve_all(args.cache, args.host)
     else:
         serve(Engine(args.role, args.cache), args.host, args.port)
 
