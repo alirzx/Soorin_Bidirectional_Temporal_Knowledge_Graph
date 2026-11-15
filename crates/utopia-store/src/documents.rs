@@ -1874,20 +1874,24 @@ pub async fn extract_epoch(pool: &PgPool, id: Uuid) -> AppResult<i32> {
 ///
 /// **一次全取**：这条只在启动发现索引落空时跑，那时候要的正是全部；
 /// 而它跑完之后就再也不跑了。
-pub async fn all_chunks_for_index(pool: &PgPool) -> AppResult<Vec<(Uuid, Uuid, Uuid, String)>> {
-    Ok(sqlx::query_as(
-        "SELECT kb_id, document_id, id, text FROM chunks
-          WHERE superseded_at IS NULL
-          ORDER BY document_id, seq",
-    )
-    .fetch_all(pool)
-    .await?)
+pub type IndexChunk = (Uuid, Uuid, Uuid, String);
+
+pub fn stream_chunks_for_index(pool: &PgPool) -> futures_util::stream::BoxStream<'_, Result<IndexChunk, sqlx::Error>> {
+    sqlx::query_as(
+        "SELECT c.kb_id,c.document_id,c.id,c.text FROM chunks c JOIN documents d ON d.id=c.document_id
+         WHERE c.superseded_at IS NULL AND d.deleted_at IS NULL AND d.purged_at IS NULL ORDER BY c.document_id,c.seq"
+    ).fetch(pool)
+}
+
+pub async fn all_chunks_for_index(pool: &PgPool) -> AppResult<Vec<IndexChunk>> {
+    use futures_util::TryStreamExt;
+    Ok(stream_chunks_for_index(pool).try_collect().await?)
 }
 
 /// 库里一共有多少条在用的分块。启动时拿它跟索引对账。
 pub async fn live_chunk_count(pool: &PgPool) -> AppResult<i64> {
     Ok(
-        sqlx::query_scalar("SELECT count(*) FROM chunks WHERE superseded_at IS NULL")
+        sqlx::query_scalar("SELECT count(*) FROM chunks c JOIN documents d ON d.id=c.document_id WHERE c.superseded_at IS NULL AND d.deleted_at IS NULL AND d.purged_at IS NULL")
             .fetch_one(pool)
             .await?,
     )

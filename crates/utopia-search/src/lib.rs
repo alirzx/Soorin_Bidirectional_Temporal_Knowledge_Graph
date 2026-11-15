@@ -110,6 +110,32 @@ impl SearchIndex {
         Ok(())
     }
 
+    /// Startup recovery only: clear derived postings, never PostgreSQL sources.
+    pub fn clear_for_recovery(&self) -> anyhow::Result<()> {
+        let mut writer = self.writer.lock().expect("writer lock poisoned");
+        writer.delete_all_documents()?;
+        writer.commit()?;
+        self.reader.reload()?;
+        Ok(())
+    }
+
+    /// Append a bounded recovery batch without replacing earlier chunks of the
+    /// same document. Call only before API/workers are started.
+    pub fn append_recovery_batch(&self, rows: &[(String, String, String, String)]) -> anyhow::Result<()> {
+        let mut writer = self.writer.lock().expect("writer lock poisoned");
+        for (kb, document, chunk, text) in rows {
+            let mut doc = TantivyDocument::default();
+            doc.add_text(self.f_kb_id, kb);
+            doc.add_text(self.f_document_id, document);
+            doc.add_text(self.f_chunk_id, chunk);
+            doc.add_text(self.f_text, text);
+            writer.add_document(doc)?;
+        }
+        writer.commit()?;
+        self.reader.reload()?;
+        Ok(())
+    }
+
     pub fn delete_document(&self, document_id: &str) -> anyhow::Result<()> {
         let mut writer = self.writer.lock().expect("writer 锁中毒");
         writer.delete_term(Term::from_field_text(self.f_document_id, document_id));
