@@ -6,21 +6,39 @@ use uuid::Uuid;
 
 #[tokio::test]
 async fn shared_soc_case_keeps_one_typed_entity_across_documents() -> anyhow::Result<()> {
-    let Some(url) = utopia_store::test_db::url() else { return Ok(()) };
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
     let pool = PgPool::connect(&url).await?;
     utopia_store::db::migrate(&pool).await?;
 
     let (org, ws, kb, kind) = (
-        Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
     );
     sqlx::query("INSERT INTO organizations(id,name) VALUES($1,'soc-canonical-test')")
-        .bind(org).execute(&pool).await?;
+        .bind(org)
+        .execute(&pool)
+        .await?;
     sqlx::query("INSERT INTO workspaces(id,org_id,name) VALUES($1,$2,'soc-canonical-test')")
-        .bind(ws).bind(org).execute(&pool).await?;
-    sqlx::query("INSERT INTO knowledge_bases(id,workspace_id,name) VALUES($1,$2,'soc-canonical-test')")
-        .bind(kb).bind(ws).execute(&pool).await?;
+        .bind(ws)
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_bases(id,workspace_id,name) VALUES($1,$2,'soc-canonical-test')",
+    )
+    .bind(kb)
+    .bind(ws)
+    .execute(&pool)
+    .await?;
     sqlx::query("INSERT INTO entity_types(id,kb_id,key,label) VALUES($1,$2,'soc_case','SOCCase')")
-        .bind(kind).bind(kb).execute(&pool).await?;
+        .bind(kind)
+        .bind(kb)
+        .execute(&pool)
+        .await?;
 
     let run = async {
         let key = "soorin:soccase:synthetic-shared-case";
@@ -51,7 +69,10 @@ async fn shared_soc_case_keeps_one_typed_entity_across_documents() -> anyhow::Re
         anyhow::ensure!(ambiguous.is_err(),"ambiguous old identity should require human review");
         Ok::<_,anyhow::Error>(())
     }.await;
-    sqlx::query("DELETE FROM organizations WHERE id=$1").bind(org).execute(&pool).await?;
+    sqlx::query("DELETE FROM organizations WHERE id=$1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
     pool.close().await;
     run
 }
