@@ -11,6 +11,7 @@ import time
 from typing import Any, Mapping, Sequence
 
 from soorin.contracts import KnowledgeContext, KnowledgeQuery
+from soorin.contracts.knowledge_event_v1 import normalize_timestamp
 from .reranker import Candidate, rerank_with_fallback
 
 
@@ -28,6 +29,10 @@ class SearchDocument:
     invalidated_at: str | None = None
     typed_identifiers: tuple[tuple[str, str], ...] = ()
     embedding: tuple[float, ...] | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ('valid_from','valid_to','recorded_at','invalidated_at'):
+            object.__setattr__(self,field_name,normalize_timestamp(getattr(self,field_name),field_name))
 
 
 @dataclass(slots=True)
@@ -141,6 +146,8 @@ class RetrievalFoundation:
                 return False
             if document.valid_to and query.valid_at >= document.valid_to:
                 return False
+        if query.known_as_of is None and document.invalidated_at is not None:
+            return False
         if query.known_as_of:
             if document.recorded_at and document.recorded_at > query.known_as_of:
                 return False

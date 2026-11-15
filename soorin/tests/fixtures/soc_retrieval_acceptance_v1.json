@@ -1,0 +1,22 @@
+{
+  "schema_version": "soorin.synthetic-retrieval-acceptance.v1",
+  "synthetic": true,
+  "purpose": "Offline contract fixtures; fake vectors do not measure BGE relevance",
+  "documents": [
+    {"document_id":"login-en","tenant_id":"tenant-blue","text":"Synthetic password spray authentication failures","identifiers":["SOC-LOGIN-001"],"evidence_references":["synthetic:e-login"]},
+    {"document_id":"login-fa","tenant_id":"tenant-blue","text":"گزارش آزمایشی تلاش ورود ناموفق حساب کاربری","identifiers":["SOC-LOGIN-FA"],"evidence_references":["synthetic:e-fa"]},
+    {"document_id":"private-red","tenant_id":"tenant-red","text":"Synthetic password spray authentication failures","identifiers":["SECRET-RED"],"evidence_references":["synthetic:e-red"]},
+    {"document_id":"revision-old","tenant_id":"tenant-blue","text":"Synthetic case open","identifiers":["SOC-CASE-001"],"evidence_references":["synthetic:e-old"],"valid_from":"2026-01-01T00:00:00Z","recorded_at":"2026-01-02T00:00:00Z","invalidated_at":"2026-03-01T00:00:00Z"},
+    {"document_id":"revision-corrected","tenant_id":"tenant-blue","text":"Synthetic case corrected","identifiers":["SOC-CASE-001"],"evidence_references":["synthetic:e-corrected"],"valid_from":"2026-02-01T00:00:00Z","recorded_at":"2026-03-01T00:00:00Z"}
+  ],
+  "queries": [
+    {"name":"exact_identity","query":{"tenant_id":"tenant-blue","text":"","exact_identifiers":["SOC-LOGIN-001"]},"expected":["login-en"]},
+    {"name":"english_lexical","query":{"tenant_id":"tenant-blue","text":"password spray"},"expected":["login-en"]},
+    {"name":"persian_lexical","query":{"tenant_id":"tenant-blue","text":"ورود ناموفق"},"expected":["login-fa"]},
+    {"name":"no_result","query":{"tenant_id":"tenant-blue","text":"","exact_identifiers":["MISSING"]},"expected":[]},
+    {"name":"cross_tenant_id","query":{"tenant_id":"tenant-blue","text":"","exact_identifiers":["SECRET-RED"]},"expected":[]},
+    {"name":"historical_knowledge","query":{"tenant_id":"tenant-blue","text":"","exact_identifiers":["SOC-CASE-001"],"known_as_of":"2026-02-15T00:00:00Z"},"expected":["revision-old"]},
+    {"name":"current_correction","query":{"tenant_id":"tenant-blue","text":"","exact_identifiers":["SOC-CASE-001"]},"expected":["revision-corrected"]},
+    {"name":"world_before_case","query":{"tenant_id":"tenant-blue","text":"","exact_identifiers":["SOC-CASE-001"],"valid_at":"2025-12-31T00:00:00Z"},"expected":[]}
+  ]
+}
