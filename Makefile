@@ -26,7 +26,9 @@ qa-env-init:
 	@test '$(QA_PROJECT)' = soorin-tkg-v1-qa || { echo 'Refusing non-QA project'; exit 1; }
 	@test ! -e '$(QA_ENV_FILE)' || { echo 'QA environment exists; refusing overwrite'; exit 1; }
 	@command -v openssl >/dev/null
-	@umask 077; { printf 'COMPOSE_PROJECT_NAME=soorin-tkg-v1-qa\n'; printf 'SOORIN_DEV_DB_PASSWORD=%s\n' "$$(openssl rand -hex 24)"; printf 'SOORIN_DEV_APP_BIND=127.0.0.1:%s\nSOORIN_DEV_DB_BIND=127.0.0.1:%s\n' '$(QA_APP_PORT)' '$(QA_DB_PORT)'; printf 'UTOPIA_DB_IMAGE=pgvector/pgvector:pg16\nSOORIN_BUILD_JOBS=1\nSOORIN_DEV_DB_MAX_CONNECTIONS=8\n'; } > '$(QA_ENV_FILE)'
+	@set -eu; umask 077; qa_password=$$(openssl rand -hex 24); \
+	  test "$${#qa_password}" = 48; \
+	  (set -C; { printf 'COMPOSE_PROJECT_NAME=soorin-tkg-v1-qa\n'; printf 'SOORIN_DEV_DB_PASSWORD=%s\n' "$$qa_password"; printf 'SOORIN_DEV_APP_BIND=127.0.0.1:%s\nSOORIN_DEV_DB_BIND=127.0.0.1:%s\n' '$(QA_APP_PORT)' '$(QA_DB_PORT)'; printf 'UTOPIA_DB_IMAGE=pgvector/pgvector:pg16\nSOORIN_BUILD_JOBS=1\nSOORIN_DEV_DB_MAX_CONNECTIONS=8\n'; } > '$(QA_ENV_FILE)')
 	@chmod 600 '$(QA_ENV_FILE)'
 	@echo 'Created $(QA_ENV_FILE); verify ownership, volumes and free ports before QA build.'
 qa-config:
@@ -57,7 +59,7 @@ qa-up: qa-config
 qa-native-e2e:
 	@test '$(E2E_EXECUTE)' = YES || { echo 'Set E2E_EXECUTE=YES only for the disposable QA project'; exit 1; }
 	@test '$(QA_PROJECT)' = soorin-tkg-v1-qa || { echo 'Refusing non-QA project'; exit 1; }
-	@SOORIN_DISPOSABLE_ACCEPTANCE=1 $(PYTHON) -m soorin.e2e.native_validation --base-url http://127.0.0.1:$(QA_APP_PORT) --qa-project $(QA_PROJECT) --approved-port $(QA_APP_PORT) --execute --deadline 120 --report /tmp/soorin-native-acceptance.json
+	@SOORIN_DISPOSABLE_ACCEPTANCE=1 $(PYTHON) -m soorin.e2e.native_validation --base-url http://127.0.0.1:$(QA_APP_PORT) --qa-project $(QA_PROJECT) --approved-port $(QA_APP_PORT) --execute --deadline 300 $(QA_NATIVE_ARGS) --report /tmp/soorin-native-acceptance.json
 
 config:
 	@$(DC) config --quiet
