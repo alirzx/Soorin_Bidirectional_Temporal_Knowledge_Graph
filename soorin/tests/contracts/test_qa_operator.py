@@ -93,6 +93,7 @@ class QaOperatorTests(unittest.TestCase):
                     'expected_type':e.entity_type,'type_matches':True,'authority_linked':True} for e in event.entities],
                 'relations':[{'expected_relation_key':r.relation_type.lower(),'binding':{
                     'subject_canonical_key':r.subject_entity_id,'object_canonical_key':r.object_entity_id,
+                    'subject_entity_id':identities[r.subject_entity_id],'object_entity_id':identities[r.object_entity_id],
                     'type_binding_status':'bound','phrase_binding_status':'bound','binding_relation_key':r.relation_type.lower(),
                     'direction':'forward','evidence_link_status':True,'document_id':doc,'document_version':1}}
                     for r in event.relations]}
@@ -114,6 +115,11 @@ class QaOperatorTests(unittest.TestCase):
             qa_existing_kb.accept_batch('token','kb','source',rows,tracked,request=unrelated)
         case=next(e for e in diagnostics['receipt-6']['entities'] if e['expected_type']=='SOCCase')
         case['entity_id']=str(uuid.uuid4())
+        for relation in diagnostics['receipt-6']['relations']:
+            binding=relation['binding']
+            for endpoint in ['subject','object']:
+                if binding[f'{endpoint}_canonical_key']==case['canonical_key']:
+                    binding[f'{endpoint}_entity_id']=case['entity_id']
         with self.assertRaisesRegex(ValueError,'shared_canonical_identity_split'):
             qa_existing_kb.accept_batch('token','kb','source',rows,tracked,request=request)
         diagnostics['receipt-0']['status']='submitted'

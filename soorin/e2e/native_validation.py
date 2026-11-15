@@ -51,6 +51,7 @@ def assert_receipt_graph(event, diagnostics, *, source_id=None):
             raise AssertionError('entity_type_or_authority_missing')
         uuid.UUID(entity['entity_id'])
     expected = sorted((r.relation_type.lower(), r.subject_entity_id, r.object_entity_id) for r in event.relations)
+    graph_ids = {entity['canonical_key']:entity['entity_id'] for entity in actual_entities}
     actual = diagnostics.get('relations', [])
     observed = sorted((r['expected_relation_key'],r['binding'].get('subject_canonical_key'),
                        r['binding'].get('object_canonical_key')) for r in actual)
@@ -58,6 +59,9 @@ def assert_receipt_graph(event, diagnostics, *, source_id=None):
         raise AssertionError('expected_relation_set_mismatch')
     for relation in actual:
         binding = relation['binding']
+        if (binding.get('subject_entity_id') != graph_ids[binding['subject_canonical_key']] or
+            binding.get('object_entity_id') != graph_ids[binding['object_canonical_key']]):
+            raise AssertionError('graph_edge_endpoint_mismatch')
         if (binding.get('type_binding_status') != 'bound' or
             binding.get('phrase_binding_status') != 'bound' or
             binding.get('binding_relation_key') != relation['expected_relation_key'] or

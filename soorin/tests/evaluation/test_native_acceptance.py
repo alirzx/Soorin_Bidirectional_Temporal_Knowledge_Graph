@@ -6,13 +6,15 @@ from soorin.e2e.native_validation import acceptance_events, assert_receipt_graph
 class NativeAcceptanceTests(unittest.TestCase):
     def fixture(self):
         event = acceptance_events()[0][1]
+        graph_ids = {e.entity_id:str(uuid.uuid4()) for e in event.entities}
         document = {'document_id':str(uuid.uuid4()),'document_version':2,'status':'ready','graph_status':'done'}
         diagnostic = {'status':'bound', 'source_id':'synthetic-source', 'source_scope':{
             k:getattr(event,k) for k in ('tenant_id','source_system','source_instance')},'document':document,
-            'entities':[{'canonical_key':e.entity_id,'entity_id':str(uuid.uuid4()),'expected_type':e.entity_type,
+            'entities':[{'canonical_key':e.entity_id,'entity_id':graph_ids[e.entity_id],'expected_type':e.entity_type,
                 'type_matches':True,'authority_linked':True} for e in event.entities],
             'relations':[{'expected_relation_key':r.relation_type.lower(), 'binding':{
                 'subject_canonical_key':r.subject_entity_id,'object_canonical_key':r.object_entity_id,
+                'subject_entity_id':graph_ids[r.subject_entity_id],'object_entity_id':graph_ids[r.object_entity_id],
                 'document_id':document['document_id'],'document_version':2,
                 'binding_relation_key':r.relation_type.lower(),'direction':'forward',
                 'type_binding_status':'bound','phrase_binding_status':'bound','evidence_link_status':True}}
@@ -24,6 +26,8 @@ class NativeAcceptanceTests(unittest.TestCase):
         self.assertEqual(assert_receipt_graph(event, diagnostic,source_id='synthetic-source'), len(event.relations))
         for key,value,reason in [('evidence_link_status',False,'evidence_missing'),
             ('subject_canonical_key','unrelated','set_mismatch'),('object_canonical_key','unrelated','set_mismatch'),
+            ('subject_entity_id',str(uuid.uuid4()),'endpoint_mismatch'),
+            ('object_entity_id',str(uuid.uuid4()),'endpoint_mismatch'),
             ('document_version',1,'current_version'),('document_id','unrelated','current_version'),
             ('binding_relation_key','unrelated','evidence_missing')]:
             altered = deepcopy(diagnostic)
