@@ -48,3 +48,15 @@ class NativeAcceptanceTests(unittest.TestCase):
         diagnostic['entities'][0]['authority_linked'] = False
         with self.assertRaisesRegex(AssertionError,'authority_missing'):
             assert_receipt_graph(event,diagnostic)
+
+    def test_existing_session_creates_only_a_new_synthetic_workspace(self):
+        from soorin.e2e.native_validation import bootstrap_synthetic_workspace
+        calls = []
+        def request(base,path,**kwargs):
+            calls.append((path,kwargs))
+            return {'id':'synthetic-workspace'} if path.endswith('/workspaces') else {'user':{'id':'synthetic'}}
+        token,workspace=bootstrap_synthetic_workspace('http://127.0.0.1:2526',token='synthetic-session',request=request)
+        self.assertEqual(workspace,'synthetic-workspace')
+        self.assertEqual(token,'synthetic-session')
+        self.assertEqual([path for path,_ in calls],['/api/v1/auth/me','/api/v1/workspaces'])
+        self.assertNotIn('/api/v1/auth/register',[path for path,_ in calls])

@@ -66,6 +66,20 @@ def assert_receipt_graph(event, diagnostics, *, source_id=None):
     return len(actual)
 
 
+def bootstrap_synthetic_workspace(base, *, token='', request=_request_json):
+    if token:
+        # Validate the credential before creating anything, then isolate settings
+        # in a new workspace instead of modifying the operator's existing one.
+        request(base,'/api/v1/auth/me',token=token)
+        workspace=request(base,'/api/v1/workspaces',token=token,method='POST',
+            body={'name':'Synthetic SOC acceptance '+str(uuid.uuid4())[:8]})
+        return token,workspace['id']
+    registered=request(base,'/api/v1/auth/register',method='POST',body={
+        'email':f'{uuid.uuid4()}@synthetic.example','password':secrets.token_urlsafe(24),
+        'display_name':'Synthetic acceptance','org_name':'Disposable SOC acceptance'})
+    return registered['token'],registered['workspace']['id']
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true');p.add_argument('--base-url',default='http://127.0.0.1:2516');p.add_argument('--report',type=Path,required=True)
@@ -83,8 +97,7 @@ def main():
     if os.environ.get('SOORIN_DISPOSABLE_ACCEPTANCE')!='1':p.error('requires SOORIN_DISPOSABLE_ACCEPTANCE=1 in a private disposable runtime')
     try:
         verify_qa_target(base,args.qa_project)
-        registered=_request_json(base,'/api/v1/auth/register',method='POST',body={'email':f'{uuid.uuid4()}@synthetic.example','password':secrets.token_urlsafe(24),'display_name':'Synthetic acceptance','org_name':'Disposable SOC acceptance'})
-        token=registered['token'];workspace=registered['workspace']['id']
+        token,workspace=bootstrap_synthetic_workspace(base,token=os.environ.get('UTOPIA_SESSION_TOKEN',''))
         def api(path,body=None,method=None):return _request_json(base,path,token=token,body=body,method=method or ('POST' if body is not None else 'GET'))
         kb=api(f'/api/v1/workspaces/{workspace}/kbs',{'name':'Native SOC synthetic acceptance','visibility':'restricted'})['id']
         other=api(f'/api/v1/workspaces/{workspace}/kbs',{'name':'Other synthetic tenant','visibility':'restricted'})['id']
