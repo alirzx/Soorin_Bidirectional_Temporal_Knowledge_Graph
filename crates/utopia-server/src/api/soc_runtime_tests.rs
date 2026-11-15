@@ -609,7 +609,13 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     // Historical duplicate rows must be explicit conflicts in diagnostics,
     // never hidden behind LIMIT 1 or allowed to satisfy a typed edge by name.
     let latest = &events["events"][2];
-    let key = latest["entities"][0]["entity_id"].as_str().unwrap();
+    let alert = latest["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entity| entity["entity_type"] == "SecurityAlert")
+        .unwrap();
+    let key = alert["entity_id"].as_str().unwrap();
     sqlx::query("INSERT INTO entities(id,kb_id,canonical_name) VALUES($1,$2,$3)")
         .bind(Uuid::now_v7())
         .bind(kb)

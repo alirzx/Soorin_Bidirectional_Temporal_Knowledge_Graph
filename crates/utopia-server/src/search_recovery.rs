@@ -130,7 +130,22 @@ mod tests {
         let Some(url) = utopia_store::test_db::url() else {
             return Ok(());
         };
-        let pool = sqlx::PgPool::connect(&url).await?;
+        // Recovery intentionally reads every KB. Other workspace tests write
+        // concurrently, so a shared fixture DB cannot prove stable-count
+        // restart idempotency. Use a dedicated disposable database instead.
+        let admin = sqlx::PgPool::connect(&url).await?;
+        let database = format!("soorin_index_{}", Uuid::now_v7().simple());
+        sqlx::query(&format!("CREATE DATABASE {database}"))
+            .execute(&admin)
+            .await?;
+        let options = url
+            .parse::<sqlx::postgres::PgConnectOptions>()?
+            .database(&database);
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await?;
+        utopia_store::db::migrate(&pool).await?;
         let (org, ws, kb, doc, deleted, chunk, old) = (
             Uuid::now_v7(),
             Uuid::now_v7(),
@@ -185,9 +200,9 @@ mod tests {
             Ok(())
         }
         .await;
-        sqlx::query("DELETE FROM organizations WHERE id=$1")
-            .bind(org)
-            .execute(&pool)
+        pool.close().await;
+        sqlx::query(&format!("DROP DATABASE {database}"))
+            .execute(&admin)
             .await?;
         result
     }
