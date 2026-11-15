@@ -1,0 +1,293 @@
+{
+  "schema_version": "soorin.synthetic-materialization.v1",
+  "events": [
+    {
+      "schema_version": "soorin.soc.knowledge-event.v1",
+      "tenant_id": "tenant-blue",
+      "source_system": "splunk",
+      "source_instance": "splunk-e2e",
+      "source_record_id": "synthetic-A",
+      "event_id": "splunk:tenant-blue:splunk-e2e:SecurityAlert:synthetic-A",
+      "event_type": "security_alert",
+      "event_time": "2026-11-01T09:00:00.000000Z",
+      "observed_at": "2026-11-01T10:00:00.000000Z",
+      "recorded_at": "2026-11-01T13:00:00.000000Z",
+      "processed_at": "2026-11-01T13:00:00.000000Z",
+      "source_references": [
+        "synthetic-A"
+      ],
+      "entities": [
+        {
+          "entity_id": "soorin:host:5b693e6ed3fa71b7c1b46cb983256b454801b1be2e6bbc1b09ce86baf69049cc",
+          "entity_type": "Host",
+          "normalized_value": "one.synthetic.example",
+          "source_identifiers": {},
+          "aliases": [],
+          "provisional": true,
+          "attributes": {
+            "source_field": "hostname",
+            "identity_status": "provisional"
+          }
+        },
+        {
+          "entity_id": "soorin:securityalert:9fbbcb55228af5c9d8072199bfe65715f2d34a3d2efe3a9bcc1eb1ec04224010",
+          "entity_type": "SecurityAlert",
+          "normalized_value": "synthetic-a",
+          "source_identifiers": {
+            "soc_alert_row_id": "synthetic-A"
+          },
+          "aliases": [],
+          "provisional": false,
+          "attributes": {
+            "identity_status": "resolved"
+          }
+        }
+      ],
+      "relations": [
+        {
+          "relation_id": "rel:96af2af37dde569f7f636f8d84c793cfe84e2b9b853f09b292f6c38254e65423",
+          "relation_type": "OBSERVED_ON",
+          "subject_entity_id": "soorin:securityalert:9fbbcb55228af5c9d8072199bfe65715f2d34a3d2efe3a9bcc1eb1ec04224010",
+          "object_entity_id": "soorin:host:5b693e6ed3fa71b7c1b46cb983256b454801b1be2e6bbc1b09ce86baf69049cc",
+          "confidence_category": "observed",
+          "valid_from": "2026-11-01T09:00:00.000000Z",
+          "evidence_ids": [
+            "splunk:synthetic-A"
+          ],
+          "attributes": {}
+        }
+      ],
+      "facts": [],
+      "evidence": [
+        {
+          "evidence_id": "splunk:synthetic-A",
+          "source_record_id": "synthetic-A",
+          "field_path": "raw_record",
+          "checksum": "20d64f6a86f3191b0b84d5d3a47a09742755d29c8eb1473ced1ce4faeccbf2f8",
+          "observed_at": "2026-11-01T10:00:00.000000Z",
+          "source_system": "splunk",
+          "source_instance": "splunk-e2e",
+          "source_event_ids": []
+        }
+      ],
+      "attributes": {
+        "verified_source_metadata": {
+          "tenant_id": "tenant-blue",
+          "source_system": "splunk",
+          "source_instance": "splunk-e2e",
+          "source_record_id": "synthetic-A",
+          "source_record_type": "SecurityAlert",
+          "identifiers": {
+            "soc_alert_id": "synthetic-A"
+          },
+          "event_time": "2026-11-01T09:00:00Z",
+          "alert_time": "2026-11-01T09:00:00Z",
+          "event_time_source": "unknown"
+        },
+        "reported_observations": {},
+        "analyst_assertions": {},
+        "retrieval_hints": {},
+        "semantic_caveats": {
+          "risk_score": "vendor accumulated risk; not a probability",
+          "rule_configuration": "current configuration may differ from fire-time configuration",
+          "investigation_hint": "retrieval guidance; not evidence"
+        }
+      },
+      "vendor_fields": {},
+      "content_checksum_version": "soorin.source-content.sha256.v3",
+      "content_checksum": "dd43a56529ca0b2586ff5e309f01b4a1e7b53eb51b6a166b06653b412c61067c"
+    },
+    {
+      "schema_version": "soorin.soc.knowledge-event.v1",
+      "tenant_id": "tenant-blue",
+      "source_system": "splunk",
+      "source_instance": "splunk-e2e",
+      "source_record_id": "synthetic-A",
+      "event_id": "splunk:tenant-blue:splunk-e2e:SecurityAlert:synthetic-A",
+      "event_type": "security_alert",
+      "event_time": "2026-11-01T09:00:00.000000Z",
+      "observed_at": "2026-11-01T11:00:00.000000Z",
+      "recorded_at": "2026-11-01T13:00:00.000000Z",
+      "processed_at": "2026-11-01T13:00:00.000000Z",
+      "source_references": [
+        "synthetic-A"
+      ],
+      "entities": [
+        {
+          "entity_id": "soorin:host:320f4b06e8b9a634072429275b9c35e031516a3796c54f93486ebb19422320b0",
+          "entity_type": "Host",
+          "normalized_value": "two.synthetic.example",
+          "source_identifiers": {},
+          "aliases": [],
+          "provisional": true,
+          "attributes": {
+            "source_field": "hostname",
+            "identity_status": "provisional"
+          }
+        },
+        {
+          "entity_id": "soorin:securityalert:9fbbcb55228af5c9d8072199bfe65715f2d34a3d2efe3a9bcc1eb1ec04224010",
+          "entity_type": "SecurityAlert",
+          "normalized_value": "synthetic-a",
+          "source_identifiers": {
+            "soc_alert_row_id": "synthetic-A"
+          },
+          "aliases": [],
+          "provisional": false,
+          "attributes": {
+            "identity_status": "resolved"
+          }
+        }
+      ],
+      "relations": [
+        {
+          "relation_id": "rel:78f587f416c36a46d461e9dc8e472c9c29f5e7e33550c38980502932db81e4d5",
+          "relation_type": "OBSERVED_ON",
+          "subject_entity_id": "soorin:securityalert:9fbbcb55228af5c9d8072199bfe65715f2d34a3d2efe3a9bcc1eb1ec04224010",
+          "object_entity_id": "soorin:host:320f4b06e8b9a634072429275b9c35e031516a3796c54f93486ebb19422320b0",
+          "confidence_category": "observed",
+          "valid_from": "2026-11-01T09:00:00.000000Z",
+          "evidence_ids": [
+            "splunk:synthetic-A"
+          ],
+          "attributes": {}
+        }
+      ],
+      "facts": [],
+      "evidence": [
+        {
+          "evidence_id": "splunk:synthetic-A",
+          "source_record_id": "synthetic-A",
+          "field_path": "raw_record",
+          "checksum": "3955b257cb61be2e93dc2b736b148b56721caed39eac13d53daa2efc733818dc",
+          "observed_at": "2026-11-01T11:00:00.000000Z",
+          "source_system": "splunk",
+          "source_instance": "splunk-e2e",
+          "source_event_ids": []
+        }
+      ],
+      "attributes": {
+        "verified_source_metadata": {
+          "tenant_id": "tenant-blue",
+          "source_system": "splunk",
+          "source_instance": "splunk-e2e",
+          "source_record_id": "synthetic-A",
+          "source_record_type": "SecurityAlert",
+          "identifiers": {
+            "soc_alert_id": "synthetic-A"
+          },
+          "event_time": "2026-11-01T09:00:00Z",
+          "alert_time": "2026-11-01T09:00:00Z",
+          "event_time_source": "unknown"
+        },
+        "reported_observations": {},
+        "analyst_assertions": {},
+        "retrieval_hints": {},
+        "semantic_caveats": {
+          "risk_score": "vendor accumulated risk; not a probability",
+          "rule_configuration": "current configuration may differ from fire-time configuration",
+          "investigation_hint": "retrieval guidance; not evidence"
+        }
+      },
+      "vendor_fields": {},
+      "content_checksum_version": "soorin.source-content.sha256.v3",
+      "content_checksum": "2e2786e97ad358db7cf3a589863b2b2a4d872a70f1e64abe99d1daf8a5ea32d3"
+    },
+    {
+      "schema_version": "soorin.soc.knowledge-event.v1",
+      "tenant_id": "tenant-blue",
+      "source_system": "splunk",
+      "source_instance": "splunk-e2e",
+      "source_record_id": "synthetic-B",
+      "event_id": "splunk:tenant-blue:splunk-e2e:SecurityAlert:synthetic-B",
+      "event_type": "security_alert",
+      "event_time": "2026-11-01T09:00:00.000000Z",
+      "observed_at": "2026-11-01T12:00:00.000000Z",
+      "recorded_at": "2026-11-01T13:00:00.000000Z",
+      "processed_at": "2026-11-01T13:00:00.000000Z",
+      "source_references": [
+        "synthetic-B"
+      ],
+      "entities": [
+        {
+          "entity_id": "soorin:host:7e18a149a4743ac13488fbda5d63a40cc5f9d7c1b338467b45123effb06b63df",
+          "entity_type": "Host",
+          "normalized_value": "three.synthetic.example",
+          "source_identifiers": {},
+          "aliases": [],
+          "provisional": true,
+          "attributes": {
+            "source_field": "hostname",
+            "identity_status": "provisional"
+          }
+        },
+        {
+          "entity_id": "soorin:securityalert:136f94f76c2b18fcac6e51bae69be33ac738d3cbdef1687c655bef793e7fabb3",
+          "entity_type": "SecurityAlert",
+          "normalized_value": "synthetic-b",
+          "source_identifiers": {
+            "soc_alert_row_id": "synthetic-B"
+          },
+          "aliases": [],
+          "provisional": false,
+          "attributes": {
+            "identity_status": "resolved"
+          }
+        }
+      ],
+      "relations": [
+        {
+          "relation_id": "rel:830634063b42a2e3a309cd32b78bb11eda6bc3fde98142b4823e15780316614e",
+          "relation_type": "OBSERVED_ON",
+          "subject_entity_id": "soorin:securityalert:136f94f76c2b18fcac6e51bae69be33ac738d3cbdef1687c655bef793e7fabb3",
+          "object_entity_id": "soorin:host:7e18a149a4743ac13488fbda5d63a40cc5f9d7c1b338467b45123effb06b63df",
+          "confidence_category": "observed",
+          "valid_from": "2026-11-01T09:00:00.000000Z",
+          "evidence_ids": [
+            "splunk:synthetic-B"
+          ],
+          "attributes": {}
+        }
+      ],
+      "facts": [],
+      "evidence": [
+        {
+          "evidence_id": "splunk:synthetic-B",
+          "source_record_id": "synthetic-B",
+          "field_path": "raw_record",
+          "checksum": "1f57efcaa1dac199ab789162d4c3cf330f148a95cf6d80fba254090d33297221",
+          "observed_at": "2026-11-01T12:00:00.000000Z",
+          "source_system": "splunk",
+          "source_instance": "splunk-e2e",
+          "source_event_ids": []
+        }
+      ],
+      "attributes": {
+        "verified_source_metadata": {
+          "tenant_id": "tenant-blue",
+          "source_system": "splunk",
+          "source_instance": "splunk-e2e",
+          "source_record_id": "synthetic-B",
+          "source_record_type": "SecurityAlert",
+          "identifiers": {
+            "soc_alert_id": "synthetic-B"
+          },
+          "event_time": "2026-11-01T09:00:00Z",
+          "alert_time": "2026-11-01T09:00:00Z",
+          "event_time_source": "unknown"
+        },
+        "reported_observations": {},
+        "analyst_assertions": {},
+        "retrieval_hints": {},
+        "semantic_caveats": {
+          "risk_score": "vendor accumulated risk; not a probability",
+          "rule_configuration": "current configuration may differ from fire-time configuration",
+          "investigation_hint": "retrieval guidance; not evidence"
+        }
+      },
+      "vendor_fields": {},
+      "content_checksum_version": "soorin.source-content.sha256.v3",
+      "content_checksum": "3291518d2e7676d9b95b25fa63ab9cffe116b88c6d52fccdb7aaccc3a3512bd5"
+    }
+  ]
+}

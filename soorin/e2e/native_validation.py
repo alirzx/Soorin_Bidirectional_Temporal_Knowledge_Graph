@@ -24,22 +24,45 @@ def acceptance_events():
     return [(name,event) for name,event in normalize_fixture(rows) if event.tenant_id=='tenant-blue']
 
 
-def assert_receipt_graph(event, diagnostics):
+def assert_receipt_graph(event, diagnostics, *, source_id=None):
     if diagnostics.get('status') != 'bound':
         raise AssertionError('receipt_not_bound')
+    if source_id is not None and diagnostics.get('source_id') != source_id:
+        raise AssertionError('receipt_source_mismatch')
+    scope = diagnostics.get('source_scope') or {}
+    if scope != {key:getattr(event,key) for key in ('tenant_id','source_system','source_instance')}:
+        raise AssertionError('receipt_authority_mismatch')
     document = diagnostics.get('document') or {}
     if document.get('status') != 'ready' or document.get('graph_status') != 'done':
         raise AssertionError('document_not_complete')
-    expected = sorted(r.relation_type.lower() for r in event.relations)
+    if not document.get('document_id') or type(document.get('document_version')) is not int:
+        raise AssertionError('document_provenance_missing')
+    expected_entities = {e.entity_id:e for e in event.entities}
+    actual_entities = diagnostics.get('entities', [])
+    if {e['canonical_key'] for e in actual_entities} != set(expected_entities):
+        raise AssertionError('expected_entity_set_mismatch')
+    for entity in actual_entities:
+        if (entity.get('type_matches') is not True or entity.get('authority_linked') is not True or
+            entity.get('expected_type') != expected_entities[entity['canonical_key']].entity_type):
+            raise AssertionError('entity_type_or_authority_missing')
+        uuid.UUID(entity['entity_id'])
+    expected = sorted((r.relation_type.lower(), r.subject_entity_id, r.object_entity_id) for r in event.relations)
     actual = diagnostics.get('relations', [])
-    if sorted(r['expected_relation_key'] for r in actual) != expected:
+    observed = sorted((r['expected_relation_key'],r['binding'].get('subject_canonical_key'),
+                       r['binding'].get('object_canonical_key')) for r in actual)
+    if observed != expected or diagnostics.get('unsupported_relation_count', 0):
         raise AssertionError('expected_relation_set_mismatch')
     for relation in actual:
         binding = relation['binding']
         if (binding.get('type_binding_status') != 'bound' or
             binding.get('phrase_binding_status') != 'bound' or
+            binding.get('binding_relation_key') != relation['expected_relation_key'] or
+            binding.get('direction') != 'forward' or
             binding.get('evidence_link_status') is not True):
             raise AssertionError('typed_relation_or_evidence_missing')
+        if (binding.get('document_id') != document['document_id'] or
+            binding.get('document_version') != document['document_version']):
+            raise AssertionError('current_version_evidence_missing')
     return len(actual)
 
 
@@ -95,7 +118,7 @@ def main():
             receipt=submit(base,source,ingest,event)
             row=wait_receipt(receipt)
             diagnostic=api(f'/api/v1/kbs/{kb}/knowledge/receipts/{receipt["receipt_id"]}')
-            relation_count=assert_receipt_graph(event,diagnostic)
+            relation_count=assert_receipt_graph(event,diagnostic,source_id=source)
             save('evidence_'+name,'PASS',expected_relations=relation_count,document_id=diagnostic['document']['document_id'])
             replay=submit(base,source,ingest,event)
             assert replay['receipt_id']==receipt['receipt_id'] and replay['job_id']==row['job_id']
@@ -147,7 +170,7 @@ def main():
         failed=api(f'/api/v1/kbs/{kb}/jobs/failed');assert failed.get('failed',0)==0
         save('failed_jobs','PASS',diagnostics=failed)
     except (Exception,KeyboardInterrupt) as error:
-        save('execution','FAIL' if not isinstance(error,KeyboardInterrupt) else 'BLOCKED',category=type(error).__name__,reason=str(error) if isinstance(error,(ValidationError,TimeoutError)) else 'assertion_or_runtime_failure')
+        save('execution','BLOCKED' if isinstance(error,(KeyboardInterrupt,ValidationError)) else 'FAIL',category=type(error).__name__,reason=str(error) if isinstance(error,(AssertionError,TimeoutError)) else 'request_or_runtime_failure' )
         save('dependent_checks','BLOCKED',reason='prerequisite_failed; subsequent API calls were not made')
         raise SystemExit(1)
 

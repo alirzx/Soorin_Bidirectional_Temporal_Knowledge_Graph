@@ -503,11 +503,11 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
         .await;
     let result = result.unwrap_or_else(|_| Err(anyhow::anyhow!("soc_ingest_timeout_retry")));
     if let Err(error) = &result {
-        let code = if error.to_string().starts_with("soc_materialization_pending") {
-            "soc_materialization_pending"
-        } else {
-            "soc_ingest_retryable_failure"
-        };
+        let message = error.to_string();
+        let code = ["soc_materialization_pending", "soc_revision_predecessor_pending",
+            "soc_revision_predecessor_failed", "soc_document_failed", "soc_binding_rejected"]
+            .into_iter().find(|code| message.starts_with(code))
+            .unwrap_or("soc_ingest_retryable_failure");
         let _ = sqlx::query(
             "UPDATE soorin_ingestion_receipts SET failure_code=$2,updated_at=now() WHERE id=$1",
         )
@@ -555,19 +555,23 @@ async fn process_locked(
     // must finish before its document is replaced. This also prevents a retry
     // from quarantining itself against a newer, partially submitted version.
     if status != "submitted" {
-        let predecessor: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM soorin_ingestion_receipts r
+        let predecessor: Option<String> = sqlx::query_scalar(
+            "SELECT COALESCE(j.status,'missing') FROM soorin_ingestion_receipts r
              JOIN soorin_ingestion_receipts current ON current.id=$2
+             LEFT JOIN jobs j ON j.id=r.job_id
              WHERE r.source_id=$1 AND r.source_key=current.source_key AND r.id<>$2
                AND r.status IN ('pending','registered','submitted')
-               AND (r.status='submitted' OR (r.created_at,r.id)<(current.created_at,current.id)))",
+               AND (r.status='submitted' OR (r.created_at,r.id)<(current.created_at,current.id))
+             ORDER BY r.created_at,r.id LIMIT 1",
         )
         .bind(source_id)
         .bind(id)
-        .fetch_one(&state.pool)
+        .fetch_optional(&state.pool)
         .await?;
-        if predecessor {
-            return Err(wait_for_dependency("soc_revision_predecessor_pending"));
+        match predecessor.as_deref() {
+            Some("failed" | "missing" | "done") => return Err(anyhow::Error::new(utopia_core::Terminal).context("soc_revision_predecessor_failed")),
+            Some(_) => return Err(wait_for_dependency("soc_revision_predecessor_pending")),
+            None => {}
         }
     }
     // Delivery order is not source order. Opaque revision IDs are identities,
@@ -684,6 +688,13 @@ async fn process_locked(
         .execute(&state.pool)
         .await?;
     }
+    let rendered = render(event)?;
+    let external_key = format!("statements:{}", field(&rendered, "external_id")?);
+    let document_failed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents d WHERE source_id=$1 AND external_key=$2 AND deleted_at IS NULL AND (status='failed' OR graph_status='failed') AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.payload->>'document_id'=d.id::text AND j.kind IN ('process_document','extract_document','soc_reembed_document') AND j.status IN ('queued','running')))")
+        .bind(source_id).bind(&external_key).fetch_one(&state.pool).await?;
+    if document_failed {
+        return Err(anyhow::Error::new(utopia_core::Terminal).context("soc_document_failed"));
+    }
     let mut missing = false;
     let keys: Vec<&str> = event["entities"]
         .as_array()
@@ -714,52 +725,19 @@ async fn process_locked(
             "soc_materialization_pending; document pending",
         ));
     }
-    // Open graph completion alone does not prove reviewed SOC relations were
-    // materialized. Human-rejected/unknown bindings are never auto-approved here.
-    let ontology: Value = serde_json::from_str(include_str!(
-        "../../../../soorin/ontology/soc_ontology_v1.yaml"
-    ))?;
+    let entities = receipt_entities(&state.pool, kb, event).await?;
+    if entities.iter().any(|e| e["entity_id"].is_null() || e["type_matches"] != true || e["authority_linked"] != true) {
+        return Err(wait_for_dependency("soc_materialization_pending; entity types or authority links pending"));
+    }
+    // Require each reviewed edge with evidence from this source's current
+    // document version. The same query also powers receipt diagnostics.
     for relation in event["relations"].as_array().into_iter().flatten() {
-        let token = |value: &str| {
-            value
-                .chars()
-                .filter(|c| c.is_ascii_alphanumeric())
-                .flat_map(char::to_lowercase)
-                .collect::<String>()
-        };
-        let Some(kind) = ontology["relation_types"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| {
-                token(row["key"].as_str().unwrap())
-                    == token(relation["relation_type"].as_str().unwrap())
-            })
-        else {
-            continue;
-        };
-        let typed: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM facts f
-             JOIN relation_types p ON p.id=f.predicate_id
-             JOIN entities s ON s.id=f.subject_id JOIN entities o ON o.id=f.object_id
-             JOIN fact_evidence fe ON fe.fact_id=f.id
-             JOIN documents d ON d.id=fe.document_id
-             WHERE f.kb_id=$1 AND f.invalidated_at IS NULL AND p.key=$2
-               AND s.canonical_name=$3 AND o.canonical_name=$4
-               AND d.source_id=$5 AND d.external_key=$6 AND d.deleted_at IS NULL AND fe.doc_version=(SELECT COALESCE(MAX(version),1) FROM document_versions WHERE document_id=d.id))",
-        )
-        .bind(kb)
-        .bind(kind["key"].as_str().unwrap())
-        .bind(relation["subject_entity_id"].as_str().unwrap())
-        .bind(relation["object_entity_id"].as_str().unwrap())
-        .bind(source_id)
-        .bind(&key)
-        .fetch_one(&state.pool)
-        .await?;
-        if !typed {
-            return Err(wait_for_dependency(
-                "soc_materialization_pending; reviewed SOC relation not materialized",
-            ));
+        let detail = relation_status(&state.pool, kb, source_id, &key, relation).await?;
+        if detail["binding"]["phrase_binding_status"] == "none" && detail["binding"]["decided_by"] == "person" {
+            return Err(anyhow::Error::new(utopia_core::Terminal).context("soc_binding_rejected"));
+        }
+        if detail["binding"]["evidence_link_status"] != true {
+            return Err(wait_for_dependency("soc_materialization_pending; reviewed SOC relation not materialized"));
         }
     }
     sqlx::query("UPDATE soorin_ingestion_receipts SET status='bound',failure_code=NULL,updated_at=now() WHERE id=$1")
@@ -783,6 +761,59 @@ pub async fn receipts(
     ))
 }
 
+async fn receipt_entities(pool: &sqlx::PgPool, kb: Uuid, event: &Value) -> anyhow::Result<Vec<Value>> {
+    Ok(sqlx::query_scalar(
+        "SELECT jsonb_build_object('canonical_key',expected->>'entity_id','expected_type',expected->>'entity_type',
+          'entity_id',e.id,'type_key',t.key,'type_label',t.label,
+          'type_matches',replace(t.label,' ','')=expected->>'entity_type',
+          'authority_linked',NOT EXISTS(SELECT 1 FROM soorin_canonical_identities i
+            WHERE i.kb_id=$1 AND i.canonical_key=expected->>'entity_id'
+              AND (i.status<>'active' OR i.utopia_entity_id IS DISTINCT FROM e.id)))
+         FROM jsonb_array_elements($2::jsonb) expected
+         LEFT JOIN entities e ON e.kb_id=$1 AND e.canonical_name=expected->>'entity_id' AND e.merged_into IS NULL
+         LEFT JOIN entity_types t ON t.id=e.type_id LIMIT 128"
+    ).bind(kb).bind(&event["entities"]).fetch_all(pool).await?)
+}
+
+fn reviewed_relation_key(relation: &Value) -> anyhow::Result<String> {
+    let ontology: Value = serde_json::from_str(include_str!("../../../../soorin/ontology/soc_ontology_v1.yaml"))?;
+    let token = |value: &str| value.chars().filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase).collect::<String>();
+    ontology["relation_types"].as_array().unwrap().iter()
+        .find(|row| token(row["key"].as_str().unwrap()) == token(relation["relation_type"].as_str().unwrap_or_default()))
+        .and_then(|row| row["key"].as_str()).map(String::from)
+        .ok_or_else(|| anyhow::anyhow!("soc_relation_type_unknown"))
+}
+
+async fn relation_status(pool: &sqlx::PgPool, kb: Uuid, source: Uuid, external_key: &str, relation: &Value) -> anyhow::Result<Value> {
+    let predicate = reviewed_relation_key(relation)?;
+    let phrase = field(relation, "relation_type")?.to_lowercase().replace('_', " ");
+    let detail: Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object('expected_relation_key',$4::text,'source_phrase',$5::text,
+          'subject_canonical_key',$2::text,'object_canonical_key',$3::text,
+          'subject_entity_id',s.id,'object_entity_id',o.id,'subject_type',st.key,'object_type',ot.key,
+          'type_binding_status',CASE WHEN s.type_id IS NOT NULL AND o.type_id IS NOT NULL THEN 'bound' ELSE 'pending' END,
+          'phrase_binding_status',COALESCE(pb.status,'missing'),'decided_by',pb.decided_by,
+          'binding_relation_key',bp.key,'direction',pb.direction,
+          'document_id',d.id,'document_version',(SELECT COALESCE(MAX(version),1) FROM document_versions WHERE document_id=d.id),
+          'evidence_link_status',EXISTS(SELECT 1 FROM facts f
+              JOIN relation_types rt ON rt.id=f.predicate_id JOIN fact_evidence fe ON fe.fact_id=f.id
+              WHERE f.kb_id=$1 AND f.layer='typed' AND f.subject_id=s.id AND f.object_id=o.id
+                AND rt.key=$4 AND f.invalidated_at IS NULL AND fe.document_id=d.id
+                AND fe.doc_version=(SELECT COALESCE(MAX(version),1) FROM document_versions WHERE document_id=d.id)))
+         FROM (SELECT 1) singleton
+         LEFT JOIN documents d ON d.kb_id=$1 AND d.source_id=$6 AND d.external_key=$7 AND d.deleted_at IS NULL
+         LEFT JOIN entities s ON s.kb_id=$1 AND s.canonical_name=$2 AND s.merged_into IS NULL
+         LEFT JOIN entities o ON o.kb_id=$1 AND o.canonical_name=$3 AND o.merged_into IS NULL
+         LEFT JOIN entity_types st ON st.id=s.type_id LEFT JOIN entity_types ot ON ot.id=o.type_id
+         LEFT JOIN phrase_bindings pb ON pb.kb_id=$1 AND pb.phrase=$5
+            AND pb.subject_type_id=s.type_id AND pb.object_type_id=o.type_id AND NOT pb.object_is_value
+         LEFT JOIN relation_types bp ON bp.id=pb.relation_type_id LIMIT 1"
+    ).bind(kb).bind(relation["subject_entity_id"].as_str()).bind(relation["object_entity_id"].as_str())
+        .bind(&predicate).bind(&phrase).bind(source).bind(external_key).fetch_one(pool).await?;
+    Ok(json!({"expected_relation_key":predicate,"source_phrase":phrase,"binding":detail}))
+}
+
 /// A bounded, payload-free explanation of one receipt's graph dependencies.
 pub async fn diagnostics(
     State(state): State<AppState>,
@@ -796,7 +827,7 @@ pub async fn diagnostics(
     let rendered = render(&event)?;
     let key = format!("statements:{}", field(&rendered, "external_id")?);
     let document: Option<Value> = sqlx::query_scalar(
-        "SELECT jsonb_build_object('document_id',id,'status',status,'graph_status',graph_status)
+        "SELECT jsonb_build_object('document_id',id,'status',status,'graph_status',graph_status,'document_version',(SELECT COALESCE(MAX(version),1) FROM document_versions WHERE document_id=documents.id))
          FROM documents WHERE kb_id=$1 AND source_id=$2 AND external_key=$3 AND deleted_at IS NULL",
     )
     .bind(kb)
@@ -804,6 +835,7 @@ pub async fn diagnostics(
     .bind(&key)
     .fetch_optional(&state.pool)
     .await?;
+    let entities = receipt_entities(&state.pool, kb, &event).await?;
     let jobs: Vec<Value> = sqlx::query_scalar(
         "SELECT jsonb_build_object('job_id',id,'kind',kind,'status',status,'attempts',attempts,
           'max_attempts',max_attempts,'run_at',run_at,'updated_at',updated_at,
@@ -813,56 +845,21 @@ pub async fn diagnostics(
     ).bind(id.to_string()).bind(kb.to_string())
         .bind(document.as_ref().and_then(|d| d["document_id"].as_str()))
         .fetch_all(&state.pool).await?;
-    let ontology: Value = serde_json::from_str(include_str!(
-        "../../../../soorin/ontology/soc_ontology_v1.yaml"
-    ))
-    .map_err(anyhow::Error::from)?;
     let mut relations = Vec::new();
-    for relation in event["relations"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .take(128)
-    {
-        let key = relation["relation_type"]
-            .as_str()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if !ontology["relation_types"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["key"] == key)
-        {
+    let mut unsupported_relations = 0;
+    for relation in event["relations"].as_array().into_iter().flatten().take(512) {
+        if reviewed_relation_key(relation).is_err() {
+            unsupported_relations += 1;
             continue;
         }
-        let phrase = key.replace('_', " ");
-        let detail: Value = sqlx::query_scalar(
-            "SELECT jsonb_build_object('subject_type',st.key,'object_type',ot.key,
-              'type_binding_status',CASE WHEN s.type_id IS NOT NULL AND o.type_id IS NOT NULL THEN 'bound' ELSE 'pending' END,
-              'phrase_binding_status',COALESCE(pb.status,'missing'),
-              'decided_by',pb.decided_by,
-              'evidence_link_status',EXISTS(SELECT 1 FROM facts f
-                JOIN relation_types rt ON rt.id=f.predicate_id JOIN fact_evidence fe ON fe.fact_id=f.id
-                WHERE f.subject_id=s.id AND f.object_id=o.id AND rt.key=$4 AND f.invalidated_at IS NULL
-                  AND fe.document_id=$6))
-             FROM (SELECT 1) singleton
-             LEFT JOIN entities s ON s.kb_id=$1 AND s.canonical_name=$2 AND s.merged_into IS NULL
-             LEFT JOIN entities o ON o.kb_id=$1 AND o.canonical_name=$3 AND o.merged_into IS NULL
-             LEFT JOIN entity_types st ON st.id=s.type_id LEFT JOIN entity_types ot ON ot.id=o.type_id
-             LEFT JOIN phrase_bindings pb ON pb.kb_id=$1 AND pb.phrase=$5
-                AND pb.subject_type_id=s.type_id AND pb.object_type_id=o.type_id AND NOT pb.object_is_value LIMIT 1"
-        ).bind(kb).bind(relation["subject_entity_id"].as_str()).bind(relation["object_entity_id"].as_str())
-            .bind(&key).bind(&phrase)
-            .bind(document.as_ref().and_then(|d| d["document_id"].as_str()).and_then(|v| v.parse::<Uuid>().ok()))
-            .fetch_one(&state.pool).await?;
-        relations
-            .push(json!({"expected_relation_key":key,"source_phrase":phrase,"binding":detail}));
+        relations.push(relation_status(&state.pool, kb, source, &key, relation).await?);
     }
     Ok(Json(
         json!({"schema_version":"soorin.receipt-diagnostics.v1","receipt_id":id,
-        "source_id":source,"status":status,"failure_code":failure,"document":document,
-        "relations":relations,"jobs":jobs,"job_limit":30,"relation_limit":128}),
+        "source_id":source,"source_scope":{"tenant_id":event["tenant_id"],"source_system":event["source_system"],"source_instance":event["source_instance"]},
+        "status":status,"failure_code":failure,"document":document,"evidence_view":"current_document_version",
+        "entities":entities,"relations":relations,"unsupported_relation_count":unsupported_relations,
+        "jobs":jobs,"job_limit":30,"relation_limit":512}),
     ))
 }
 

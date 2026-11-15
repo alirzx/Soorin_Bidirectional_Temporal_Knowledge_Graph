@@ -83,6 +83,13 @@ pub async fn enqueue_unless_queued_tx(
     kind: &str,
     payload: serde_json::Value,
 ) -> AppResult<Option<i64>> {
+    // Serialize the short check-and-insert transaction for identical deliveries.
+    // A running job must not suppress a later delivery after its snapshot read.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+        .bind(kind)
+        .bind(payload.to_string())
+        .execute(&mut **tx)
+        .await?;
     let row: Option<(i64,)> = sqlx::query_as(
         "INSERT INTO jobs (kind, payload)
          SELECT $1, $2
