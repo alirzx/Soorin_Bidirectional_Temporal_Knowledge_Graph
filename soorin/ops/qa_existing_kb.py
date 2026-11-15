@@ -57,9 +57,13 @@ def api(method: str, path: str, token: str, data=None, *, content_type="applicat
 
 def session_token():
     token = os.environ.get("UTOPIA_SESSION_TOKEN", "").strip()
-    if not token:
-        die("UTOPIA_SESSION_TOKEN is missing. Use python3 -m soorin.ops.qa_login for interactive login (TTY prompts).")
-    return token
+    if token:
+        return token
+    try:
+        from soorin.ops.qa_login import load_token
+        return load_token()
+    except (ValueError, OSError, KeyError, json.JSONDecodeError):
+        die("No valid QA session: run python3 -m soorin.ops.qa_login directly in your terminal.")
 
 
 def find_existing_kb(token: str, kb_name: str):
