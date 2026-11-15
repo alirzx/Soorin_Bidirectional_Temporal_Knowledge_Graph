@@ -87,18 +87,25 @@ def _strings(value: Any) -> Iterable[str]:
         yield str(value).strip()
 
 
-def _unwrap_record(record: Mapping[str, Any] | None) -> dict[str, Any]:
+def _unwrap_record(record: Mapping[str, Any] | None, *, tenant_id: str, source_instance: str) -> dict[str, Any]:
     if not isinstance(record, Mapping):
         return {}
+    def check_scope(node):
+        for key, expected in [('tenant_id', tenant_id), ('source_instance', source_instance), ('source_system', 'splunk')]:
+            if key in node and node[key] != expected:
+                raise NormalizationError('source_scope_mismatch', 'source envelope conflicts with bound scope')
     outer = dict(record)
+    check_scope(outer)
     current = dict(outer)
     alert = outer.get("alert")
     if isinstance(alert, Mapping):
+        check_scope(alert)
         current = {**alert, **current}
         durable_id = _first(outer, "alert_row_id", "soc_alert_id", "id") or _first(alert, "alert_row_id", "soc_alert_id", "id")
         if durable_id:
             current["alert_row_id"] = durable_id
     def unwrap(node: Mapping[str, Any], depth: int = 0) -> dict[str, Any]:
+        check_scope(node)
         if depth > 8:
             raise NormalizationError("envelope_nesting_limit", "source envelope is too deeply nested")
         result: dict[str, Any] = {}
@@ -179,7 +186,9 @@ def normalize_llm_payload(
     raw_record: Mapping[str, Any] | None = None, observed_at: str | None = None,
     recorded_at: str | None = None, delivery_id: str | None = None,
 ) -> NormalizedSplunkEvent:
-    raw = _unwrap_record(raw_record)
+    raw = _unwrap_record(raw_record, tenant_id=tenant_id, source_instance=source_instance)
+    if value is None:
+        value = raw.get('llm_payload')
     warnings: list[str] = []
     try:
         payload = _mapping(value, "llm_payload", allow_missing=False)

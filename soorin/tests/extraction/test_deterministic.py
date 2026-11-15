@@ -18,6 +18,28 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(next(e.source_field for e in batch.entities if e.entity_type == "IPAddress"), "assets.2.entity")
         self.assertEqual(batch.errors, ("assets.3.entity: unknown_or_missing_entity_type_hint",))
 
+    def test_agentic_fusion_typed_entities_and_iocs_use_exact_types(self):
+        batch = extract_entities({'entities':[{'type':'host','value':'DC01.EXAMPLE'},
+            {'type':'user','value':'Alice'},{'type':'unknown','value':'ambiguous'}],
+            'iocs':[{'type':'ip','value':'192.0.2.3'}, {'type':'hash','value':'a'*64},
+                    {'type':'domain','value':'IOC.EXAMPLE'}, {'type':'url','value':'javascript:bad'}]},
+            source_record_reference='synthetic')
+        self.assertEqual({(e.entity_type,e.normalized_value) for e in batch.entities},
+            {('Host','dc01.example'),('UserAccount','alice'),('IPAddress','192.0.2.3'),
+             ('Indicator','a'*64),('Indicator','ioc.example')})
+        self.assertEqual(len(batch.errors),2)
+        self.assertEqual(next(e.source_field for e in batch.entities if e.entity_type=='IPAddress'),'iocs.0.value')
+
+    def test_mixed_nested_arrays_and_unknown_hints_are_bounded(self):
+        batch = extract_entities({'assets': [[{'entity':'a.example','entity_type':'host'}],
+            {'entity':'192.0.2.5','entity_type':'ip'}, 'not-a-record'],
+            'affected_users':[['alice'],['bob']]},source_record_reference='synthetic')
+        self.assertEqual({e.normalized_value for e in batch.entities}, {'a.example','192.0.2.5','alice','bob'})
+        rows = []
+        rows.append(rows)
+        with self.assertRaisesRegex(ValueError,'nesting_limit'):
+            extract_entities({'assets':rows},source_record_reference='synthetic')
+
     def test_structured_field_variants_and_windows_identity(self):
         batch = extract_entities({
             "src_ip": "192.0.2.7", "destination_ip": "2001:db8::8", "Computer": "DC01.EXAMPLE",

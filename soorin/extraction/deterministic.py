@@ -54,11 +54,18 @@ def _flatten(data: Mapping[str, Any], prefix: str = "", depth: int = 0) -> Itera
             yield from _flatten(value, path, depth + 1)
         elif isinstance(value, (list, tuple)):
             scalars = []
-            for index, item in enumerate(value):
-                if isinstance(item, Mapping):
-                    yield from _flatten(item, f"{path}.{index}", depth + 1)
-                else:
-                    scalars.append(item)
+            def sequence(items, indexed_path, level):
+                if level > 32:
+                    raise ValueError("extraction_nesting_limit")
+                for index, item in enumerate(items):
+                    item_path = f"{indexed_path}.{index}"
+                    if isinstance(item, Mapping):
+                        yield from _flatten(item, item_path, level + 1)
+                    elif isinstance(item, (list, tuple)):
+                        yield from sequence(item, item_path, level + 1)
+                    else:
+                        scalars.append(item)
+            yield from sequence(value, path, depth + 1)
             if scalars:
                 yield path, scalars
         else:
@@ -115,9 +122,9 @@ def extract_entities(
     found: dict[tuple[str, str, str], ExtractionResult] = {}
     errors: list[str] = []
 
-    def add(entity_type: str, raw: str, field: str, method: str, confidence: str) -> None:
+    def add(entity_type: str, raw: str, field: str, method: str, confidence: str, *, normalization_field: str | None = None) -> None:
         try:
-            normalized = _normalize(entity_type, raw, field)
+            normalized = _normalize(entity_type, raw, normalization_field or field)
         except (IdentityNormalizationError, ValueError) as exc:
             errors.append(f"{field}: {exc}")
             return
@@ -142,6 +149,22 @@ def extract_entities(
     for field, value in flattened:
         leaf = field.rsplit(".", 1)[-1].casefold()
         entity_type = FIELD_TYPES.get(leaf)
+        parts = field.split('.')
+        # Agentic_SOC fusion persists explicit {type,value} objects. Only the
+        # reviewed containers and exact type vocabulary select a type.
+        if leaf == 'value' and len(parts) >= 3 and parts[-3] in {'entities', 'iocs'}:
+            hint = str(_context(data, field).get('type') or '').casefold()
+            supported = ({'host':('Host','hostname'), 'user':('UserAccount','username'),
+                          'ip':('IPAddress','src_ip')} if parts[-3] == 'entities' else
+                         {'ip':('IPAddress','src_ip'), 'hash':('Indicator','hash'),
+                          'domain':('Indicator','domain'), 'url':('Indicator','url')})
+            kind = supported.get(hint)
+            if kind is None:
+                errors.append(f'{field}: unsupported_typed_value')
+            else:
+                for raw in _values(value):
+                    add(kind[0],raw,field,'structured_field','observed',normalization_field=kind[1])
+            continue
         if entity_type:
             for raw in _values(value):
                 # ``entity`` and ``risk_object`` types are context sensitive.
