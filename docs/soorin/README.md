@@ -24,6 +24,7 @@ flowchart TD
 | Graph and data-model engineers | [Reviewed SOC ontology](SOC_ONTOLOGY.md) · [Identity and authority](ENTITY_RESOLUTION.md) · [Bitemporal semantics](TEMPORAL_MODEL.md) · [Source-level call paths](CONTINUATION_ARCHITECTURE.md) |
 | Search and AI engineers | [Hybrid retrieval and GraphRAG](RETRIEVAL_AND_RERANKING.md) · [Agent tools](AGENT_TOOL_CONTRACTS.md) · [Model configuration](MODEL_CONFIGURATION.md) · [Model artifact lifecycle](MODEL_ARTIFACT_MANAGEMENT.md) · [Review-only cybersecurity NER](CPU_CYBER_NER.md) |
 | Security and privacy reviewers | [Security boundaries](SECURITY_BOUNDARIES.md) · [Outbound privacy controls](OUTBOUND_PRIVACY.md) · [Agent compatibility](FUTURE_AGENT_COMPATIBILITY.md) |
+| QA on an existing Workspace and KB | [Existing-KB login, synthetic fixtures and E2E runbook](EXISTING_KB_LOCAL_QA.md) |
 | QA and SRE operators | [Next approved build and test sequence](NEXT_APPROVED_BUILD_20261115.md) · [Local development](LOCAL_DEVELOPMENT.md) · [Pre-build checks](PREBUILD_VALIDATION.md) · [Testing and evaluation](TESTING_AND_EVALUATION.md) · [Production deployment and rollback](PRODUCTION_DEPLOYMENT.md) |
 | Engineering reviewers | [Current continuation report](CONTINUATION_HARDENING_REPORT.md) · [19-task acceptance matrix](CONTINUATION_TASK_MATRIX.md) · [Build handoff](BUILD_AND_TEST_HANDOFF.md) · [Engineering gap register](ENGINEERING_GAP_REGISTER.md) |
 
