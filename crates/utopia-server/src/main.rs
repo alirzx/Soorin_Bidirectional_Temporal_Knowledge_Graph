@@ -368,9 +368,9 @@ async fn reindex_for_analyzer_upgrade(
         let key = (kb, doc);
         if current != Some(key) {
             if let Some((prev_kb, prev_doc)) = current {
-                if let Err(e) = search.reindex_document(
-                    &prev_kb.to_string(), &prev_doc.to_string(), &batch
-                ) {
+                if let Err(e) =
+                    search.reindex_document(&prev_kb.to_string(), &prev_doc.to_string(), &batch)
+                {
                     tracing::error!(document=%prev_doc,error=%e,
                         "search analyzer v2 migration failed");
                     complete = false;
@@ -385,9 +385,7 @@ async fn reindex_for_analyzer_upgrade(
     }
     if complete {
         if let Some((kb, doc)) = current {
-            if let Err(e) = search.reindex_document(
-                &kb.to_string(), &doc.to_string(), &batch
-            ) {
+            if let Err(e) = search.reindex_document(&kb.to_string(), &doc.to_string(), &batch) {
                 tracing::error!(document=%doc,error=%e,
                     "search analyzer v2 migration final document failed");
                 complete = false;
@@ -401,8 +399,10 @@ async fn reindex_for_analyzer_upgrade(
         tracing::warn!(error=%e, "could not persist search analyzer version marker");
         return;
     }
-    tracing::info!(chunks=rewritten,
-        "search analyzer v2 migration complete; source documents unchanged");
+    tracing::info!(
+        chunks = rewritten,
+        "search analyzer v2 migration complete; source documents unchanged"
+    );
 }
 
 /// 索引空着而库里有东西 → 从库里重建一遍。
