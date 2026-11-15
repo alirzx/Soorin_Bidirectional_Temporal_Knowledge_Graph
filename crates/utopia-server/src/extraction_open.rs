@@ -253,7 +253,12 @@ async fn apply_open_extraction(
             // to them: shared Case/Notable/Event identifiers must resolve to
             // precisely one durable graph entity across concurrent documents.
             let id = if pushed && name.starts_with("soorin:") {
-                utopia_store::resolution::resolve_curated_canonical(pool, kb_id, name, kind).await?
+                utopia_store::resolution::resolve_curated_canonical(pool, kb_id, name, kind)
+                    .await.map_err(|error| {
+                        let permanent = matches!(&error, utopia_core::AppError::Conflict(_) | utopia_core::AppError::Validation(_));
+                        let error = anyhow::Error::from(error);
+                        if permanent { error.context(utopia_core::Terminal) } else { error }
+                    })?
             } else {
                 resolve_handle(
                     pool,

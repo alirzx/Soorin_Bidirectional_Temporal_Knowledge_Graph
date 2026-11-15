@@ -279,7 +279,8 @@ pub async fn link_utopia_entity(
             SET utopia_entity_id=$3
           WHERE kb_id=$1 AND id=$2
             AND (utopia_entity_id IS NULL OR utopia_entity_id=$3)
-            AND EXISTS (SELECT 1 FROM entities WHERE kb_id=$1 AND id=$3)",
+            AND status='active'
+            AND EXISTS (SELECT 1 FROM entities WHERE kb_id=$1 AND id=$3 AND merged_into IS NULL)",
     )
     .bind(kb_id)
     .bind(identity_id)

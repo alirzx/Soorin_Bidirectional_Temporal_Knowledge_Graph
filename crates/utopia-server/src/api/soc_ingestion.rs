@@ -510,6 +510,7 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
             "soc_revision_predecessor_failed",
             "soc_document_failed",
             "soc_binding_rejected",
+            "soc_identity_conflict",
         ]
         .into_iter()
         .find(|code| message.starts_with(code))
@@ -713,10 +714,12 @@ async fn process_locked(
         .collect();
     let identities:Vec<(Uuid,String)>=sqlx::query_as("SELECT id,canonical_key FROM soorin_canonical_identities WHERE kb_id=$1 AND canonical_key=ANY($2) AND utopia_entity_id IS NULL AND status='active'").bind(kb).bind(keys).fetch_all(&state.pool).await?;
     for (identity, key) in identities {
-        let entity:Option<(Uuid,)>=sqlx::query_as("SELECT id FROM entities WHERE kb_id=$1 AND canonical_name=$2 AND merged_into IS NULL LIMIT 1").bind(kb).bind(key).fetch_optional(&state.pool).await?;
-        if let Some((entity,)) = entity {
-            utopia_store::soorin_identity::link_utopia_entity(&state.pool, kb, identity, entity)
-                .await?;
+        let binding = utopia_store::resolution::inspect_curated_canonical(&state.pool, kb, &key).await?;
+        if binding.conflict.is_some() {
+            return Err(anyhow::Error::new(utopia_core::Terminal).context("soc_identity_conflict"));
+        }
+        if let Some(entity) = binding.entity_id {
+            utopia_store::soorin_identity::link_utopia_entity(&state.pool, kb, identity, entity).await?;
         } else {
             missing = true;
         }
@@ -735,6 +738,9 @@ async fn process_locked(
         ));
     }
     let entities = receipt_entities(&state.pool, kb, event).await?;
+    if entities.iter().any(|e| !e["identity_conflict"].is_null()) {
+        return Err(anyhow::Error::new(utopia_core::Terminal).context("soc_identity_conflict"));
+    }
     if entities.iter().any(|e| {
         e["entity_id"].is_null() || e["type_matches"] != true || e["authority_linked"] != true
     }) {
@@ -745,7 +751,7 @@ async fn process_locked(
     // Require each reviewed edge with evidence from this source's current
     // document version. The same query also powers receipt diagnostics.
     for relation in event["relations"].as_array().into_iter().flatten() {
-        let detail = relation_status(&state.pool, kb, source_id, &key, relation).await?;
+        let detail = relation_status(&state.pool, kb, source_id, &key, relation, &entities).await?;
         if detail["binding"]["phrase_binding_status"] == "none"
             && detail["binding"]["decided_by"] == "person"
         {
@@ -778,22 +784,39 @@ pub async fn receipts(
     ))
 }
 
-async fn receipt_entities(
-    pool: &sqlx::PgPool,
-    kb: Uuid,
-    event: &Value,
-) -> anyhow::Result<Vec<Value>> {
-    Ok(sqlx::query_scalar(
-        "SELECT jsonb_build_object('canonical_key',expected->>'entity_id','expected_type',expected->>'entity_type',
-          'entity_id',e.id,'type_key',t.key,'type_label',t.label,
-          'type_matches',replace(t.label,' ','')=expected->>'entity_type',
-          'authority_linked',NOT EXISTS(SELECT 1 FROM soorin_canonical_identities i
-            WHERE i.kb_id=$1 AND i.canonical_key=expected->>'entity_id'
-              AND (i.status<>'active' OR i.utopia_entity_id IS DISTINCT FROM e.id)))
-         FROM jsonb_array_elements($2::jsonb) expected
-         LEFT JOIN entities e ON e.kb_id=$1 AND e.canonical_name=expected->>'entity_id' AND e.merged_into IS NULL
-         LEFT JOIN entity_types t ON t.id=e.type_id LIMIT 128"
-    ).bind(kb).bind(&event["entities"]).fetch_all(pool).await?)
+async fn receipt_entities(pool: &sqlx::PgPool, kb: Uuid, event: &Value) -> anyhow::Result<Vec<Value>> {
+    let types = utopia_store::graph::entity_types(pool, kb).await?;
+    let mut rows = Vec::new();
+    for expected in event["entities"].as_array().into_iter().flatten().take(128) {
+        let key = field(expected, "entity_id")?;
+        let binding = utopia_store::resolution::inspect_curated_canonical(pool, kb, key).await?;
+        let kind = field(expected, "entity_type")?;
+        let expected_key = utopia_store::resolution::reviewed_soc_type_key(kind);
+        let expected_type = types.iter().find(|t| Some(t.key.as_str()) == expected_key.as_deref());
+        let actual: Option<(Option<Uuid>, String)> = sqlx::query_as("SELECT type_id,type_source FROM entities WHERE kb_id=$1 AND id=$2 AND merged_into IS NULL")
+            .bind(kb).bind(binding.entity_id).fetch_optional(pool).await?;
+        let actual_type = actual.as_ref().and_then(|(id, _)| *id);
+        let actual_class = types.iter().find(|t| Some(t.id) == actual_type);
+        let conflict = binding.conflict.or_else(|| {
+            if binding.identity_type.as_deref().is_some_and(|value| utopia_store::resolution::reviewed_soc_type_key(value) != expected_key) {
+                Some("authority_type_conflict")
+            } else if actual_type.is_some() && actual_type != expected_type.map(|t| t.id) {
+                Some("type_conflict")
+            } else if actual.as_ref().is_some_and(|(id, source)| id.is_none() && source == "human") {
+                Some("human_type_unset")
+            } else { None }
+        });
+        let authoritative = expected["source_identifiers"].as_object().is_some_and(|m| !m.is_empty());
+        rows.push(json!({"canonical_key":key,"expected_type":kind,
+            "entity_id":if conflict.is_none() {binding.entity_id} else {None},
+            "type_key":actual_class.map(|t| &t.key),"type_label":actual_class.map(|t| &t.label),
+            "type_matches":actual_type.is_some() && actual_type == expected_type.map(|t| t.id),
+            "authority_linked":conflict.is_none() && (!authoritative || (binding.identity_id.is_some() && binding.linked_entity_id.is_some() && binding.linked_entity_id==binding.entity_id)),
+            "identity_conflict":conflict,"candidate_count":binding.candidate_count,
+            "candidate_ids":binding.candidate_ids,"candidates_truncated":binding.candidates_truncated,
+            "linked_entity_id":binding.linked_entity_id}));
+    }
+    Ok(rows)
 }
 
 fn reviewed_relation_key(relation: &Value) -> anyhow::Result<String> {
@@ -826,14 +849,19 @@ async fn relation_status(
     source: Uuid,
     external_key: &str,
     relation: &Value,
+    entities: &[Value],
 ) -> anyhow::Result<Value> {
     let predicate = reviewed_relation_key(relation)?;
     let phrase = field(relation, "relation_type")?
         .to_lowercase()
         .replace('_', " ");
+    let endpoint = |key: &str| entities.iter().find(|e| e["canonical_key"].as_str()==Some(key));
+    let subject = endpoint(field(relation,"subject_entity_id")?);
+    let object = endpoint(field(relation,"object_entity_id")?);
+    let id = |row: Option<&Value>| row.and_then(|e| e["entity_id"].as_str()).and_then(|value| value.parse::<Uuid>().ok());
     let detail: Value = sqlx::query_scalar(
         "SELECT jsonb_build_object('expected_relation_key',$4::text,'source_phrase',$5::text,
-          'subject_canonical_key',$2::text,'object_canonical_key',$3::text,
+          'subject_canonical_key',$8::text,'object_canonical_key',$9::text,
           'subject_entity_id',s.id,'object_entity_id',o.id,'subject_type',st.key,'object_type',ot.key,
           'type_binding_status',CASE WHEN s.type_id IS NOT NULL AND o.type_id IS NOT NULL THEN 'bound' ELSE 'pending' END,
           'phrase_binding_status',COALESCE(pb.status,'missing'),'decided_by',pb.decided_by,
@@ -846,14 +874,15 @@ async fn relation_status(
                 AND fe.doc_version=(SELECT COALESCE(MAX(version),1) FROM document_versions WHERE document_id=d.id)))
          FROM (SELECT 1) singleton
          LEFT JOIN documents d ON d.kb_id=$1 AND d.source_id=$6 AND d.external_key=$7 AND d.deleted_at IS NULL
-         LEFT JOIN entities s ON s.kb_id=$1 AND s.canonical_name=$2 AND s.merged_into IS NULL
-         LEFT JOIN entities o ON o.kb_id=$1 AND o.canonical_name=$3 AND o.merged_into IS NULL
+         LEFT JOIN entities s ON s.kb_id=$1 AND s.id=$2 AND s.merged_into IS NULL
+         LEFT JOIN entities o ON o.kb_id=$1 AND o.id=$3 AND o.merged_into IS NULL
          LEFT JOIN entity_types st ON st.id=s.type_id LEFT JOIN entity_types ot ON ot.id=o.type_id
          LEFT JOIN phrase_bindings pb ON pb.kb_id=$1 AND pb.phrase=$5
             AND pb.subject_type_id=s.type_id AND pb.object_type_id=o.type_id AND NOT pb.object_is_value
          LEFT JOIN relation_types bp ON bp.id=pb.relation_type_id LIMIT 1"
-    ).bind(kb).bind(relation["subject_entity_id"].as_str()).bind(relation["object_entity_id"].as_str())
-        .bind(&predicate).bind(&phrase).bind(source).bind(external_key).fetch_one(pool).await?;
+    ).bind(kb).bind(id(subject)).bind(id(object))
+        .bind(&predicate).bind(&phrase).bind(source).bind(external_key)
+        .bind(relation["subject_entity_id"].as_str()).bind(relation["object_entity_id"].as_str()).fetch_one(pool).await?;
     Ok(json!({"expected_relation_key":predicate,"source_phrase":phrase,"binding":detail}))
 }
 
@@ -900,14 +929,16 @@ pub async fn diagnostics(
             unsupported_relations += 1;
             continue;
         }
-        relations.push(relation_status(&state.pool, kb, source, &key, relation).await?);
+        relations.push(relation_status(&state.pool, kb, source, &key, relation, &entities).await?);
     }
     Ok(Json(
         json!({"schema_version":"soorin.receipt-diagnostics.v1","receipt_id":id,
         "source_id":source,"source_scope":{"tenant_id":event["tenant_id"],"source_system":event["source_system"],"source_instance":event["source_instance"]},
         "status":status,"failure_code":failure,"document":document,"evidence_view":"current_document_version",
         "entities":entities,"relations":relations,"unsupported_relation_count":unsupported_relations,
-        "jobs":jobs,"job_limit":30,"relation_limit":512}),
+        "jobs":jobs,"job_limit":30,"relation_limit":512,
+        "relations_truncated":event["relations"].as_array().is_some_and(|rows| rows.len()>512),
+        "entities_truncated":event["entities"].as_array().is_some_and(|rows| rows.len()>128)}),
     ))
 }
 

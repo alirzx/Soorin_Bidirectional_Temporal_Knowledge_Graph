@@ -233,6 +233,92 @@ impl ReviewStage {
     }
 }
 
+/// Reviewed class keys, not display-label similarity, select SOC ontology types.
+pub fn reviewed_soc_type_key(kind: &str) -> Option<String> {
+    let vocabulary: serde_json::Value = serde_json::from_str(include_str!("../../../soorin/ontology/soc_ontology_v1.yaml")).ok()?;
+    let token = |value: &str| value.chars().filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase).collect::<String>();
+    vocabulary["entity_types"].as_array()?.iter().find(|row| {
+        token(kind) == token(row["key"].as_str().unwrap_or_default())
+            || token(kind) == token(row["label"].as_str().unwrap_or_default())
+    }).and_then(|row| row["key"].as_str()).map(String::from)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CuratedGraphBinding {
+    pub entity_id: Option<Uuid>,
+    pub identity_id: Option<Uuid>,
+    pub identity_type: Option<String>,
+    pub linked_entity_id: Option<Uuid>,
+    pub candidate_count: i64,
+    pub candidate_ids: Vec<Uuid>,
+    pub candidates_truncated: bool,
+    pub conflict: Option<&'static str>,
+}
+
+#[derive(sqlx::FromRow)]
+struct CuratedBindingRow {
+    identity_id: Option<Uuid>,
+    identity_type: Option<String>,
+    identity_status: Option<String>,
+    identity_tenant: Option<String>,
+    bound_tenant: Option<String>,
+    linked_entity_id: Option<Uuid>,
+    linked_live: bool,
+    candidate_count: i64,
+    candidate_ids: Vec<Uuid>,
+    authority_conflicts: i64,
+}
+
+/// Inspect the complete candidate count in one snapshot. A bounded candidate
+/// list never hides ambiguity. Existing authority links survive display renames;
+/// conflicting live rows are reported, never selected or automatically merged.
+pub async fn inspect_curated_canonical<'e>(
+    executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    kb: Uuid,
+    key: &str,
+) -> AppResult<CuratedGraphBinding> {
+    let row: CuratedBindingRow = sqlx::query_as(
+        "WITH registry AS (SELECT * FROM soorin_canonical_identities WHERE kb_id=$1 AND canonical_key=$2),
+         candidates AS MATERIALIZED (SELECT id FROM entities WHERE kb_id=$1 AND canonical_name=$2 AND merged_into IS NULL)
+         SELECT (SELECT id FROM registry) AS identity_id,
+           (SELECT entity_type FROM registry) AS identity_type,
+           (SELECT status FROM registry) AS identity_status,
+           (SELECT tenant_id FROM registry) AS identity_tenant,
+           (SELECT tenant_id FROM soorin_kb_tenants WHERE kb_id=$1) AS bound_tenant,
+           (SELECT utopia_entity_id FROM registry) AS linked_entity_id,
+           EXISTS(SELECT 1 FROM entities e JOIN registry i ON i.utopia_entity_id=e.id WHERE e.kb_id=$1 AND e.merged_into IS NULL) AS linked_live,
+           (SELECT count(*) FROM candidates) AS candidate_count,
+           ARRAY(SELECT id FROM candidates ORDER BY id LIMIT 8) AS candidate_ids,
+           (SELECT count(*) FROM soorin_identity_conflicts c JOIN registry i
+             ON c.existing_identity_id=i.id OR c.candidate_identity_id=i.id
+             WHERE c.kb_id=$1 AND c.resolved_at IS NULL) AS authority_conflicts"
+    ).bind(kb).bind(key).fetch_one(executor).await?;
+    let conflict = if row.bound_tenant.is_some() && row.identity_tenant.is_some() && row.bound_tenant != row.identity_tenant {
+        Some("tenant_conflict")
+    } else if row.identity_status.as_deref().is_some_and(|status| status != "active") {
+        Some("identity_not_active")
+    } else if row.authority_conflicts > 0 {
+        Some("authority_conflict")
+    } else if row.candidate_count > 1 {
+        Some("duplicate_live_entities")
+    } else if row.linked_entity_id.is_some() && !row.linked_live {
+        Some("linked_entity_not_live")
+    } else if row.linked_entity_id.is_some() && row.candidate_ids.first().is_some_and(|id| Some(*id) != row.linked_entity_id) {
+        Some("authority_link_disagrees")
+    } else { None };
+    Ok(CuratedGraphBinding {
+        entity_id: if conflict.is_some() { None } else { row.linked_entity_id.or_else(|| row.candidate_ids.first().copied()) },
+        identity_id: row.identity_id,
+        identity_type: row.identity_type,
+        linked_entity_id: row.linked_entity_id,
+        candidate_count: row.candidate_count,
+        candidates_truncated: row.candidate_count > row.candidate_ids.len() as i64,
+        candidate_ids: row.candidate_ids,
+        conflict,
+    })
+}
+
 /// Resolve a reviewed SOC canonical key without heuristic name/type drift.
 /// This is called only by the pushed Statements path for opaque `soorin:`
 /// identities, not by free-form text extraction. If existing rows disagree,
@@ -248,16 +334,10 @@ pub async fn resolve_curated_canonical(
             "invalid curated SOC canonical key".into(),
         ));
     }
-    let expected_type: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM entity_types
-             WHERE kb_id=$1
-               AND regexp_replace(lower(label),'[^a-z0-9]','','g')
-                 = regexp_replace(lower($2),'[^a-z0-9]','','g')",
-    )
-    .bind(kb_id)
-    .bind(kind)
-    .fetch_optional(pool)
-    .await?;
+    let type_key = reviewed_soc_type_key(kind)
+        .ok_or_else(|| AppError::Validation("unknown reviewed SOC entity type".into()))?;
+    let expected_type: Option<Uuid> = sqlx::query_scalar("SELECT id FROM entity_types WHERE kb_id=$1 AND key=$2")
+        .bind(kb_id).bind(type_key).fetch_optional(pool).await?;
     let expected_type = expected_type
         .ok_or_else(|| AppError::Validation("curated SOC entity type is not installed".into()))?;
     let known_as = crate::names::ensure_known_as(pool, kb_id).await?;
@@ -268,63 +348,26 @@ pub async fn resolve_curated_canonical(
         .execute(&mut *tx)
         .await?;
 
-    let existing: Vec<(Uuid, Option<Uuid>, String)> = sqlx::query_as(
-        "SELECT id, type_id, COALESCE(type_source,'') FROM entities
-         WHERE kb_id=$1 AND canonical_name=$2 AND merged_into IS NULL
-         ORDER BY id LIMIT 2",
-    )
-    .bind(kb_id)
-    .bind(name)
-    .fetch_all(&mut *tx)
-    .await?;
-    if existing.len() > 1 {
-        return Err(AppError::Conflict(
-            "soc_curated_identity_ambiguous: review duplicate entity rows".into(),
-        ));
+    let binding = inspect_curated_canonical(&mut *tx, kb_id, name).await?;
+    if binding.conflict.is_some() || binding.identity_type.as_deref().is_some_and(|actual| reviewed_soc_type_key(actual) != reviewed_soc_type_key(kind)) {
+        return Err(AppError::Conflict("soc_curated_identity_conflict: operator review required".into()));
     }
-    let linked: Option<Uuid> = sqlx::query_scalar(
-        "SELECT utopia_entity_id FROM soorin_canonical_identities
-         WHERE kb_id=$1 AND canonical_key=$2 AND status='active'",
-    )
-    .bind(kb_id)
-    .bind(name)
-    .fetch_optional(&mut *tx)
-    .await?
-    .flatten();
-    if let Some((id, actual_type, source)) = existing.into_iter().next() {
-        if linked.is_some_and(|prior| prior != id) {
-            return Err(AppError::Conflict(
-                "soc_curated_identity_binding_conflict: source authority disagrees".into(),
-            ));
-        }
-        if actual_type.is_some_and(|actual| actual != expected_type)
-            || (actual_type.is_none() && source == "human")
-        {
-            return Err(AppError::Conflict(
-                "soc_curated_identity_type_conflict: operator review required".into(),
-            ));
+    if let Some(id) = binding.entity_id {
+        // Human type edits use the same row lock. Recheck after acquiring it;
+        // an untyped human decision is not permission to fill a class.
+        let (actual_type, source): (Option<Uuid>, String) = sqlx::query_as(
+            "SELECT type_id,type_source FROM entities WHERE kb_id=$1 AND id=$2 AND merged_into IS NULL FOR UPDATE"
+        ).bind(kb_id).bind(id).fetch_one(&mut *tx).await?;
+        if actual_type.is_some_and(|actual| actual != expected_type) || (actual_type.is_none() && source == "human") {
+            return Err(AppError::Conflict("soc_curated_identity_type_conflict: operator review required".into()));
         }
         if actual_type.is_none() {
-            sqlx::query(
-                "UPDATE entities SET type_id=$2, type_source='extracted',
-                 specific_type=COALESCE(specific_type,$3), updated_at=now()
-                 WHERE id=$1 AND type_id IS NULL",
-            )
-            .bind(id)
-            .bind(expected_type)
-            .bind(kind)
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query("UPDATE entities SET type_id=$2,type_source='extracted',specific_type=COALESCE(specific_type,$3),updated_at=now() WHERE id=$1 AND type_id IS NULL AND type_source<>'human'")
+                .bind(id).bind(expected_type).bind(kind).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         return Ok(id);
     }
-    if linked.is_some() {
-        return Err(AppError::Conflict(
-            "soc_curated_identity_binding_conflict: linked entity is not live".into(),
-        ));
-    }
-
     let id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO entities (id, kb_id, type_id, canonical_name, specific_type, type_source)
