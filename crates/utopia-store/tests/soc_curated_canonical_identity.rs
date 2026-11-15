@@ -78,10 +78,13 @@ async fn shared_soc_case_keeps_one_typed_entity_across_documents() -> anyhow::Re
 }
 
 #[tokio::test]
-async fn reviewed_keys_authority_conflicts_and_human_types_are_deterministic() -> anyhow::Result<()> {
-    let Some(url) = utopia_store::test_db::url() else { return Ok(()); };
+async fn reviewed_keys_authority_conflicts_and_human_types_are_deterministic() -> anyhow::Result<()>
+{
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
     let pool = PgPool::connect(&url).await?;
-    let (org,ws,kb) = (Uuid::now_v7(),Uuid::now_v7(),Uuid::now_v7());
+    let (org, ws, kb) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
     sqlx::raw_sql(&format!("INSERT INTO organizations(id,name) VALUES('{org}','soc-key-review');
       INSERT INTO workspaces(id,org_id,name) VALUES('{ws}','{org}','soc-key-review');
       INSERT INTO knowledge_bases(id,workspace_id,name) VALUES('{kb}','{ws}','soc-key-review');
@@ -139,6 +142,9 @@ async fn reviewed_keys_authority_conflicts_and_human_types_are_deterministic() -
         assert!(resolve_curated_canonical(&pool,kb,key,"SOCCase").await.is_err());
         Ok(())
     }.await;
-    sqlx::query("DELETE FROM organizations WHERE id=$1").bind(org).execute(&pool).await?;
+    sqlx::query("DELETE FROM organizations WHERE id=$1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
     result
 }

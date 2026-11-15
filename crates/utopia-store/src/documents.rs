@@ -1876,7 +1876,9 @@ pub async fn extract_epoch(pool: &PgPool, id: Uuid) -> AppResult<i32> {
 /// 而它跑完之后就再也不跑了。
 pub type IndexChunk = (Uuid, Uuid, Uuid, String);
 
-pub fn stream_chunks_for_index(pool: &PgPool) -> futures_util::stream::BoxStream<'_, Result<IndexChunk, sqlx::Error>> {
+pub fn stream_chunks_for_index(
+    pool: &PgPool,
+) -> futures_util::stream::BoxStream<'_, Result<IndexChunk, sqlx::Error>> {
     sqlx::query_as(
         "SELECT c.kb_id,c.document_id,c.id,c.text FROM chunks c JOIN documents d ON d.id=c.document_id
          WHERE c.superseded_at IS NULL AND d.deleted_at IS NULL AND d.purged_at IS NULL ORDER BY c.document_id,c.seq"

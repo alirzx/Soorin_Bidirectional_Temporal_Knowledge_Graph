@@ -350,7 +350,7 @@ fn render(event: &Value) -> anyhow::Result<Value> {
         ]));
         for alias in entity["aliases"].as_array().into_iter().flatten() {
             if alias != &entity["normalized_value"] {
-                names.push(json!([entity["entity_id"],alias,null]));
+                names.push(json!([entity["entity_id"], alias, null]));
             }
         }
     }
@@ -719,12 +719,14 @@ async fn process_locked(
         .collect();
     let identities:Vec<(Uuid,String)>=sqlx::query_as("SELECT id,canonical_key FROM soorin_canonical_identities WHERE kb_id=$1 AND canonical_key=ANY($2) AND utopia_entity_id IS NULL AND status='active'").bind(kb).bind(keys).fetch_all(&state.pool).await?;
     for (identity, key) in identities {
-        let binding = utopia_store::resolution::inspect_curated_canonical(&state.pool, kb, &key).await?;
+        let binding =
+            utopia_store::resolution::inspect_curated_canonical(&state.pool, kb, &key).await?;
         if binding.conflict.is_some() {
             return Err(anyhow::Error::new(utopia_core::Terminal).context("soc_identity_conflict"));
         }
         if let Some(entity) = binding.entity_id {
-            utopia_store::soorin_identity::link_utopia_entity(&state.pool, kb, identity, entity).await?;
+            utopia_store::soorin_identity::link_utopia_entity(&state.pool, kb, identity, entity)
+                .await?;
         } else {
             missing = true;
         }
@@ -789,7 +791,11 @@ pub async fn receipts(
     ))
 }
 
-async fn receipt_entities(pool: &sqlx::PgPool, kb: Uuid, event: &Value) -> anyhow::Result<Vec<Value>> {
+async fn receipt_entities(
+    pool: &sqlx::PgPool,
+    kb: Uuid,
+    event: &Value,
+) -> anyhow::Result<Vec<Value>> {
     let types = utopia_store::graph::entity_types(pool, kb).await?;
     let mut rows = Vec::new();
     for expected in event["entities"].as_array().into_iter().flatten().take(128) {
@@ -797,21 +803,32 @@ async fn receipt_entities(pool: &sqlx::PgPool, kb: Uuid, event: &Value) -> anyho
         let binding = utopia_store::resolution::inspect_curated_canonical(pool, kb, key).await?;
         let kind = field(expected, "entity_type")?;
         let expected_key = utopia_store::resolution::reviewed_soc_type_key(kind);
-        let expected_type = types.iter().find(|t| Some(t.key.as_str()) == expected_key.as_deref());
+        let expected_type = types
+            .iter()
+            .find(|t| Some(t.key.as_str()) == expected_key.as_deref());
         let actual: Option<(Option<Uuid>, String)> = sqlx::query_as("SELECT type_id,type_source FROM entities WHERE kb_id=$1 AND id=$2 AND merged_into IS NULL")
             .bind(kb).bind(binding.entity_id).fetch_optional(pool).await?;
         let actual_type = actual.as_ref().and_then(|(id, _)| *id);
         let actual_class = types.iter().find(|t| Some(t.id) == actual_type);
         let conflict = binding.conflict.or_else(|| {
-            if binding.identity_type.as_deref().is_some_and(|value| utopia_store::resolution::reviewed_soc_type_key(value) != expected_key) {
+            if binding.identity_type.as_deref().is_some_and(|value| {
+                utopia_store::resolution::reviewed_soc_type_key(value) != expected_key
+            }) {
                 Some("authority_type_conflict")
             } else if actual_type.is_some() && actual_type != expected_type.map(|t| t.id) {
                 Some("type_conflict")
-            } else if actual.as_ref().is_some_and(|(id, source)| id.is_none() && source == "human") {
+            } else if actual
+                .as_ref()
+                .is_some_and(|(id, source)| id.is_none() && source == "human")
+            {
                 Some("human_type_unset")
-            } else { None }
+            } else {
+                None
+            }
         });
-        let authoritative = expected["source_identifiers"].as_object().is_some_and(|m| !m.is_empty());
+        let authoritative = expected["source_identifiers"]
+            .as_object()
+            .is_some_and(|m| !m.is_empty());
         rows.push(json!({"canonical_key":key,"expected_type":kind,
             "entity_id":if conflict.is_none() {binding.entity_id} else {None},
             "type_key":actual_class.map(|t| &t.key),"type_label":actual_class.map(|t| &t.label),
@@ -860,10 +877,17 @@ async fn relation_status(
     let phrase = field(relation, "relation_type")?
         .to_lowercase()
         .replace('_', " ");
-    let endpoint = |key: &str| entities.iter().find(|e| e["canonical_key"].as_str()==Some(key));
-    let subject = endpoint(field(relation,"subject_entity_id")?);
-    let object = endpoint(field(relation,"object_entity_id")?);
-    let id = |row: Option<&Value>| row.and_then(|e| e["entity_id"].as_str()).and_then(|value| value.parse::<Uuid>().ok());
+    let endpoint = |key: &str| {
+        entities
+            .iter()
+            .find(|e| e["canonical_key"].as_str() == Some(key))
+    };
+    let subject = endpoint(field(relation, "subject_entity_id")?);
+    let object = endpoint(field(relation, "object_entity_id")?);
+    let id = |row: Option<&Value>| {
+        row.and_then(|e| e["entity_id"].as_str())
+            .and_then(|value| value.parse::<Uuid>().ok())
+    };
     let detail: Value = sqlx::query_scalar(
         "SELECT jsonb_build_object('expected_relation_key',$4::text,'source_phrase',$5::text,
           'subject_canonical_key',$8::text,'object_canonical_key',$9::text,

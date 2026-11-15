@@ -121,7 +121,10 @@ impl SearchIndex {
 
     /// Append a bounded recovery batch without replacing earlier chunks of the
     /// same document. Call only before API/workers are started.
-    pub fn append_recovery_batch(&self, rows: &[(String, String, String, String)]) -> anyhow::Result<()> {
+    pub fn append_recovery_batch(
+        &self,
+        rows: &[(String, String, String, String)],
+    ) -> anyhow::Result<()> {
         let mut writer = self.writer.lock().expect("writer lock poisoned");
         for (kb, document, chunk, text) in rows {
             let mut doc = TantivyDocument::default();

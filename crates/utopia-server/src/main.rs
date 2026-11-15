@@ -34,8 +34,8 @@ mod readers;
 mod reranker;
 mod retrieval;
 mod rss_full_content;
-mod soc_alignment;
 mod search_recovery;
+mod soc_alignment;
 mod state;
 mod time_resolution;
 mod time_text;
@@ -154,7 +154,11 @@ async fn main() -> anyhow::Result<()> {
     // Complete the derived-index upgrade before HTTP handlers or workers can
     // index concurrently. A failed recovery must not advertise complete search.
     let recovery = search_recovery::recover(&pool, &search, &index_dir).await?;
-    tracing::info!(rebuilt=recovery.rebuilt,chunks=recovery.chunks,"search analyzer v3 recovery ready");
+    tracing::info!(
+        rebuilt = recovery.rebuilt,
+        chunks = recovery.chunks,
+        "search analyzer v3 recovery ready"
+    );
 
     // JWT 密钥：环境变量优先（轮换、多实例显式对齐走这条），否则用库里那条；
     // 库里也没有就现生成一条存进去。生成放在这里而不是 store 里，是因为

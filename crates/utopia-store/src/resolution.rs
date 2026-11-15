@@ -235,13 +235,26 @@ impl ReviewStage {
 
 /// Reviewed class keys, not display-label similarity, select SOC ontology types.
 pub fn reviewed_soc_type_key(kind: &str) -> Option<String> {
-    let vocabulary: serde_json::Value = serde_json::from_str(include_str!("../../../soorin/ontology/soc_ontology_v1.yaml")).ok()?;
-    let token = |value: &str| value.chars().filter(|c| c.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase).collect::<String>();
-    vocabulary["entity_types"].as_array()?.iter().find(|row| {
-        token(kind) == token(row["key"].as_str().unwrap_or_default())
-            || token(kind) == token(row["label"].as_str().unwrap_or_default())
-    }).and_then(|row| row["key"].as_str()).map(String::from)
+    let vocabulary: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../soorin/ontology/soc_ontology_v1.yaml"
+    ))
+    .ok()?;
+    let token = |value: &str| {
+        value
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    vocabulary["entity_types"]
+        .as_array()?
+        .iter()
+        .find(|row| {
+            token(kind) == token(row["key"].as_str().unwrap_or_default())
+                || token(kind) == token(row["label"].as_str().unwrap_or_default())
+        })
+        .and_then(|row| row["key"].as_str())
+        .map(String::from)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -294,9 +307,16 @@ pub async fn inspect_curated_canonical<'e>(
              ON c.existing_identity_id=i.id OR c.candidate_identity_id=i.id
              WHERE c.kb_id=$1 AND c.resolved_at IS NULL) AS authority_conflicts"
     ).bind(kb).bind(key).fetch_one(executor).await?;
-    let conflict = if row.bound_tenant.is_some() && row.identity_tenant.is_some() && row.bound_tenant != row.identity_tenant {
+    let conflict = if row.bound_tenant.is_some()
+        && row.identity_tenant.is_some()
+        && row.bound_tenant != row.identity_tenant
+    {
         Some("tenant_conflict")
-    } else if row.identity_status.as_deref().is_some_and(|status| status != "active") {
+    } else if row
+        .identity_status
+        .as_deref()
+        .is_some_and(|status| status != "active")
+    {
         Some("identity_not_active")
     } else if row.authority_conflicts > 0 {
         Some("authority_conflict")
@@ -304,11 +324,23 @@ pub async fn inspect_curated_canonical<'e>(
         Some("duplicate_live_entities")
     } else if row.linked_entity_id.is_some() && !row.linked_live {
         Some("linked_entity_not_live")
-    } else if row.linked_entity_id.is_some() && row.candidate_ids.first().is_some_and(|id| Some(*id) != row.linked_entity_id) {
+    } else if row.linked_entity_id.is_some()
+        && row
+            .candidate_ids
+            .first()
+            .is_some_and(|id| Some(*id) != row.linked_entity_id)
+    {
         Some("authority_link_disagrees")
-    } else { None };
+    } else {
+        None
+    };
     Ok(CuratedGraphBinding {
-        entity_id: if conflict.is_some() { None } else { row.linked_entity_id.or_else(|| row.candidate_ids.first().copied()) },
+        entity_id: if conflict.is_some() {
+            None
+        } else {
+            row.linked_entity_id
+                .or_else(|| row.candidate_ids.first().copied())
+        },
         identity_id: row.identity_id,
         identity_type: row.identity_type,
         linked_entity_id: row.linked_entity_id,
@@ -336,8 +368,12 @@ pub async fn resolve_curated_canonical(
     }
     let type_key = reviewed_soc_type_key(kind)
         .ok_or_else(|| AppError::Validation("unknown reviewed SOC entity type".into()))?;
-    let expected_type: Option<Uuid> = sqlx::query_scalar("SELECT id FROM entity_types WHERE kb_id=$1 AND key=$2")
-        .bind(kb_id).bind(type_key).fetch_optional(pool).await?;
+    let expected_type: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM entity_types WHERE kb_id=$1 AND key=$2")
+            .bind(kb_id)
+            .bind(type_key)
+            .fetch_optional(pool)
+            .await?;
     let expected_type = expected_type
         .ok_or_else(|| AppError::Validation("curated SOC entity type is not installed".into()))?;
     let known_as = crate::names::ensure_known_as(pool, kb_id).await?;
@@ -349,8 +385,15 @@ pub async fn resolve_curated_canonical(
         .await?;
 
     let binding = inspect_curated_canonical(&mut *tx, kb_id, name).await?;
-    if binding.conflict.is_some() || binding.identity_type.as_deref().is_some_and(|actual| reviewed_soc_type_key(actual) != reviewed_soc_type_key(kind)) {
-        return Err(AppError::Conflict("soc_curated_identity_conflict: operator review required".into()));
+    if binding.conflict.is_some()
+        || binding
+            .identity_type
+            .as_deref()
+            .is_some_and(|actual| reviewed_soc_type_key(actual) != reviewed_soc_type_key(kind))
+    {
+        return Err(AppError::Conflict(
+            "soc_curated_identity_conflict: operator review required".into(),
+        ));
     }
     if let Some(id) = binding.entity_id {
         // Human type edits use the same row lock. Recheck after acquiring it;
@@ -358,8 +401,12 @@ pub async fn resolve_curated_canonical(
         let (actual_type, source): (Option<Uuid>, String) = sqlx::query_as(
             "SELECT type_id,type_source FROM entities WHERE kb_id=$1 AND id=$2 AND merged_into IS NULL FOR UPDATE"
         ).bind(kb_id).bind(id).fetch_one(&mut *tx).await?;
-        if actual_type.is_some_and(|actual| actual != expected_type) || (actual_type.is_none() && source == "human") {
-            return Err(AppError::Conflict("soc_curated_identity_type_conflict: operator review required".into()));
+        if actual_type.is_some_and(|actual| actual != expected_type)
+            || (actual_type.is_none() && source == "human")
+        {
+            return Err(AppError::Conflict(
+                "soc_curated_identity_type_conflict: operator review required".into(),
+            ));
         }
         if actual_type.is_none() {
             sqlx::query("UPDATE entities SET type_id=$2,type_source='extracted',specific_type=COALESCE(specific_type,$3),updated_at=now() WHERE id=$1 AND type_id IS NULL AND type_source<>'human'")
