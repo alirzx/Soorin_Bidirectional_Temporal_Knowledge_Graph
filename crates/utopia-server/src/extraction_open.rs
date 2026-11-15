@@ -248,21 +248,29 @@ async fn apply_open_extraction(
             let bound = bound_types
                 .get(&utopia_store::type_bindings::normalize(kind))
                 .copied();
-            let id = resolve_handle(
-                pool,
-                kb_id,
-                bound,
-                name,
-                ctx,
-                name_vecs.get(&key).map(Vec::as_slice),
-                Some(&chunk.text),
-                &mut response_claims,
-                handled_by_name,
-                ambiguous_bare_cache,
-                needs_adjudication,
-                human_reviews_found,
-            )
-            .await?;
+            // Curated SOC Statements carry reviewed opaque canonical keys and
+            // explicit types. Never apply fuzzy same-name/type-drift resolution
+            // to them: shared Case/Notable/Event identifiers must resolve to
+            // precisely one durable graph entity across concurrent documents.
+            let id = if pushed && name.starts_with("soorin:") {
+                utopia_store::resolution::resolve_curated_canonical(pool, kb_id, name, kind).await?
+            } else {
+                resolve_handle(
+                    pool,
+                    kb_id,
+                    bound,
+                    name,
+                    ctx,
+                    name_vecs.get(&key).map(Vec::as_slice),
+                    Some(&chunk.text),
+                    &mut response_claims,
+                    handled_by_name,
+                    ambiguous_bare_cache,
+                    needs_adjudication,
+                    human_reviews_found,
+                )
+                .await?
+            };
             // 模型说它是什么（「a British film」里的 film）：存成它自己的说法，
             // 类的绑定等对齐来做
             if !kind.is_empty() {

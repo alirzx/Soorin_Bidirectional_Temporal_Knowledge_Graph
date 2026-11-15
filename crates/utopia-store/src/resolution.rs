@@ -233,6 +233,125 @@ impl ReviewStage {
     }
 }
 
+/// Resolve a reviewed SOC canonical key without heuristic name/type drift.
+/// This is called only by the pushed Statements path for opaque `soorin:`
+/// identities, not by free-form text extraction. If existing rows disagree,
+/// fail closed: the operator must review duplicate entities and their facts.
+pub async fn resolve_curated_canonical(
+    pool: &PgPool,
+    kb_id: Uuid,
+    name: &str,
+    kind: &str,
+) -> AppResult<Uuid> {
+    if !name.starts_with("soorin:") || name.len() > 256 {
+        return Err(AppError::Validation(
+            "invalid curated SOC canonical key".into(),
+        ));
+    }
+    let expected_type: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM entity_types
+             WHERE kb_id=$1
+               AND regexp_replace(lower(label),'[^a-z0-9]','','g')
+                 = regexp_replace(lower($2),'[^a-z0-9]','','g')",
+    )
+    .bind(kb_id)
+    .bind(kind)
+    .fetch_optional(pool)
+    .await?;
+    let expected_type = expected_type
+        .ok_or_else(|| AppError::Validation("curated SOC entity type is not installed".into()))?;
+    let known_as = crate::names::ensure_known_as(pool, kb_id).await?;
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+        .bind(kb_id.to_string())
+        .bind(name)
+        .execute(&mut *tx)
+        .await?;
+
+    let existing: Vec<(Uuid, Option<Uuid>, String)> = sqlx::query_as(
+        "SELECT id, type_id, COALESCE(type_source,'') FROM entities
+         WHERE kb_id=$1 AND canonical_name=$2 AND merged_into IS NULL
+         ORDER BY id LIMIT 2",
+    )
+    .bind(kb_id)
+    .bind(name)
+    .fetch_all(&mut *tx)
+    .await?;
+    if existing.len() > 1 {
+        return Err(AppError::Conflict(
+            "soc_curated_identity_ambiguous: review duplicate entity rows".into(),
+        ));
+    }
+    let linked: Option<Uuid> = sqlx::query_scalar(
+        "SELECT utopia_entity_id FROM soorin_canonical_identities
+         WHERE kb_id=$1 AND canonical_key=$2 AND status='active'",
+    )
+    .bind(kb_id)
+    .bind(name)
+    .fetch_optional(&mut *tx)
+    .await?
+    .flatten();
+    if let Some((id, actual_type, source)) = existing.into_iter().next() {
+        if linked.is_some_and(|prior| prior != id) {
+            return Err(AppError::Conflict(
+                "soc_curated_identity_binding_conflict: source authority disagrees".into(),
+            ));
+        }
+        if actual_type.is_some_and(|actual| actual != expected_type)
+            || (actual_type.is_none() && source == "human")
+        {
+            return Err(AppError::Conflict(
+                "soc_curated_identity_type_conflict: operator review required".into(),
+            ));
+        }
+        if actual_type.is_none() {
+            sqlx::query(
+                "UPDATE entities SET type_id=$2, type_source='extracted',
+                 specific_type=COALESCE(specific_type,$3), updated_at=now()
+                 WHERE id=$1 AND type_id IS NULL",
+            )
+            .bind(id)
+            .bind(expected_type)
+            .bind(kind)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        return Ok(id);
+    }
+    if linked.is_some() {
+        return Err(AppError::Conflict(
+            "soc_curated_identity_binding_conflict: linked entity is not live".into(),
+        ));
+    }
+
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO entities (id, kb_id, type_id, canonical_name, specific_type, type_source)
+         VALUES ($1,$2,$3,$4,$5,'extracted')",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .bind(expected_type)
+    .bind(name)
+    .bind(kind)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_value)
+         VALUES ($1,$2,$3,$4,jsonb_build_object('value',$5::text))",
+    )
+    .bind(Uuid::now_v7())
+    .bind(kb_id)
+    .bind(id)
+    .bind(known_as)
+    .bind(name)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(id)
+}
+
 /// 消解一个 mention。召回走两条通道（0041 决定 3）：名字字面相等（通道 1，
 /// `resolve_by_name` 里的那条 SQL）和名字向量最近邻（通道 2，给了 `name_vector` 才走）。
 ///

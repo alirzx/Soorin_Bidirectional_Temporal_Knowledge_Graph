@@ -14,7 +14,7 @@ use tantivy::query::{BooleanQuery, Occur, Query, TermQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, STORED, STRING,
 };
-use tantivy::tokenizer::TextAnalyzer;
+use tantivy::tokenizer::{LowerCaser, TextAnalyzer};
 use tantivy::{Index, IndexReader, IndexWriter, TantivyDocument, Term};
 
 const JIEBA: &str = "jieba";
@@ -57,9 +57,11 @@ impl SearchIndex {
             tantivy::directory::MmapDirectory::open(dir).context("Failed to open index dir")?;
         let index =
             Index::open_or_create(mmap, schema).context("Failed to open/create Tantivy index")?;
-        index
-            .tokenizers()
-            .register(JIEBA, tantivy_jieba::JiebaTokenizer::new());
+        // Normalize case consistently on both indexing and query paths.
+        let jieba = TextAnalyzer::builder(tantivy_jieba::JiebaTokenizer::new())
+            .filter(LowerCaser)
+            .build();
+        index.tokenizers().register(JIEBA, jieba);
 
         let writer = index.writer(WRITER_HEAP)?;
         // Backport of upstream 7baecc9d2a15a676729b3c54e24f62f5fdb0691b.
@@ -268,6 +270,35 @@ mod reload_tests {
         atomic::{AtomicBool, Ordering},
         Arc,
     };
+    #[test]
+    fn soc_rule_titles_are_recalled_independent_of_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = SearchIndex::open(dir.path()).unwrap();
+        index
+            .reindex_document(
+                "soc-kb",
+                "doc",
+                &[(
+                    "chunk".into(),
+                    r#"{ "rule_title": "Password Spray Detection", "source": "splunk" }"#.into(),
+                )],
+            )
+            .unwrap();
+        for query in [
+            "Password",
+            "password",
+            "PASSWORD",
+            "Password Spray Detection",
+        ] {
+            let hits = index.search("soc-kb", query, 10).unwrap();
+            assert_eq!(hits.len(), 1, "missing SOC rule title for query={query}");
+        }
+        assert!(index
+            .search("another-kb", "password", 10)
+            .unwrap()
+            .is_empty());
+    }
+
     #[test]
     fn committed_replacements_remain_visible_during_concurrent_reads() {
         let dir = tempfile::tempdir().unwrap();
