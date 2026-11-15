@@ -507,7 +507,7 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     // source authentication/checksum idempotency before any graph work.
     let curated = json!({"profile":"agentic-soc.splunk-curated.v1","record":{
         "alert_row_id":"synthetic-http-ingest","event_time":"2026-11-01T10:00:00Z",
-        "hostname":"http.synthetic.example"}});
+        "title":"Password Spray Detection Source Alert","hostname":"http.synthetic.example"}});
     let path = format!("/api/v1/sources/{source}/soc/ingest");
     let (code, first) = call(
         app.clone(),
@@ -521,6 +521,22 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     assert_eq!(code, 200, "{duplicate}");
     assert_eq!(first["receipt_id"], duplicate["receipt_id"]);
     assert_eq!(first["job_id"], duplicate["job_id"]);
+    let receipt_id:Uuid=first["receipt_id"].as_str().unwrap().parse()?;
+    assert!(utopia_core::is_deferred(&soc_ingestion::process(&state,receipt_id).await.unwrap_err()).is_some());
+    let (_,detail)=receipt_diagnostic(app.clone(),kb,receipt_id,&session).await?;
+    let document:Uuid=detail["document"]["document_id"].as_str().unwrap().parse()?;
+    crate::pipeline::process_document(&state,document).await?;
+    let (chunk,text):(Uuid,String)=sqlx::query_as("SELECT id,text FROM chunks WHERE document_id=$1 AND superseded_at IS NULL")
+        .bind(document).fetch_one(&pool).await?;
+    assert!(text.contains("Password Spray Detection Source Alert"));
+    let hits=state.search.search(&kb.to_string(),"password spray detection",100)?;
+    assert!(hits.iter().any(|hit|hit.chunk_id==chunk.to_string()));
+    assert!(state.search.search(&other_kb.to_string(),"password spray detection",100)?.is_empty());
+    crate::extraction::extract_document(&state,document,Default::default()).await?;
+    crate::soc_alignment::types(&pool,kb).await?;
+    crate::soc_alignment::phrases(&pool,kb).await?;
+    utopia_store::materialize::materialize(&pool,kb).await?;
+    soc_ingestion::process(&state,receipt_id).await?;
     // Full supported relation flow, including a second revision under an
     // already-bound signature. No model/service or global worker is needed.
     let events: Value = serde_json::from_str(include_str!(

@@ -364,6 +364,14 @@ def normalize_llm_payload(
             "investigation_hint": "retrieval guidance; not evidence",
         },
     })
+    # Titles are source descriptions, never identity authority. Preserve only
+    # explicitly named title fields as a bounded, versioned search projection.
+    # The original source checksum remains in evidence; checksum v3 itself is
+    # unchanged. Historical retries must replay their original canonical bytes.
+    title = _first(raw, 'alert_title', 'title') or _first(payload, 'alert_title', 'title')
+    if title:
+        attributes['searchable_metadata'] = {'version':'soorin.soc.search-metadata.v1',
+            'alert_title':' '.join(title.split())[:512]}
     if "ticket_link_requires_alert_or_case" in warnings:
         attributes["normalization_warnings"] = ["ticket_link_requires_alert_or_case"]
     evidence_content = _source_content({"raw_record": raw, "llm_payload": payload})

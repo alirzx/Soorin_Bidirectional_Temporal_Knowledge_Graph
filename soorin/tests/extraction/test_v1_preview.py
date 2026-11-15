@@ -79,3 +79,15 @@ class CurrentAgenticContractTests(unittest.TestCase):
         legacy = {**payload, '_meta':{}}
         event = normalize_llm_payload(legacy, tenant_id='blue', source_instance='qa').event
         self.assertEqual(event.event_type, 'splunk_notable')
+
+    def test_source_title_is_search_metadata_without_identity_authority(self):
+        record = {**RECORD,'title':'Synthetic Unique Password Spray Alert',
+                  'raw_secret_field':'not-searchable'}
+        event,_ = preview(json.dumps(record),tenant_id='blue',source_instance='qa')
+        base,_ = preview(json.dumps(RECORD),tenant_id='blue',source_instance='qa')
+        self.assertEqual([e.entity_id for e in event.entities],[e.entity_id for e in base.entities])
+        self.assertEqual(event.attributes['searchable_metadata']['alert_title'],record['title'])
+        self.assertEqual(event.content_checksum_version,'soorin.source-content.sha256.v3')
+        again,_ = preview(json.dumps(record),tenant_id='blue',source_instance='qa')
+        self.assertEqual(event.content_checksum,again.content_checksum)
+        self.assertNotIn('not-searchable',event.to_json())

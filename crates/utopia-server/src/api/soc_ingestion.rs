@@ -348,6 +348,11 @@ fn render(event: &Value) -> anyhow::Result<Value> {
             entity["normalized_value"],
             null
         ]));
+        for alias in entity["aliases"].as_array().into_iter().flatten() {
+            if alias != &entity["normalized_value"] {
+                names.push(json!([entity["entity_id"],alias,null]));
+            }
+        }
     }
     for relation in event["relations"].as_array().into_iter().flatten() {
         let mut q = qualifiers.clone();
