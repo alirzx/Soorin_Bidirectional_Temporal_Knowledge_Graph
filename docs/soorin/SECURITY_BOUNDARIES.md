@@ -73,3 +73,11 @@ Release CI requires successful latest CI at the exact SHA, including migrations
 and frontend. Configure required reviewers on the `production-release` GitHub
 environment and branch protection; YAML alone cannot create those controls.
 No release/tag/main merge is authorized by this engineering handoff.
+
+
+2026-11-15 continuation: curated HTTP normalizes at most two children for ten
+seconds each, with 1 MiB public input/output. Source scope comes from the immutable
+binding, including checks against conflicting nested envelopes. Child stderr and
+raw exception bodies are suppressed. Provider settings reject credential/query/
+fragment URLs and require a replacement secret for cross-origin changes. Existing
+same-origin key preservation and deployment-owned egress/gateway controls remain.

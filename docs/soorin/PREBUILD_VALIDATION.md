@@ -7,8 +7,8 @@ This phase is lightweight and model-free. Full build/runtime commands are in
 ```bash
 timeout 20s cargo fmt --all --check
 timeout 30s cargo metadata --locked --offline --no-deps --format-version 1
-timeout 30s python3 -m compileall -q soorin
-timeout 45s python3 -m unittest discover -s soorin/tests -p 'test_*.py'
+PYTHONDONTWRITEBYTECODE=1 python3 -c "import ast,pathlib; [ast.parse(p.read_text(),filename=str(p)) for p in pathlib.Path('soorin').rglob('*.py')]"
+PYTHONDONTWRITEBYTECODE=1 timeout 60s python3 -m unittest discover -s soorin/tests -p 'test_*.py'
 timeout 15s python3 -m unittest discover -s soorin/tests/mock_splunk/tests
 timeout 15s docker compose -f docker-compose.soorin-dev.yml -f docker-compose.models.yml config --quiet
 timeout 15s docker compose --env-file soorin/config/production.env.example -f docker-compose.production.yml config --quiet
@@ -22,11 +22,12 @@ image builds or the full Rust suite in this phase. Existing caches are inspected
 with `verify-artifacts`, not initialization/loading. Production example values
 are placeholders: successful Compose parsing is not a usable deployment.
 
-Focused branch review also runs the existing frontend typecheck/test/guard scripts
-with already-installed dependencies. A short frontend asset build is allowed;
-a full application/Rust/image build is not implied. In an environment without pnpm,
-invoke the corresponding installed `tsc`, `vitest`, style-guard and Vite executables
-directly. Affected Rust tests may run once with a bounded offline compilation
-budget; a timeout is NOT RUN, not a reason to restart compilation repeatedly.
-Integration requires verified exact-commit CI; preserve the hardening branch if
-that gate is unavailable. See [Pre-build report](PREBUILD_HARDENING_REPORT.md).
+For the 2026-11-15 continuation, local Rust compilation, frontend builds,
+dependency installation/download, Docker startup, migration execution, model
+loading and live E2E are prohibited. Run only installed formatters, AST/JSON/shell
+checks, `docker compose config --quiet`, and bounded mock-only Python tests.
+No usable native rustfmt is currently installed on this host; the cached binary
+lacks its rustc driver library. Do not start a formatter container or install a
+toolchain to work around that restriction. Automatic GitHub CI provides Rust
+format/lint/build/test evidence; inspect the exact final SHA. Historical reports
+are not proof for current HEAD. See [Continuation report](CONTINUATION_HARDENING_REPORT.md).

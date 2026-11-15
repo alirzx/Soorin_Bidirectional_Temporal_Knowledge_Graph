@@ -30,7 +30,7 @@ Soorin `0111_soorin_external_identity_registry.sql` and upstream
 `0111_an_uploaded_original_has_a_version.sql` have different SQLx checksums.
 Run `timeout 15s python3 -m soorin.ops.migrations --upstream-ref upstream/main`;
 a nonzero result is expected until reconciliation. It is not a failed Soorin
-fresh-schema migration test. The current Soorin tree has 104 migrations.
+fresh-schema migration test. The 2026-11-15 Soorin tree has 105 migrations; latest is additive 10004.
 
 Do not rename/delete/edit applied 0111/0112 or change `_sqlx_migrations` to pretend
 the two histories match. Reconciliation must be a separately reviewed roll-forward
@@ -65,3 +65,10 @@ narrow independent frontend bug fix was identified for this pass. Product brandi
 is local Soorin work. Preserve `utopia-main-backup`: its independent history has
 unique commits and no shared merge base with the Soorin feature history. Do not
 force-delete it merely because an upstream ref contains the same commits.
+
+
+2026-11-15 selective port: upstream `b7f756e` (job outcome writeback retry) was
+reviewed and ported without the unrelated scheduler-priority changes or migrations.
+It fences completion by locked_at and retries the computed outcome after DB write
+failure. Existing Soorin Deferred semantics and runtime boundaries are preserved.
+No blanket upstream merge was performed.

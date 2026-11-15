@@ -1,0 +1,225 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Soorin Curated SOC HTTP Adapter",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/v1/sources/{id}/soc/preview": {
+      "post": {
+        "operationId": "socCuratedPreview",
+        "description": "Normalize without durable writes or model inference.",
+        "security": [
+          {
+            "sourceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "profile",
+                  "record"
+                ],
+                "properties": {
+                  "profile": {
+                    "type": "string",
+                    "enum": [
+                      "agentic-soc.splunk-curated.v1"
+                    ]
+                  },
+                  "record": {
+                    "type": "object",
+                    "description": "One supported Splunk/Agentic_SOC curated record with a durable source identity and timezone-aware event/alert time. Supported envelopes and field types are documented in MANUAL_SOC_INGESTION.md; arbitrary vendor schemas and batches are unsupported."
+                  }
+                }
+              },
+              "example": {
+                "profile": "agentic-soc.splunk-curated.v1",
+                "record": {
+                  "alert_row_id": "synthetic-alert-001",
+                  "event_time": "2026-11-01T10:00:00Z",
+                  "hostname": "host.synthetic.example"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Preview report with canonical_event, or soorin.ingestion-receipt.v1."
+          },
+          "401": {
+            "description": "Invalid source bearer credential."
+          },
+          "404": {
+            "description": "Source or bound scope unavailable."
+          },
+          "409": {
+            "description": "Normalizer capacity/timeout, or native source admission conflict; bounded retry permitted."
+          },
+          "413": {
+            "description": "HTTP body limit exceeded."
+          },
+          "422": {
+            "description": "Invalid UTF-8, input >1 MiB, unsupported profile, ambiguous JSON, scope mismatch, malformed or unsupported record."
+          },
+          "500": {
+            "description": "Normalizer interpreter/module/process unavailable; operator repair required."
+          }
+        }
+      }
+    },
+    "/api/v1/sources/{id}/soc/ingest": {
+      "post": {
+        "operationId": "socCuratedIngest",
+        "description": "Normalize and submit through native knowledge-events admission; replay deduplicates the canonical checksum.",
+        "security": [
+          {
+            "sourceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "profile",
+                  "record"
+                ],
+                "properties": {
+                  "profile": {
+                    "type": "string",
+                    "enum": [
+                      "agentic-soc.splunk-curated.v1"
+                    ]
+                  },
+                  "record": {
+                    "type": "object",
+                    "description": "One supported Splunk/Agentic_SOC curated record with a durable source identity and timezone-aware event/alert time. Supported envelopes and field types are documented in MANUAL_SOC_INGESTION.md; arbitrary vendor schemas and batches are unsupported."
+                  }
+                }
+              },
+              "example": {
+                "profile": "agentic-soc.splunk-curated.v1",
+                "record": {
+                  "alert_row_id": "synthetic-alert-001",
+                  "event_time": "2026-11-01T10:00:00Z",
+                  "hostname": "host.synthetic.example"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Preview report with canonical_event, or soorin.ingestion-receipt.v1."
+          },
+          "401": {
+            "description": "Invalid source bearer credential."
+          },
+          "404": {
+            "description": "Source or bound scope unavailable."
+          },
+          "409": {
+            "description": "Normalizer capacity/timeout, or native source admission conflict; bounded retry permitted."
+          },
+          "413": {
+            "description": "HTTP body limit exceeded."
+          },
+          "422": {
+            "description": "Invalid UTF-8, input >1 MiB, unsupported profile, ambiguous JSON, scope mismatch, malformed or unsupported record."
+          },
+          "500": {
+            "description": "Normalizer interpreter/module/process unavailable; operator repair required."
+          }
+        }
+      }
+    },
+    "/api/v1/kbs/{kb}/knowledge/receipts/{receipt}": {
+      "get": {
+        "operationId": "socReceiptDiagnostics",
+        "security": [
+          {
+            "sessionBearer": []
+          }
+        ],
+        "description": "KB-admin-only metadata; no raw source payload or exception body. Evidence is checked against the current document version; a historically bound receipt is not an immutable snapshot of that document.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kb",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "receipt",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "soorin.receipt-diagnostics.v1, <=128 entity rows, <=512 relations, <=30 jobs."
+          },
+          "403": {
+            "description": "KB administrator required."
+          },
+          "404": {
+            "description": "Receipt does not belong to requested KB."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "sourceBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Dedicated Statements source ingest token; tenant/source scope is server bound."
+      },
+      "sessionBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Authenticated KB administrator session."
+      }
+    }
+  }
+}

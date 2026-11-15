@@ -93,3 +93,24 @@ Do not blindly run an older binary against a newer schema.
 ## V1 baseline update
 
 V1 baseline parameterizes app publication as `SOORIN_APP_BIND` (default 127.0.0.1:2516); use a verified unused bind before deployment. Keep DB/model ports internal. Future Agentic access requires approved DNS/TLS reverse proxy, narrowly scoped read PAT and separate TKG Privacy Gateway client authorization; no running server network was joined. Local QA uses [the dedicated project/env](LOCAL_DEVELOPMENT.md), not this production template. No immutable image qualification, backup restore or live gateway test occurred in this pass.
+
+## 2026-11-15 source continuation requirements
+
+The current schema inventory is **105 SQL migrations**, latest **10004**. Backup
+manifest version is 105; restore still refuses a newer manifest and warns for an
+older one. No applied migration was edited and no local migration was executed
+in this continuation. Qualify fresh, upgrade and restore paths separately.
+
+The application image now installs Debian `python3`, copies `/app/soorin`, sets
+`UTOPIA_SOC_PYTHON_ROOT=/app` and disables bytecode writes. Curated HTTP uses only
+stdlib and the bundled ontology under `python3 -S`, so model packages are not an
+application-runtime dependency. Import behavior was unit tested from an unrelated
+working directory with site packages disabled. Image permissions/nonroot imports,
+read-only filesystem behavior, child cancellation and peak RAM still require the
+next image qualification. Keep one application worker process per DB until the
+existing startup orphan-recovery semantics are separately qualified for replicas.
+
+Production examples remain placeholders, not qualified image digests or usable
+secrets. Optional Star History requires an authorized repository `METRICS_TOKEN`
+secret; its absence is independent of application CI/runtime readiness. No token
+or workflow permission was fabricated or weakened.

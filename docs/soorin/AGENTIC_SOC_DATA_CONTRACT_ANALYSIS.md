@@ -82,3 +82,9 @@ examples in this historical audit are not the current default storage policy.
 ## V1 baseline update
 
 Current source reference is main `a0a160d1dfbd83304fbb335b8ef8ba871a04cd90`; the older branch analysis above is historical. The API enrichment builder now emits alerts.id in payload alert_id when `_meta.mode=enriched_from_api`. TKG explicitly distinguishes that contract from legacy curated notables. See [updated workflow audit](AGENT_TOOL_CONTRACTS.md).
+
+
+The [2026-11-15 versioned producer mapping](PRODUCER_MAPPING_V1_20261115.md)
+adds source-reviewed fusion `{type,value}` arrays, nested source-scope checks and
+stdlib-only curated HTTP normalization. Agentic_SOC remained read only at a0a160d.
+This is contract compatibility evidence, not a live investigation integration.

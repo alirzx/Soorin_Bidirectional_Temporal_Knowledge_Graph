@@ -104,3 +104,44 @@ Never mix legacy direct Statements with native receipts on one source. Use Libra
 for document uploads, Ontology for SOC import, Graph/Entity detail for relationships
 and evidence, Jobs/receipt diagnostics for completion, and Search for passages.
 Manual SOC preview/submission is currently this CLI, not a new web form.
+
+## Curated HTTP profile v1 (2026-11-15)
+
+`POST /api/v1/sources/{id}/soc/preview` and `/soc/ingest` accept one object:
+`{"profile":"agentic-soc.splunk-curated.v1","record":{...}}`.
+The public envelope has no tenant/source override fields. The source bearer token
+is checked first; the immutable KB binding supplies tenant and source instance.
+Only a binding with `source_system=splunk` is supported by this profile.
+The record may use the documented supported envelopes, including bounded
+JSON-string `raw_data`, nested `llm_payload`, typed fusion `entities`/`iocs`,
+and affected-host/user/IP arrays. Unknown typed values remain warnings/unresolved.
+Nested envelope scope mismatches are rejected.
+
+The application invokes the existing stdlib-only Python normalizer with `-S` and
+an explicit `UTOPIA_SOC_PYTHON_ROOT` (image default `/app`; local binary users must
+set it to the checkout root). It starts at most two children, times each out at
+10 seconds, bounds public input/output to 1 MiB, and kills children on cancellation.
+Preview performs no durable write or NER/model inference. Ingest reuses native
+validation, storage policy, checksum v3, receipt creation and replay deduplication.
+
+Safe response categories: 401 source credential, 404 source/binding, 409 temporary
+normalizer capacity/timeout or native source conflict, 413 HTTP body limit,
+422 invalid input/profile/scope, 500 unavailable interpreter/module/process.
+Repair deployment failures before retrying. Do not treat a 200 receipt as `bound`.
+No Python exception body, raw payload, source credential or detailed source-value
+warning is written to application logs.
+
+[OpenAPI v1](../../soorin/contracts/schemas/curated_http_v1.openapi.json) describes
+these routes. Synthetic example, **only for the next approved QA runtime session**:
+
+```bash
+curl --fail-with-body --max-time 15 \
+  -H "Authorization: Bearer $UTOPIA_INGEST_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"profile":"agentic-soc.splunk-curated.v1","record":{"alert_row_id":"synthetic-alert-001","event_time":"2026-11-01T10:00:00Z","hostname":"host.synthetic.example"}}' \
+  "http://127.0.0.1:2526/api/v1/sources/$UTOPIA_SOURCE_ID/soc/preview"
+```
+
+Change only the final path to `/soc/ingest` for explicit submission. Save/replay
+canonical bytes or the same curated observation; do not manufacture a new source
+clock. Synthetic receipt metadata is the durable admission audit record.

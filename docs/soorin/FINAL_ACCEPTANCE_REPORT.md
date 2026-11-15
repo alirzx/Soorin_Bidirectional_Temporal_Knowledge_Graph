@@ -1,5 +1,9 @@
 # Final engineering acceptance — 2026-11-05
 
+> Historical checkpoint. The current continuation is documented in
+> [2026-11-15 hardening review](CONTINUATION_HARDENING_REPORT.md); results below
+> must not be attributed to the new commit or schema inventory.
+
 > Subsequent small hardening evidence and Git integration gates: [Pre-build hardening report](PREBUILD_HARDENING_REPORT.md). This report remains the preserved prior checkpoint.
 
 

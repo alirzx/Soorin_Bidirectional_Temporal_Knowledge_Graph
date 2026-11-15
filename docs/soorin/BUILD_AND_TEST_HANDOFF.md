@@ -8,7 +8,7 @@ exit codes and report paths. A timeout is BLOCKED, not PASS; do not loop slow jo
 
 ## Phase A — Rust and frontend
 
-Use Rust 1.99.1 (the formatter/metadata version used in this pass), installed
+Use a previously installed compatible Rust toolchain (the image pins 1.99.1), with installed
 rustfmt/clippy, locked dependencies and a qualified disposable PostgreSQL URL.
 First inspect git status and capture the SHA. Commands below are stage budgets,
 not permissions to run them during the current lightweight session.
@@ -44,7 +44,7 @@ UTOPIA_DATABASE_URL="$SOORIN_UPGRADE_TEST_URL" timeout 300s cargo run --locked -
 
 The upgrade utility refuses initialized databases, builds the <=0112 schema,
 seeds synthetic content, applies the current schema twice and checks preserved
-content/checksums. Current tree contains 104 migrations, latest 10003. Also test
+content/checksums. Current tree contains 105 migrations, latest 10004 (chat idle timeout). Also test
 upgrade from a sanitized clone of the real deployment: 0111/0112/10001/10002 must
 keep exact checksum bytes, 10002 legacy evidence stays NULL, new links get actual
 attachment time, 10003 listing index exists and `utopia_app` cannot edit
@@ -77,7 +77,7 @@ defaults to occupied 2516/2517; override through soorin/config/qa.env.example to
 an explicit deadline and job limit; save the output, do not repeatedly restart it.
 
 ```bash
-SOORIN_BUILD_JOBS=1 timeout 1800s docker compose --env-file soorin/config/qa.env.example -p soorin-tkg-v1-qa \
+SOORIN_BUILD_JOBS=1 timeout 1800s docker compose --env-file .env.qa -p soorin-tkg-v1-qa \
   -f docker-compose.soorin-dev.yml build app
 ```
 
@@ -117,9 +117,9 @@ The native harness is opt-in and verifies the new QA project/volumes at loopback
 2526; it refuses existing labs and creates only synthetic accounts/KBs/sources.
 
 ```bash
-SOORIN_DISPOSABLE_ACCEPTANCE=1 timeout 300s python3 -m soorin.e2e.native_validation \
+SOORIN_DISPOSABLE_ACCEPTANCE=1 timeout 1800s python3 -m soorin.e2e.native_validation \
   --base-url http://127.0.0.1:2526 --qa-project soorin-tkg-v1-qa --approved-port 2526 \
-  --execute --deadline 120 \
+  --execute --deadline 300 \
   --report /tmp/soorin-native-acceptance.json
 ```
 
@@ -146,6 +146,6 @@ versioned bilingual relevance set, temporal split, tenant-isolation cases, lexic
 baseline, dense/RRF/reranker ablations, hardware/config pins and saved failures.
 No quality improvement is claimed from the tiny smoke corpus.
 
-Release remains blocked until all required gates pass on the exact image and
+Release remains unqualified until all required gates pass on the exact image and
 operators approve the deployment/rollback evidence. This handoff does not merge
 main, publish an image, or grant production release approval.

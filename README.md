@@ -159,10 +159,17 @@ timeout 15s python3 -m unittest discover -s soorin/tests/mock_splunk/tests
 Use [Build and test handoff](docs/soorin/BUILD_AND_TEST_HANDOFF.md) for the next
 controlled Rust/image/database/runtime qualification phase.
 
+The [2026-11-15 continuation review](docs/soorin/CONTINUATION_HARDENING_REPORT.md)
+records source fixes, the 19-task acceptance matrix and CI evidence. Native SOC
+waits now use bounded Deferred scheduling; receipt diagnostics verify typed edges
+against current-version evidence. A versioned [curated HTTP profile](docs/soorin/MANUAL_SOC_INGESTION.md)
+reuses the bundled Python normalizer and native receipts. Local builds, model
+loading and full E2E qualification remain a separate approved phase.
+
 ## Model configuration
 
 BGE-M3, BGE reranker and cybersecurity NER use pinned revisions and separate
-profiles. `download`, `verify-artifacts` and `serve` have distinct responsibilities.
+read-only caches in one optional CPU service. `download`, `verify-artifacts` and `serve` have distinct responsibilities.
 Workspace settings configure native model clients; Python evaluation variables
 cannot activate them. NER is review-only. Real loading, inference and resource
 acceptance remain separate from mock tests.

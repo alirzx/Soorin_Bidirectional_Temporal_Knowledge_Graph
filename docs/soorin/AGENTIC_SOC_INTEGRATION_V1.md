@@ -109,3 +109,44 @@ projection corrections can change newly generated content checksums; replay the
 same serialized canonical event when retrying an already accepted delivery.
 
 Manual operators can use the [bounded preview/submission workflow](MANUAL_SOC_INGESTION.md).
+
+## Continuation lifecycle and diagnostics (2026-11-15)
+
+Temporary lease contention and downstream waits use the existing `Deferred`
+queue marker: 15-second scheduling, attempt restoration, and a one-hour waiting
+window. After that window ordinary finite retry budgets apply. Handler work is
+bounded to 90 seconds inside a 120-second owner-fenced source lease; a cancelled
+or crashed owner is recoverable after expiry. Queue restart recovery assumes one
+application worker process; this patch does not qualify multiple app replicas.
+
+Revisions of one source record serialize in admission order. A pending/submitted
+predecessor must complete before its Statements document is replaced. A terminal
+predecessor is reported as `soc_revision_predecessor_failed`; repair/retry that
+specific predecessor first, then retry the successor. Source observation clocks
+must strictly advance against bound revisions. Late/equal changed observations
+are quarantined; opaque revision IDs never determine temporal ordering.
+
+`bound` requires a ready/done document, expected typed entities, authority links,
+and every supported relation backed by current-document-version evidence.
+Already-reviewed phrase bindings still deliver new projection jobs. Human
+rejection remains authoritative. Failed document processing may keep waiting
+while a real downstream retry is queued/running; exhausted document failure is
+reported as `soc_document_failed`, and human rejection as `soc_binding_rejected`.
+A failed receipt remains visible and is not silently promoted or mass requeued.
+
+KB administrators may GET `/api/v1/kbs/{kb}/knowledge/receipts/{receipt}`.
+It reports source scope, document/version, expected endpoints/types, phrase
+status/target/direction, evidence result, failure code and <=30 safe job summaries.
+It does not return the canonical payload or `last_error` exception bodies.
+The diagnostic evidence view is explicitly **current_document_version**: an old
+receipt's historical `bound` status is not a frozen snapshot of a subsequently
+updated document. Use historical KnowledgeContext/evidence APIs for history.
+
+Use `POST /api/v1/kbs/{kb}/knowledge/receipts/{receipt}/retry` for a single repaired
+receipt. It preserves failed job history, refuses quarantined/bound receipts,
+and reuses already queued/running work. Reprocess a failed document via the
+existing document endpoint only after its underlying error is corrected.
+No broad `/jobs/requeue`, graph rebuild or deletion is part of this procedure.
+
+The new curated HTTP interface is documented in [Manual SOC input](MANUAL_SOC_INGESTION.md).
+The producer mapping is [versioned separately](PRODUCER_MAPPING_V1_20261115.md).

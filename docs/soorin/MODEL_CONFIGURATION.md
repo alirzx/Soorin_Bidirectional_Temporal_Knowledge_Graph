@@ -95,3 +95,49 @@ are not real-model acceptance.
 ## V1 baseline update
 
 V1 baseline has no implicit NER activation in ingestion. `preview(..., ner=provider)` is an explicit review-only Python extension; CLI remains deterministic. Provider timeouts/errors preserve deterministic output. NER service proposal metadata uses the pinned public model@revision rather than a local cache path. These changes are MOCK TESTED; actual model inference is NOT RUN.
+
+## Continuation wire contract and provider settings (2026-11-15)
+
+The exact pinned `BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181`
+identity selects the local CPU wire policy across document/ontology/name/query
+consumers: <=16 texts, <=16,000 Unicode characters per window, and <=280,000
+serialized request bytes (server ceiling 300,000). Input ordering, finite values
+and dimension 1024 are checked. Long input windows form a normalized mean-vector
+centroid; canonical source/evidence text remains intact. This is a retrieval
+approximation, not proof of full semantic coverage: each model window still has
+a 512-token model limit. Measure long-document relevance in the next model run.
+Generic provider model IDs retain the original one-request/input and vector
+magnitude behavior; they do not inherit BGE window pooling. Bare unpinned aliases
+are not the qualified native CPU identity.
+
+One shared heavy inference slot has four bounded waiters with a 20-second wait
+limit. Each role listener also bounds request-handler threads to eight and read
+waits to 15 seconds. Invalid requests are checked before queueing/loading;
+422 means invalid request, 429 busy includes `Retry-After: 2`, and 503 indicates
+inference failure. A failed partial client batch returns an error, not a shortened
+success. Readiness now advertises batch/character/byte/queue limits. Real concurrent
+embedding/ontology/reranker/NER pressure and cache restart are still runtime gates.
+
+Chat bootstrap no longer invents a provider model or hardcodes the deployment
+endpoint. Supply actual operator-approved values, with the credential in an
+environment variable (never as an argument or in a report):
+
+```bash
+python3 -m soorin.ops.models configure --chat --workspace "$WORKSPACE_ID" \
+  --base-url http://127.0.0.1:2526 --qa-project soorin-tkg-v1-qa --approved-port 2526 \
+  --chat-base-url "$APPROVED_CHAT_BASE_URL" --chat-model "$APPROVED_CHAT_MODEL" \
+  --chat-key-env ARVAN_API_KEY --chat-reasoning-effort none --chat-timeout-seconds 120
+```
+
+Missing endpoint/model values preserve existing settings or require explicit
+configuration. Existing same-origin credentials are preserved; changing origin
+with a stored key requires an explicit replacement credential. Credential-bearing
+URLs, URL query tokens and fragments are rejected. Migration 10004 adds
+`chat_timeout_seconds` (1..3600, existing-workspace default 300). The setting is an
+idle read timeout for native direct streaming/nonstreaming connections; it does
+not cap an otherwise progressing stream's total duration. Conversation clients
+refresh when this setting changes. The Privacy Gateway retains its separate
+30-second per-request stage limit and 120-second context TTL; protected responses
+are buffered and decoded, not raw-provider streamed. No privacy boundary is
+relaxed by selecting a longer workspace timeout. Real provider/gateway timeout,
+tool continuation and citation behavior remain unverified here.

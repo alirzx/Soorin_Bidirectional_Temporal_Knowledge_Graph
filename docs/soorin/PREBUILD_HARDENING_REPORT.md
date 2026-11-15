@@ -1,5 +1,9 @@
 # Final pre-build hardening — baseline 84a92bc
 
+> Historical checkpoint. The current continuation is documented in
+> [2026-11-15 hardening review](CONTINUATION_HARDENING_REPORT.md); results below
+> must not be attributed to the new commit or schema inventory.
+
 This report records source/static work and the subsequently verified exact-head CI
 and integration checkpoint. Final feature ref publication/cleanup is reported at
 delivery. Production runtime qualification remains a separate phase.

@@ -84,3 +84,12 @@ fails explicitly instead of falling back to default redirect/timeout behavior.
 Production tenant mapping, network isolation and storage minimization are detailed
 in [Security boundaries](SECURITY_BOUNDARIES.md). No real provider or gateway
 request was made during this lightweight hardening pass.
+
+## Continuation configuration note (2026-11-15)
+
+The unified local model origins are `http://models:8080`, `http://models:8081`
+and `http://models:8082`. Workspace Chat timeout configuration does not override
+the Gateway's independent 30-second request-stage limit / 120-second context TTL.
+Protected completions are buffered through encode/provider/decode. No raw direct
+fallback or new provider allowlisting was added. Real gateway/provider acceptance
+is deferred; mock tests establish only synthetic contract and fail-closed behavior.

@@ -25,3 +25,32 @@ backend aggregation now includes all required jobs. Real model downloads/inferen
 remain outside routine CI. Release requires latest exact-commit CI success and a
 configured protected release environment. Never weaken assertions or count skipped
 DB/model tests as passes.
+
+## Continuation acceptance fixtures (2026-11-15)
+
+The native harness checks every expected relation as a multiset of predicate,
+subject and object, plus document/version evidence, type binding, source scope,
+authority links and idempotent receipt replay. It stops dependent API checks after
+a failed prerequisite and reports their BLOCKED status. It performs no broad
+requeue. `--with-cpu-models` enables explicit dense/BM25/reranker execution checks;
+execution is distinct from relevance. The live harness was NOT RUN in this pass.
+
+`soc_native_materialization_v1.json` contains three canonical synthetic events,
+including a new same-record revision and repeated reviewed signature. The Rust
+API regression drives the existing pipeline/alignment/materializer and diagnostic
+gates. Job writeback regressions own their rows and inject a persistence failure;
+they do not launch a global worker against another test's queue.
+
+`soc_retrieval_acceptance_v1.json` versions eight bilingual/exact/no-result/
+tenant/temporal/evidence cases. Its unit evaluator uses lexical retrieval only;
+existing benchmark ablations use fake vectors. Neither proves BGE relevance.
+SearchDocument timestamps are normalized and current results exclude invalidated
+versions; the knowledge-time boundary is half open. Production ranking, genuine
+BGE/reranker scores, NER precision/recall/latency/RAM and live Agent grounding
+remain separate controlled tests.
+
+Read-scope MCP exposes the eleven names in `mcp.rs::EXPOSED`. The existing
+`remember` proposal tool is additionally exposed only when PAT write scope and
+KB editor role both permit it. It is not included in read-only investigation PATs.
+A 401 without a proven valid PAT remains an authentication result, not evidence
+of a broken MCP server.
