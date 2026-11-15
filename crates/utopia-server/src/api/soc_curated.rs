@@ -88,7 +88,9 @@ async fn normalize(
         anyhow::ensure!(output.len() <= LIMIT, "soc_normalizer_output_limit");
         let status = child.wait().await?;
         if status.code() == Some(2) {
-            return Ok(Err(AppError::Validation("soc_normalization_failed; invalid profile, scope or record".into())));
+            return Ok(Err(AppError::Validation(
+                "soc_normalization_failed; invalid profile, scope or record".into(),
+            )));
         }
         anyhow::ensure!(status.success(), "soc_normalizer_unavailable");
         let value: Value = serde_json::from_slice(&output)?;

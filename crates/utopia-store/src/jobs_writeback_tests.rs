@@ -365,20 +365,27 @@ async fn closing_the_pool_cancels_writeback_while_it_waits_for_a_row_lock() -> a
 
 #[tokio::test]
 async fn concurrent_projection_deliveries_coalesce_queued_but_not_running() -> anyhow::Result<()> {
-    let Some(url) = crate::test_db::url() else { return Ok(()); };
+    let Some(url) = crate::test_db::url() else {
+        return Ok(());
+    };
     let pool = PgPool::connect(&url).await?;
     let kind = format!("test_projection_{}", Uuid::now_v7());
     let payload = json!({"synthetic":true});
     let calls = (0..8).map(|_| super::enqueue_unless_queued(&pool, &kind, payload.clone()));
     let mut deliveries = Vec::new();
     for result in futures_util::future::join_all(calls).await {
-        if let Some(id) = result? { deliveries.push(id); }
+        if let Some(id) = result? {
+            deliveries.push(id);
+        }
     }
     assert_eq!(deliveries.len(), 1);
     let first = deliveries[0];
     claim_job(&pool, first).await?;
     let next = super::enqueue_unless_queued(&pool, &kind, payload).await?;
     assert!(next.is_some());
-    sqlx::query("DELETE FROM jobs WHERE kind=$1").bind(&kind).execute(&pool).await?;
+    sqlx::query("DELETE FROM jobs WHERE kind=$1")
+        .bind(&kind)
+        .execute(&pool)
+        .await?;
     Ok(())
 }

@@ -504,10 +504,16 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
     let result = result.unwrap_or_else(|_| Err(anyhow::anyhow!("soc_ingest_timeout_retry")));
     if let Err(error) = &result {
         let message = error.to_string();
-        let code = ["soc_materialization_pending", "soc_revision_predecessor_pending",
-            "soc_revision_predecessor_failed", "soc_document_failed", "soc_binding_rejected"]
-            .into_iter().find(|code| message.starts_with(code))
-            .unwrap_or("soc_ingest_retryable_failure");
+        let code = [
+            "soc_materialization_pending",
+            "soc_revision_predecessor_pending",
+            "soc_revision_predecessor_failed",
+            "soc_document_failed",
+            "soc_binding_rejected",
+        ]
+        .into_iter()
+        .find(|code| message.starts_with(code))
+        .unwrap_or("soc_ingest_retryable_failure");
         let _ = sqlx::query(
             "UPDATE soorin_ingestion_receipts SET failure_code=$2,updated_at=now() WHERE id=$1",
         )
@@ -569,7 +575,10 @@ async fn process_locked(
         .fetch_optional(&state.pool)
         .await?;
         match predecessor.as_deref() {
-            Some("failed" | "missing" | "done") => return Err(anyhow::Error::new(utopia_core::Terminal).context("soc_revision_predecessor_failed")),
+            Some("failed" | "missing" | "done") => {
+                return Err(anyhow::Error::new(utopia_core::Terminal)
+                    .context("soc_revision_predecessor_failed"))
+            }
             Some(_) => return Err(wait_for_dependency("soc_revision_predecessor_pending")),
             None => {}
         }
@@ -726,18 +735,26 @@ async fn process_locked(
         ));
     }
     let entities = receipt_entities(&state.pool, kb, event).await?;
-    if entities.iter().any(|e| e["entity_id"].is_null() || e["type_matches"] != true || e["authority_linked"] != true) {
-        return Err(wait_for_dependency("soc_materialization_pending; entity types or authority links pending"));
+    if entities.iter().any(|e| {
+        e["entity_id"].is_null() || e["type_matches"] != true || e["authority_linked"] != true
+    }) {
+        return Err(wait_for_dependency(
+            "soc_materialization_pending; entity types or authority links pending",
+        ));
     }
     // Require each reviewed edge with evidence from this source's current
     // document version. The same query also powers receipt diagnostics.
     for relation in event["relations"].as_array().into_iter().flatten() {
         let detail = relation_status(&state.pool, kb, source_id, &key, relation).await?;
-        if detail["binding"]["phrase_binding_status"] == "none" && detail["binding"]["decided_by"] == "person" {
+        if detail["binding"]["phrase_binding_status"] == "none"
+            && detail["binding"]["decided_by"] == "person"
+        {
             return Err(anyhow::Error::new(utopia_core::Terminal).context("soc_binding_rejected"));
         }
         if detail["binding"]["evidence_link_status"] != true {
-            return Err(wait_for_dependency("soc_materialization_pending; reviewed SOC relation not materialized"));
+            return Err(wait_for_dependency(
+                "soc_materialization_pending; reviewed SOC relation not materialized",
+            ));
         }
     }
     sqlx::query("UPDATE soorin_ingestion_receipts SET status='bound',failure_code=NULL,updated_at=now() WHERE id=$1")
@@ -761,7 +778,11 @@ pub async fn receipts(
     ))
 }
 
-async fn receipt_entities(pool: &sqlx::PgPool, kb: Uuid, event: &Value) -> anyhow::Result<Vec<Value>> {
+async fn receipt_entities(
+    pool: &sqlx::PgPool,
+    kb: Uuid,
+    event: &Value,
+) -> anyhow::Result<Vec<Value>> {
     Ok(sqlx::query_scalar(
         "SELECT jsonb_build_object('canonical_key',expected->>'entity_id','expected_type',expected->>'entity_type',
           'entity_id',e.id,'type_key',t.key,'type_label',t.label,
@@ -776,18 +797,40 @@ async fn receipt_entities(pool: &sqlx::PgPool, kb: Uuid, event: &Value) -> anyho
 }
 
 fn reviewed_relation_key(relation: &Value) -> anyhow::Result<String> {
-    let ontology: Value = serde_json::from_str(include_str!("../../../../soorin/ontology/soc_ontology_v1.yaml"))?;
-    let token = |value: &str| value.chars().filter(|c| c.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase).collect::<String>();
-    ontology["relation_types"].as_array().unwrap().iter()
-        .find(|row| token(row["key"].as_str().unwrap()) == token(relation["relation_type"].as_str().unwrap_or_default()))
-        .and_then(|row| row["key"].as_str()).map(String::from)
+    let ontology: Value = serde_json::from_str(include_str!(
+        "../../../../soorin/ontology/soc_ontology_v1.yaml"
+    ))?;
+    let token = |value: &str| {
+        value
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    ontology["relation_types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| {
+            token(row["key"].as_str().unwrap())
+                == token(relation["relation_type"].as_str().unwrap_or_default())
+        })
+        .and_then(|row| row["key"].as_str())
+        .map(String::from)
         .ok_or_else(|| anyhow::anyhow!("soc_relation_type_unknown"))
 }
 
-async fn relation_status(pool: &sqlx::PgPool, kb: Uuid, source: Uuid, external_key: &str, relation: &Value) -> anyhow::Result<Value> {
+async fn relation_status(
+    pool: &sqlx::PgPool,
+    kb: Uuid,
+    source: Uuid,
+    external_key: &str,
+    relation: &Value,
+) -> anyhow::Result<Value> {
     let predicate = reviewed_relation_key(relation)?;
-    let phrase = field(relation, "relation_type")?.to_lowercase().replace('_', " ");
+    let phrase = field(relation, "relation_type")?
+        .to_lowercase()
+        .replace('_', " ");
     let detail: Value = sqlx::query_scalar(
         "SELECT jsonb_build_object('expected_relation_key',$4::text,'source_phrase',$5::text,
           'subject_canonical_key',$2::text,'object_canonical_key',$3::text,
@@ -847,7 +890,12 @@ pub async fn diagnostics(
         .fetch_all(&state.pool).await?;
     let mut relations = Vec::new();
     let mut unsupported_relations = 0;
-    for relation in event["relations"].as_array().into_iter().flatten().take(512) {
+    for relation in event["relations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(512)
+    {
         if reviewed_relation_key(relation).is_err() {
             unsupported_relations += 1;
             continue;

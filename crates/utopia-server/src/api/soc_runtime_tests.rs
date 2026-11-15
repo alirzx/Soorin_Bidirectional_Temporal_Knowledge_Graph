@@ -74,38 +74,72 @@ fn canonical_python_vectors_and_nested_contract_validation() {
 }
 
 async fn install_soc_ontology(pool: &sqlx::PgPool, kb: Uuid) -> anyhow::Result<()> {
-    let ontology: Value = serde_json::from_str(include_str!("../../../../soorin/ontology/soc_ontology_v1.yaml"))?;
+    let ontology: Value = serde_json::from_str(include_str!(
+        "../../../../soorin/ontology/soc_ontology_v1.yaml"
+    ))?;
     let mut types = std::collections::HashMap::new();
     for row in ontology["entity_types"].as_array().unwrap() {
         let id = Uuid::now_v7();
         let key = row["key"].as_str().unwrap();
         sqlx::query("INSERT INTO entity_types(id,kb_id,key,label) VALUES($1,$2,$3,$4)")
-            .bind(id).bind(kb).bind(key).bind(row["label"].as_str()).execute(pool).await?;
+            .bind(id)
+            .bind(kb)
+            .bind(key)
+            .bind(row["label"].as_str())
+            .execute(pool)
+            .await?;
         types.insert(key.to_string(), id);
     }
     for row in ontology["relation_types"].as_array().unwrap() {
         let id = Uuid::now_v7();
-        sqlx::query("INSERT INTO relation_types(id,kb_id,key,label,temporal) VALUES($1,$2,$3,$4,$5)")
-            .bind(id).bind(kb).bind(row["key"].as_str()).bind(row["label"].as_str())
-            .bind(row["temporal"].as_str()).execute(pool).await?;
+        sqlx::query(
+            "INSERT INTO relation_types(id,kb_id,key,label,temporal) VALUES($1,$2,$3,$4,$5)",
+        )
+        .bind(id)
+        .bind(kb)
+        .bind(row["key"].as_str())
+        .bind(row["label"].as_str())
+        .bind(row["temporal"].as_str())
+        .execute(pool)
+        .await?;
         for key in row["domains"].as_array().unwrap() {
-            sqlx::query("INSERT INTO relation_type_domains(relation_type_id,entity_type_id) VALUES($1,$2)")
-                .bind(id).bind(types[key.as_str().unwrap()]).execute(pool).await?;
+            sqlx::query(
+                "INSERT INTO relation_type_domains(relation_type_id,entity_type_id) VALUES($1,$2)",
+            )
+            .bind(id)
+            .bind(types[key.as_str().unwrap()])
+            .execute(pool)
+            .await?;
         }
         for key in row["ranges"].as_array().unwrap() {
-            sqlx::query("INSERT INTO relation_type_ranges(relation_type_id,entity_type_id) VALUES($1,$2)")
-                .bind(id).bind(types[key.as_str().unwrap()]).execute(pool).await?;
+            sqlx::query(
+                "INSERT INTO relation_type_ranges(relation_type_id,entity_type_id) VALUES($1,$2)",
+            )
+            .bind(id)
+            .bind(types[key.as_str().unwrap()])
+            .execute(pool)
+            .await?;
         }
     }
     Ok(())
 }
 
-async fn receipt_diagnostic(app: Router, kb: Uuid, id: Uuid, token: &str) -> anyhow::Result<(u16, Value)> {
-    let response = app.oneshot(Request::get(format!("/api/v1/kbs/{kb}/knowledge/receipts/{id}"))
-        .header("authorization",format!("Bearer {token}")).body(Body::empty())?).await?;
+async fn receipt_diagnostic(
+    app: Router,
+    kb: Uuid,
+    id: Uuid,
+    token: &str,
+) -> anyhow::Result<(u16, Value)> {
+    let response = app
+        .oneshot(
+            Request::get(format!("/api/v1/kbs/{kb}/knowledge/receipts/{id}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())?,
+        )
+        .await?;
     let status = response.status().as_u16();
-    let bytes = to_bytes(response.into_body(),1024*1024).await?;
-    Ok((status,serde_json::from_slice(&bytes)?))
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
+    Ok((status, serde_json::from_slice(&bytes)?))
 }
 
 async fn call(app: Router, path: String, token: &str, body: Value) -> anyhow::Result<(u16, Value)> {
@@ -470,32 +504,56 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     assert_eq!(status.1.as_deref(), Some("stored_event_requires_review"));
     // Full supported relation flow, including a second revision under an
     // already-bound signature. No model/service or global worker is needed.
-    let events: Value = serde_json::from_str(include_str!("../../../../soorin/tests/fixtures/soc_native_materialization_v1.json"))?;
+    let events: Value = serde_json::from_str(include_str!(
+        "../../../../soorin/tests/fixtures/soc_native_materialization_v1.json"
+    ))?;
     let app = router(state.clone(), &cfg);
     for event in events["events"].as_array().unwrap() {
-        let (code, receipt) = call(app.clone(),format!("/api/v1/sources/{source}/knowledge-events"),"synthetic-only-token",event.clone()).await?;
-        assert_eq!(code,200,"{receipt}");
+        let (code, receipt) = call(
+            app.clone(),
+            format!("/api/v1/sources/{source}/knowledge-events"),
+            "synthetic-only-token",
+            event.clone(),
+        )
+        .await?;
+        assert_eq!(code, 200, "{receipt}");
         let receipt_id: Uuid = receipt["receipt_id"].as_str().unwrap().parse()?;
-        let pending = soc_ingestion::process(&state,receipt_id).await.unwrap_err();
+        let pending = soc_ingestion::process(&state, receipt_id)
+            .await
+            .unwrap_err();
         assert!(utopia_core::is_deferred(&pending).is_some());
-        let (_, before) = receipt_diagnostic(app.clone(),kb,receipt_id,&session).await?;
-        let doc_id: Uuid = before["document"]["document_id"].as_str().unwrap().parse()?;
-        crate::pipeline::process_document(&state,doc_id).await?;
-        crate::extraction::extract_document(&state,doc_id,Default::default()).await?;
-        crate::soc_alignment::types(&pool,kb).await?;
-        crate::soc_alignment::phrases(&pool,kb).await?;
-        utopia_store::materialize::materialize(&pool,kb).await?;
-        soc_ingestion::process(&state,receipt_id).await?;
-        let (code, detail) = receipt_diagnostic(app.clone(),kb,receipt_id,&session).await?;
-        assert_eq!(code,200);
-        assert_eq!(detail["status"],"bound");
-        assert_eq!(detail["relations"].as_array().unwrap().len(),event["relations"].as_array().unwrap().len());
+        let (_, before) = receipt_diagnostic(app.clone(), kb, receipt_id, &session).await?;
+        let doc_id: Uuid = before["document"]["document_id"]
+            .as_str()
+            .unwrap()
+            .parse()?;
+        crate::pipeline::process_document(&state, doc_id).await?;
+        crate::extraction::extract_document(&state, doc_id, Default::default()).await?;
+        crate::soc_alignment::types(&pool, kb).await?;
+        crate::soc_alignment::phrases(&pool, kb).await?;
+        utopia_store::materialize::materialize(&pool, kb).await?;
+        soc_ingestion::process(&state, receipt_id).await?;
+        let (code, detail) = receipt_diagnostic(app.clone(), kb, receipt_id, &session).await?;
+        assert_eq!(code, 200);
+        assert_eq!(detail["status"], "bound");
+        assert_eq!(
+            detail["relations"].as_array().unwrap().len(),
+            event["relations"].as_array().unwrap().len()
+        );
         for relation in detail["relations"].as_array().unwrap() {
-            assert_eq!(relation["binding"]["evidence_link_status"],true);
-            assert_eq!(relation["binding"]["document_version"],detail["document"]["document_version"]);
-            assert_eq!(relation["binding"]["expected_relation_key"],"observed_on");
+            assert_eq!(relation["binding"]["evidence_link_status"], true);
+            assert_eq!(
+                relation["binding"]["document_version"],
+                detail["document"]["document_version"]
+            );
+            assert_eq!(relation["binding"]["expected_relation_key"], "observed_on");
         }
-        assert!(matches!(receipt_diagnostic(app.clone(),other_kb,receipt_id,&session).await?.0,403|404));
+        assert!(matches!(
+            receipt_diagnostic(app.clone(), other_kb, receipt_id, &session)
+                .await?
+                .0,
+            403 | 404
+        ));
     }
     sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1 OR payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id=$2)")
         .bind(kb.to_string()).bind(kb).execute(&pool).await?;

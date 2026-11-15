@@ -1203,12 +1203,17 @@ impl LlmClient {
         // Window pooling is a local BGE representation policy, not a universal
         // OpenAI-compatible embedding operation.
         if self.model != SOORIN_CPU_EMBED_MODEL {
-            let body = self.json_response("/embeddings", &json!({"model":self.model,"input":texts})).await?;
-            let data = body["data"].as_array()
+            let body = self
+                .json_response("/embeddings", &json!({"model":self.model,"input":texts}))
+                .await?;
+            let data = body["data"]
+                .as_array()
                 .ok_or_else(|| anyhow::anyhow!("Unexpected embedding response shape"))?;
             let mut dimension = None;
-            return ordered_by_index(data, texts.len())?.into_iter()
-                .map(|item| embedding_vector(item, &mut dimension)).collect();
+            return ordered_by_index(data, texts.len())?
+                .into_iter()
+                .map(|item| embedding_vector(item, &mut dimension))
+                .collect();
         }
         // All pinned CPU consumers share the wire limits. Stored source text
         // remains intact; multi-window centroids are a retrieval approximation.
@@ -1237,7 +1242,10 @@ impl LlmClient {
                 .zip(&windows[offset..end])
             {
                 let vector = embedding_vector(item, &mut dimension)?;
-                anyhow::ensure!(vector.iter().any(|v| *v != 0.0), "Zero CPU embedding vector");
+                anyhow::ensure!(
+                    vector.iter().any(|v| *v != 0.0),
+                    "Zero CPU embedding vector"
+                );
                 if out[*owner].is_empty() {
                     out[*owner] = vector;
                 } else {
@@ -3159,14 +3167,20 @@ data: [DONE]
     async fn generic_embedding_does_not_pool_or_split_long_provider_inputs() {
         use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
-        Mock::given(method("POST")).respond_with(|request: &wiremock::Request| {
-            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
-            assert_eq!(body["input"][0].as_str().unwrap().chars().count(), 16_681);
-            ResponseTemplate::new(200).set_body_json(json!({"data":[{"embedding":[3.0,4.0]}]}))
-        }).expect(1).mount(&server).await;
+        Mock::given(method("POST"))
+            .respond_with(|request: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                assert_eq!(body["input"][0].as_str().unwrap().chars().count(), 16_681);
+                ResponseTemplate::new(200).set_body_json(json!({"data":[{"embedding":[3.0,4.0]}]}))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
         let output = LlmClient::new(&server.uri(), None, "provider-model")
-            .embed(&["م".repeat(16_681)]).await.unwrap();
-        assert_eq!(output, vec![vec![3.0,4.0]]);
+            .embed(&["م".repeat(16_681)])
+            .await
+            .unwrap();
+        assert_eq!(output, vec![vec![3.0, 4.0]]);
     }
 
     async fn embeddings_from(data: serde_json::Value) -> anyhow::Result<Vec<Vec<f32>>> {

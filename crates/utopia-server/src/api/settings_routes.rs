@@ -59,14 +59,22 @@ pub struct PutSettingsReq {
 }
 
 fn validate_model_url(value: &Option<String>) -> Result<(), utopia_core::AppError> {
-    let Some(value) = value.as_deref().map(str::trim).filter(|s| !s.is_empty()) else { return Ok(()); };
+    let Some(value) = value.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
     let valid = reqwest::Url::parse(value).is_ok_and(|u| {
-        matches!(u.scheme(), "http" | "https") && u.host_str().is_some()
-            && u.username().is_empty() && u.password().is_none()
-            && u.query().is_none() && u.fragment().is_none()
+        matches!(u.scheme(), "http" | "https")
+            && u.host_str().is_some()
+            && u.username().is_empty()
+            && u.password().is_none()
+            && u.query().is_none()
+            && u.fragment().is_none()
     });
     if !valid {
-        return Err(utopia_core::AppError::invalid("bad_model_url", "model URL must be HTTP(S) without credentials, query or fragment"));
+        return Err(utopia_core::AppError::invalid(
+            "bad_model_url",
+            "model URL must be HTTP(S) without credentials, query or fragment",
+        ));
     }
     Ok(())
 }
@@ -110,14 +118,30 @@ pub async fn put(
     validate_model_url(&req.embed_base_url)?;
     if let Some(previous) = utopia_store::settings::get(&state.pool, workspace_id).await? {
         for (incoming, old_url, old_key, new_key) in [
-            (&req.chat_base_url, &previous.chat_base_url, &previous.chat_api_key, &req.chat_api_key),
-            (&req.embed_base_url, &previous.embed_base_url, &previous.embed_api_key, &req.embed_api_key),
+            (
+                &req.chat_base_url,
+                &previous.chat_base_url,
+                &previous.chat_api_key,
+                &req.chat_api_key,
+            ),
+            (
+                &req.embed_base_url,
+                &previous.embed_base_url,
+                &previous.embed_api_key,
+                &req.embed_api_key,
+            ),
         ] {
             if let Some(new_url) = nonempty(incoming) {
                 let origin = |url: &str| reqwest::Url::parse(url).ok().map(|u| u.origin());
-                if old_key.as_deref().is_some_and(|s| !s.is_empty()) && nonempty(new_key).is_none()
-                    && old_url.as_deref().and_then(origin) != origin(&new_url) {
-                    return Err(utopia_core::AppError::invalid("model_key_required_for_new_origin", "new model origin requires an explicit credential").into());
+                if old_key.as_deref().is_some_and(|s| !s.is_empty())
+                    && nonempty(new_key).is_none()
+                    && old_url.as_deref().and_then(origin) != origin(&new_url)
+                {
+                    return Err(utopia_core::AppError::invalid(
+                        "model_key_required_for_new_origin",
+                        "new model origin requires an explicit credential",
+                    )
+                    .into());
                 }
             }
         }
@@ -363,7 +387,13 @@ mod url_tests {
     use super::validate_model_url;
     #[test]
     fn model_urls_never_carry_credentials_or_query_tokens() {
-        for url in ["https://user:secret@provider.example/v1", "https://provider.example/v1?key=secret", "https://provider.example/v1#fragment", "file:///tmp/model", "http://provider.example:invalid"] {
+        for url in [
+            "https://user:secret@provider.example/v1",
+            "https://provider.example/v1?key=secret",
+            "https://provider.example/v1#fragment",
+            "file:///tmp/model",
+            "http://provider.example:invalid",
+        ] {
             assert!(validate_model_url(&Some(url.into())).is_err());
         }
         assert!(validate_model_url(&Some("https://provider.example/v1".into())).is_ok());
