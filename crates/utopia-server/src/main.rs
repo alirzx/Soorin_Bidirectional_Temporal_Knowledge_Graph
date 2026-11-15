@@ -150,6 +150,11 @@ async fn main() -> anyhow::Result<()> {
     //
     // 判据是「库里有分块而索引空着」，不是「数目对不对得上」：后者在正常运行中
     // 也会短暂不等（一篇文档正在索引），拿它当判据会让每次启动都重建一遍。
+    // The v2 analyzer folds case. A persisted v1 Tantivy index has tokens
+    // written without folding, so a restart alone is insufficient. Upgrade the
+    // *derived index* in place, preserving all PostgreSQL documents and facts.
+    // A successful marker makes this a once-per-index-dir operation.
+    reindex_for_analyzer_upgrade(&pool, &search, &index_dir).await;
     reindex_if_empty(&pool, &search).await;
 
     // JWT 密钥：环境变量优先（轮换、多实例显式对齐走这条），否则用库里那条；
@@ -333,6 +338,71 @@ async fn main() -> anyhow::Result<()> {
     let svc = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     axum::serve(listener, svc).await?;
     Ok(())
+}
+
+/// One-time on-disk analyzer migration. Do not reset any source data:
+/// rewriting the derived Tantivy postings from PostgreSQL is sufficient.
+/// On any failure the marker remains absent, so restart retries safely.
+async fn reindex_for_analyzer_upgrade(
+    pool: &sqlx::PgPool,
+    search: &SearchIndex,
+    index_dir: &std::path::Path,
+) {
+    const MARKER: &str = ".soorin-jieba-lowercase-v2";
+    let marker = index_dir.join(MARKER);
+    if marker.exists() {
+        return;
+    }
+    let rows = match utopia_store::documents::all_chunks_for_index(pool).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error=%e, "cannot rebuild search index for v2 analyzer");
+            return;
+        }
+    };
+    let mut current: Option<(uuid::Uuid, uuid::Uuid)> = None;
+    let mut batch: Vec<(String, String)> = Vec::new();
+    let mut complete = true;
+    let mut rewritten = 0usize;
+    for (kb, doc, chunk, text) in rows {
+        let key = (kb, doc);
+        if current != Some(key) {
+            if let Some((prev_kb, prev_doc)) = current {
+                if let Err(e) = search.reindex_document(
+                    &prev_kb.to_string(), &prev_doc.to_string(), &batch
+                ) {
+                    tracing::error!(document=%prev_doc,error=%e,
+                        "search analyzer v2 migration failed");
+                    complete = false;
+                    break;
+                }
+            }
+            batch.clear();
+            current = Some(key);
+        }
+        batch.push((chunk.to_string(), text));
+        rewritten += 1;
+    }
+    if complete {
+        if let Some((kb, doc)) = current {
+            if let Err(e) = search.reindex_document(
+                &kb.to_string(), &doc.to_string(), &batch
+            ) {
+                tracing::error!(document=%doc,error=%e,
+                    "search analyzer v2 migration final document failed");
+                complete = false;
+            }
+        }
+    }
+    if !complete {
+        return;
+    }
+    if let Err(e) = std::fs::write(&marker, b"jieba-lowercase-v2\n") {
+        tracing::warn!(error=%e, "could not persist search analyzer version marker");
+        return;
+    }
+    tracing::info!(chunks=rewritten,
+        "search analyzer v2 migration complete; source documents unchanged");
 }
 
 /// 索引空着而库里有东西 → 从库里重建一遍。
