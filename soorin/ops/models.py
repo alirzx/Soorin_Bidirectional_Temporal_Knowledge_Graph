@@ -59,6 +59,10 @@ def chat_settings(current, *, base_url=None, model=None, key_env='DEEPSEEK_API_K
     key = os.environ.get(key_env, '')
     if not key and not current.get('has_chat_key'):
         raise ValueError('configured credential or selected credential environment variable required')
+    previous = urllib.parse.urlsplit(current.get('chat_base_url') or '')
+    incoming = urllib.parse.urlsplit(base_url or '')
+    if current.get('has_chat_key') and not key and (incoming.scheme,incoming.netloc) != (previous.scheme,previous.netloc):
+        raise ValueError('new provider origin requires an explicit credential')
     reasoning = reasoning if reasoning is not None else current.get('chat_reasoning_effort')
     timeout = timeout if timeout is not None else current.get('chat_timeout_seconds', 300)
     if type(timeout) is not int or not 1 <= timeout <= 3600:

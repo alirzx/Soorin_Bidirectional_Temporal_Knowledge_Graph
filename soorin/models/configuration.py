@@ -47,8 +47,13 @@ def _url(value: str | None, enabled: bool) -> str | None:
         return None
     value = value.rstrip("/")
     parsed = urlsplit(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ConfigurationError("base_url must be an absolute HTTP(S) URL")
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname or
+        parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment):
+        raise ConfigurationError("base_url must be an absolute HTTP(S) URL without credentials, query or fragment")
+    try:
+        parsed.port
+    except ValueError:
+        raise ConfigurationError("base_url has an invalid port") from None
     return value
 
 

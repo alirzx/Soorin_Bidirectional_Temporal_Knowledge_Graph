@@ -25,6 +25,16 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(result['chat_api_key'], 'synthetic-only')
             self.assertEqual(result['chat_timeout_seconds'], 60)
 
+    def test_chat_endpoint_rejects_credential_urls_and_old_key_transfer(self):
+        from soorin.ops.models import chat_settings
+        for url in ['https://name:secret@provider.example/v1','https://provider.example/v1?key=secret',
+                    'https://provider.example/v1#secret','https://provider.example:bad/v1']:
+            with self.subTest(url=url),self.assertRaises(ConfigurationError):
+                ChatConfig(enabled=True,base_url=url,model='configured').validate()
+        with patch.dict('os.environ',{},clear=True), self.assertRaisesRegex(ValueError,'explicit credential'):
+            chat_settings({'has_chat_key':True,'chat_base_url':'https://old.example','chat_model':'configured'},
+                          base_url='https://new.example')
+
     def test_disabled_defaults_start_without_models(self):
         config = SoorinModelConfig.from_env({})
         self.assertFalse(config.chat.enabled)
