@@ -50,7 +50,7 @@ SHA نهایی، نتیجهٔ push و CI دقیق همان SHA در گزارش �
 
 ## شواهد آزمون و محدودیت اجرا
 
-- آزمون‌های سبک Python: **۱۸۶ آزمون موفق**، به‌اضافهٔ **۷ آزمون mock Splunk موفق**؛ extraction، identity، temporal، retrieval، privacy، configuration، CPU mock، adapter subprocess، native assertions و Make در فایل موقت؛ بدون وزن یا سرویس واقعی.
+- آزمون‌های سبک Python: **۱۸۷ آزمون موفق**، به‌اضافهٔ **۷ آزمون mock Splunk موفق**؛ extraction، identity، temporal، retrieval، privacy، configuration، CPU mock، adapter subprocess، native assertions و Make در فایل موقت؛ بدون وزن یا سرویس واقعی.
 - AST هر ۹۹ فایل Python و parse هر ۱۱ فایل JSON موفق بود؛ لینک‌های محلی Markdown، immutable بودن تمام SQLهای baseline، shell syntax و سه ترکیب Compose با `config --quiet` تأیید شد. env واقعی یا secret در خروجی چاپ نشد.
 - Graphify به‌صورت AST-only refresh شد؛ graph/cache commit نشده است. نبود `tree_sitter_sql` ثبت شد و dependency نصب نشد؛ روابط SQL حساس مستقیماً در source بازبینی شدند.
 - formatter بومی قابل‌استفاده روی میزبان وجود ندارد؛ binary cache فاقد rustc driver است. هیچ container یا toolchain برای آن شروع/نصب نشد. diff دقیق formatter خود CI اعمال شد.
@@ -112,3 +112,9 @@ ad388d684ac5278d63df2573e70c7da89534d128 test(soc-api): cover curated receipt re
 ```
 
 Commit نهایی مستندات و SHA نهایی در گزارش پایان گفت‌وگو آمده است.
+
+
+در بازبینی پایانی، `model` از نوع array/object در سرویس CPU به‌جای خطای validation،
+TypeError تولید می‌کرد و می‌توانست ۵۰۳ شود. نوع آن پیش از بررسی شناسه اعتبارسنجی
+شد؛ آزمون بدون بارگذاری مدل، ValueError/۴۲۲ را برای انواع نامعتبر تثبیت می‌کند.
+این اصلاح پس از commit مستندات انجام شد و در فهرست نهایی گفت‌وگو ثبت می‌شود.

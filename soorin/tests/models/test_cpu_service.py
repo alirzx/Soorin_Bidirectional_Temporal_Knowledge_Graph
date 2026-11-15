@@ -54,6 +54,12 @@ class CpuServiceTests(unittest.TestCase):
         server.shutdown_request.assert_called_once_with(request)
         server.handlers.release()
 
+    def test_invalid_model_types_are_validation_failures_without_loading(self):
+        with patch.object(Engine,'load',side_effect=AssertionError('weights forbidden')):
+            for value in [[],{},None,True,123]:
+                with self.subTest(value=value),self.assertRaises(ValueError):
+                    Engine('embedding','missing').infer('/v1/embeddings',{'model':value,'input':['synthetic']})
+
     def test_reranker_preserves_all_indexes_and_model_revision(self):
         engine = Engine("reranker", "/missing", model=Scores())
         rows = engine.infer("/rerank", {"query": "q", "texts": ["one", "two"]})

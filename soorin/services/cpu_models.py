@@ -66,7 +66,8 @@ class Engine:
             self.model._load()
 
     def validate_request(self, path: str, body: dict[str, Any]) -> None:
-        if body.get("model", self.name) not in {self.name, self.model_id}:
+        requested = body.get("model", self.name)
+        if not isinstance(requested, str) or requested not in {self.name, self.model_id}:
             raise ValueError("requested model does not match this service")
         if path == "/v1/embeddings" and self.role == "embedding":
             texts(body.get("input"))
