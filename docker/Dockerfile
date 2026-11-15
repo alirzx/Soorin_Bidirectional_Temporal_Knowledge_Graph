@@ -97,7 +97,8 @@ COPY --from=web /src/dist /app/web-dist
 RUN groupadd --gid 65532 soorin && useradd --uid 65532 --gid 65532 --no-create-home soorin \
     && mkdir -p /app/data && chown 65532:65532 /app/data
 LABEL org.opencontainers.image.title="Soorin Bitemporal Knowledge Graph"
-ENV UTOPIA_WEB_DIST=/app/web-dist UTOPIA_DATA_DIR=/app/data
+ENV UTOPIA_WEB_DIST=/app/web-dist UTOPIA_DATA_DIR=/app/data \
+    UTOPIA_SOC_PYTHON_ROOT=/app PYTHONDONTWRITEBYTECODE=1
 USER 65532:65532
 EXPOSE 1516
 CMD ["utopia-server"]

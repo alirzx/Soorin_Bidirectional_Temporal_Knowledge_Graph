@@ -30,7 +30,7 @@ class HttpAdapterTests(unittest.TestCase):
 
     def test_one_shot_protocol_and_duplicate_keys(self):
         def run(public):
-            return subprocess.run([sys.executable, '-m', 'soorin.ops.http_adapter'],
+            return subprocess.run([sys.executable, '-S', '-m', 'soorin.ops.http_adapter'],
                 input=json.dumps({'scope': SCOPE, 'http_body': public}).encode(),
                 capture_output=True, timeout=5, cwd=Path(__file__).parents[3])
         good = run(json.dumps({'profile': PROFILE, 'record': RECORD}))
@@ -52,3 +52,40 @@ class HttpAdapterTests(unittest.TestCase):
         for value in ['{', '[]', '{"host":"a","host":"b"}']:
             with self.assertRaises(ValueError):
                 normalize(self.request(record={**RECORD, 'raw_data': value}))
+
+    def test_adapter_imports_from_explicit_root_without_site_packages(self):
+        import os
+        import tempfile
+        root = Path(__file__).parents[3]
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run([sys.executable, '-S', '-m', 'soorin.ops.http_adapter'],
+                input=json.dumps({'scope':SCOPE,'http_body':json.dumps({'profile':PROFILE,'record':RECORD})}).encode(),
+                cwd=directory, env={**os.environ,'PYTHONPATH':str(root),'PYTHONDONTWRITEBYTECODE':'1'},
+                capture_output=True,timeout=5)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('canonical_event',json.loads(result.stdout))
+
+    def test_nested_scope_and_duplicate_keys_fail_closed(self):
+        for wrapper in ['raw_event','raw_data','alert']:
+            nested = {**RECORD,'tenant_id':'another-tenant'}
+            with self.subTest(wrapper=wrapper), self.assertRaises(ValueError):
+                normalize(self.request(record={**RECORD,wrapper:json.dumps(nested) if wrapper=='raw_data' else nested}))
+        with self.assertRaises(ValueError):
+            normalize(self.request(record={**RECORD,'source_system':'edr'}))
+
+    def test_nested_curated_payload_preserves_producer_identity_marker(self):
+        record = {**RECORD,'raw_data':json.dumps({'llm_payload':{
+            'alert_id':'synthetic-alert','_meta':{'mode':'enriched_from_api'},
+            'event_time':RECORD['event_time']}})}
+        result = normalize(self.request(record=record))
+        entities = result['canonical_event']['entities']
+        self.assertEqual(len([e for e in entities if e['entity_type']=='SecurityAlert']),1)
+        self.assertFalse(any(e['entity_type']=='SplunkNotable' for e in entities))
+
+    def test_malformed_transport_never_emits_source_or_traceback(self):
+        for wire in [b'[]', b'{', b'{"scope":1}',
+                     b'{"http_body":"private","http_body":"other","scope":{}}']:
+            result = subprocess.run([sys.executable,'-S','-m','soorin.ops.http_adapter'],input=wire,
+                capture_output=True,timeout=5,cwd=Path(__file__).parents[3])
+            self.assertEqual(result.returncode,2)
+            self.assertEqual(result.stdout+result.stderr,b'')

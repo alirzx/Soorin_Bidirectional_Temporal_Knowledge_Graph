@@ -18,8 +18,8 @@ def _constant(value):
     raise ValueError('non_finite_json_number')
 
 
-def load_object(raw: str | bytes):
-    if len(raw.encode('utf-8') if isinstance(raw, str) else raw) > MAX_INPUT_BYTES:
+def load_object(raw: str | bytes, *, max_bytes: int = MAX_INPUT_BYTES):
+    if len(raw.encode('utf-8') if isinstance(raw, str) else raw) > max_bytes:
         raise ValueError('input_too_large')
     try:
         value = json.loads(raw, object_pairs_hook=_object, parse_constant=_constant)

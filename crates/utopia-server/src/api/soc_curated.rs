@@ -44,13 +44,28 @@ async fn normalize(
     .ok_or(AppError::NotFound)?;
     // Preserve original JSON bytes for Python's duplicate-key validation.
     // The public envelope has only profile + record; scope is server supplied.
+    if system != "splunk" {
+        return Err(AppError::Validation("unsupported_source_profile".into()).into());
+    }
+    let raw = String::from_utf8(raw.to_vec())
+        .map_err(|_| AppError::Validation("soc_input_must_be_utf8".into()))?;
     let scope = json!({"tenant_id":tenant,"source_system":system,"source_instance":instance});
     let _permit = CAPACITY
         .try_acquire()
         .map_err(|_| AppError::Conflict("soc_normalizer_busy".into()))?;
+    let python_root = std::env::var_os("UTOPIA_SOC_PYTHON_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            if cfg!(test) {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+            } else {
+                std::path::PathBuf::from("/app")
+            }
+        });
     let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let mut child = tokio::process::Command::new("python3")
-            .args(["-m", "soorin.ops.http_adapter"])
+            .args(["-S", "-m", "soorin.ops.http_adapter"])
+            .env("PYTHONPATH", python_root)
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -59,7 +74,7 @@ async fn normalize(
             .spawn()?;
         let mut stdin = child.stdin.take().unwrap();
         // Envelope is parsed and merged only by Python, preserving duplicate checks.
-        let input = json!({"http_body":String::from_utf8(raw.to_vec())?,"scope":scope});
+        let input = json!({"http_body":raw,"scope":scope});
         stdin.write_all(&serde_json::to_vec(&input)?).await?;
         drop(stdin);
         let mut output = Vec::new();
@@ -71,22 +86,20 @@ async fn normalize(
             .read_to_end(&mut output)
             .await?;
         anyhow::ensure!(output.len() <= LIMIT, "soc_normalizer_output_limit");
-        anyhow::ensure!(
-            child.wait().await?.success(),
-            "soc_normalizer_rejected_input"
-        );
+        let status = child.wait().await?;
+        if status.code() == Some(2) {
+            return Ok(Err(AppError::Validation("soc_normalization_failed; invalid profile, scope or record".into())));
+        }
+        anyhow::ensure!(status.success(), "soc_normalizer_unavailable");
         let value: Value = serde_json::from_slice(&output)?;
         super::soc_ingestion::validate(&value["canonical_event"])?;
-        Ok::<_, anyhow::Error>(value)
+        Ok::<_, anyhow::Error>(Ok(value))
     })
     .await
     .map_err(|_| AppError::Conflict("soc_normalizer_timeout".into()))?;
-    result.map_err(|_| {
-        AppError::Validation(
-            "soc_normalization_failed; verify profile, record and installed Python adapter".into(),
-        )
-        .into()
-    })
+    result
+        .map_err(|_| AppError::Other(anyhow::anyhow!("soc_normalizer_unavailable")))?
+        .map_err(Into::into)
 }
 
 pub async fn preview(

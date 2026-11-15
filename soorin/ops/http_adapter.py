@@ -8,6 +8,8 @@ import sys
 from soorin.contracts.json_input import load_object, MAX_INPUT_BYTES
 from soorin.ops.preview import preview
 
+MAX_TRANSPORT_BYTES = 2 * MAX_INPUT_BYTES + 16384
+
 PROFILE = 'agentic-soc.splunk-curated.v1'
 
 
@@ -28,10 +30,12 @@ def normalize(request):
 
 def main():
     try:
-        wire = sys.stdin.buffer.read(2 * MAX_INPUT_BYTES + 1)
-        if len(wire) > 2 * MAX_INPUT_BYTES:
-            raise ValueError('adapter_transport_too_large')
-        transport = json.loads(wire)
+        wire = sys.stdin.buffer.read(MAX_TRANSPORT_BYTES + 1)
+        transport = load_object(wire, max_bytes=MAX_TRANSPORT_BYTES)
+        if set(transport) != {'scope', 'http_body'} or not isinstance(transport['scope'], dict):
+            raise ValueError('invalid_adapter_transport')
+        if set(transport['scope']) != {'tenant_id', 'source_system', 'source_instance'}:
+            raise ValueError('invalid_adapter_scope')
         public = load_object(transport['http_body'])
         if set(public) != {'profile', 'record'}:
             raise ValueError('invalid_public_envelope')
@@ -40,7 +44,7 @@ def main():
         if len(encoded) > MAX_INPUT_BYTES:
             raise ValueError('normalized_output_too_large')
         sys.stdout.buffer.write(encoded)
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError, KeyError, RecursionError, AttributeError):
         # Never print exceptions or source values to the app's logs.
         sys.exit(2)
 
