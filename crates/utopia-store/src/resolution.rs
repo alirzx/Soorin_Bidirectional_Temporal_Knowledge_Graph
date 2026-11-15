@@ -302,7 +302,7 @@ pub async fn resolve_curated_canonical(
         }
         if actual_type.is_none() {
             sqlx::query(
-                "UPDATE entities SET type_id=$2, type_source='aligned',
+                "UPDATE entities SET type_id=$2, type_source='extracted',
                  specific_type=COALESCE(specific_type,$3), updated_at=now()
                  WHERE id=$1 AND type_id IS NULL",
             )
