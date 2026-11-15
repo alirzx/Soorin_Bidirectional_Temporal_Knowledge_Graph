@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch
-from soorin.services.cpu_models import Engine, texts, serve_all, InferenceGate
+from soorin.services.cpu_models import Engine, texts, serve_all, InferenceGate, BoundedHTTPServer
 
 
 class Scores:
@@ -26,6 +26,33 @@ class CpuServiceTests(unittest.TestCase):
         self.assertTrue(gate.acquire())
         self.assertFalse(gate.acquire())
         gate.release()
+
+    def test_interrupted_wait_restores_capacity(self):
+        gate = InferenceGate(capacity=1)
+        with patch.object(gate.active, 'acquire', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt): gate.acquire()
+        self.assertTrue(gate.acquire())
+        gate.release()
+
+    def test_invalid_requests_are_rejected_before_model_loading(self):
+        with patch.object(Engine, 'load', side_effect=AssertionError('weights forbidden')):
+            for role, path, body in [('ner', '/ner', {'text':['a','b']}),
+                ('reranker','/rerank',{'query':['a','b'],'texts':['a']}),
+                ('embedding','/v1/embeddings',{'input':['x']*17})]:
+                with self.assertRaises(ValueError): Engine(role,'missing').infer(path,body)
+
+    def test_request_thread_overflow_is_bounded_without_starting_server(self):
+        import threading
+        from unittest.mock import Mock
+        server = object.__new__(BoundedHTTPServer)
+        server.handlers = threading.BoundedSemaphore(1)
+        self.assertTrue(server.handlers.acquire())
+        request = Mock()
+        server.shutdown_request = Mock()
+        server.process_request(request, ('127.0.0.1', 1))
+        self.assertIn(b'429', request.sendall.call_args.args[0])
+        server.shutdown_request.assert_called_once_with(request)
+        server.handlers.release()
 
     def test_reranker_preserves_all_indexes_and_model_revision(self):
         engine = Engine("reranker", "/missing", model=Scores())

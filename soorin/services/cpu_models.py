@@ -65,9 +65,25 @@ class Engine:
             self.model = CpuCyberNer(model=path, local_files_only=True)
             self.model._load()
 
-    def infer(self, path: str, body: dict[str, Any]) -> Any:
+    def validate_request(self, path: str, body: dict[str, Any]) -> None:
         if body.get("model", self.name) not in {self.name, self.model_id}:
             raise ValueError("requested model does not match this service")
+        if path == "/v1/embeddings" and self.role == "embedding":
+            texts(body.get("input"))
+        elif path == "/rerank" and self.role == "reranker":
+            if not isinstance(body.get("query"), str):
+                raise ValueError("query must be one string")
+            texts(body['query'])
+            texts(body.get('texts'))
+        elif path == "/ner" and self.role == "ner":
+            if not isinstance(body.get("text"), str):
+                raise ValueError("text must be one string")
+            texts(body['text'])
+        else:
+            raise ValueError("endpoint does not match service role")
+
+    def infer(self, path: str, body: dict[str, Any]) -> Any:
+        self.validate_request(path, body)
         with self.lock:
             self.load()
             started = time.perf_counter()
@@ -75,7 +91,7 @@ class Engine:
                 if path == "/v1/embeddings" and self.role == "embedding":
                     rows = texts(body.get("input"))
                     vectors = self.model.encode(rows, batch_size=4, normalize_embeddings=True, show_progress_bar=False).tolist()
-                    if len(vectors) != len(rows) or any(len(v) != 1024 or any(not math.isfinite(x) for x in v) for v in vectors):
+                    if len(vectors) != len(rows) or any(len(v) != 1024 or any(not math.isfinite(x) for x in v) or not any(v) for v in vectors):
                         raise ValueError("model returned invalid embedding dimensions")
                     return {"object": "list", "model": self.name, "data": [
                         {"object": "embedding", "index": i, "embedding": v} for i, v in enumerate(vectors)
@@ -113,14 +129,51 @@ class InferenceGate:
     def acquire(self) -> bool:
         if not self.slots.acquire(blocking=False):
             return False
-        if self.active.acquire(timeout=self.wait_seconds):
-            return True
+        try:
+            if self.active.acquire(timeout=self.wait_seconds):
+                return True
+        except BaseException:
+            self.slots.release()
+            raise
         self.slots.release()
         return False
 
     def release(self) -> None:
         self.active.release()
         self.slots.release()
+
+
+class BoundedHTTPServer(ThreadingHTTPServer):
+    """Bound request parsing as well as inference; no unbounded handler threads."""
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        self.handlers = threading.BoundedSemaphore(8)
+        super().__init__(*args, **kwargs)
+
+    def get_request(self):
+        request, address = super().get_request()
+        request.settimeout(15)
+        return request, address
+
+    def process_request(self, request, client_address):
+        if not self.handlers.acquire(blocking=False):
+            try:
+                request.sendall(b'HTTP/1.1 429 Too Many Requests\r\nRetry-After: 2\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.handlers.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.handlers.release()
 
 
 def serve(engine: Engine, host: str, port: int,
@@ -168,6 +221,7 @@ def serve(engine: Engine, host: str, port: int,
                 body = json.loads(self.rfile.read(size))
                 if not isinstance(body, dict):
                     raise ValueError("body must be an object")
+                engine.validate_request(self.path, body)
                 if not gate.acquire():
                     self.respond(429, {"error": "busy"})
                     return
@@ -180,7 +234,7 @@ def serve(engine: Engine, host: str, port: int,
             except Exception:
                 self.respond(503, {"error": "inference_failed"})
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    server = BoundedHTTPServer((host, port), Handler)
     server.daemon_threads = True
     server.serve_forever()
 
