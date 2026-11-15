@@ -278,14 +278,25 @@ mod reload_tests {
             .reindex_document(
                 "soc-kb",
                 "doc",
-                &[("chunk".into(), r#"{ "rule_title": "Password Spray Detection", "source": "splunk" }"#.into())],
+                &[(
+                    "chunk".into(),
+                    r#"{ "rule_title": "Password Spray Detection", "source": "splunk" }"#.into(),
+                )],
             )
             .unwrap();
-        for query in ["Password", "password", "PASSWORD", "Password Spray Detection"] {
-            let hits=index.search("soc-kb",query,10).unwrap();
-            assert_eq!(hits.len(),1,"missing SOC rule title for query={query}");
+        for query in [
+            "Password",
+            "password",
+            "PASSWORD",
+            "Password Spray Detection",
+        ] {
+            let hits = index.search("soc-kb", query, 10).unwrap();
+            assert_eq!(hits.len(), 1, "missing SOC rule title for query={query}");
         }
-        assert!(index.search("another-kb", "password", 10).unwrap().is_empty());
+        assert!(index
+            .search("another-kb", "password", 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
