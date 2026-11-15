@@ -100,6 +100,31 @@ the earlier failed runs or PR #5's success. No workflow was manually dispatched.
 CI Clippy uses the existing command without `--locked`; dependencies/lockfile
 were unchanged. Future local locked commands remain in the build handoff.
 
+The standard workspace run also intentionally ignores these **six existing
+opt-in tests**; they are not counted as PASS:
+
+| Test | Reason / follow-up |
+|---|---|
+| `readers::ark_ocr::tests::live_agent_plan_reads_scans` | Requires ARK_API_KEY/Poppler and sends PDF pages to a real external API; outside this source-only/no-provider session. |
+| `rss_full_content::tests::live_content_reach_rss` | Public HTTPS acceptance against httpbingo.org requires external network; no live RSS probe requested. |
+| `materialize::delivery_tests::busy_defers_without_retaining_connections` | Requires a dedicated **idle** database; shared parallel workspace CI is unsuitable. |
+| `delivery_rollback_late_arrivals_recovery_and_cost` | Opt-in delivery/cost regression requires a dedicated idle database. |
+| `process_exit_preserves_the_committed_delivery_boundary` | Opt-in subprocess/crash regression requires a dedicated idle database. |
+| `crash_child` | Probe entry spawned only by the preceding isolated crash-window experiment, never a standalone acceptance test. |
+
+In the next approved compiled-test session, with a separately provisioned empty,
+migrated, idle test DB (never QA), run these bounded DB gates sequentially:
+
+```bash
+UTOPIA_MODEL_TEST_MODE=1 UTOPIA_TEST_REQUIRE_DB=1 timeout 180s cargo test --locked -p utopia-store --lib busy_defers_without_retaining_connections -- --ignored --nocapture --test-threads=1
+UTOPIA_MODEL_TEST_MODE=1 UTOPIA_TEST_REQUIRE_DB=1 timeout 300s cargo test --locked -p utopia-store --test human_phrase_materialization_delivery delivery_rollback_late_arrivals_recovery_and_cost -- --ignored --nocapture --test-threads=1
+UTOPIA_MODEL_TEST_MODE=1 UTOPIA_TEST_REQUIRE_DB=1 timeout 300s cargo test --locked -p utopia-store --test human_phrase_materialization_delivery process_exit_preserves_the_committed_delivery_boundary -- --ignored --nocapture --test-threads=1
+```
+
+Set `UTOPIA_DATABASE_URL` securely to that dedicated DB before the commands.
+These opt-in crash/cost results remain NOT VERIFIED in this pass; ordinary
+Deferred/claim/acknowledgement regressions did execute in CI.
+
 No Docker build/start/recreate, model download/inference, DB migration against
 QA, live ingestion, historical repair, provider request or deployment occurred.
 
