@@ -249,7 +249,12 @@ pub async fn resolve_curated_canonical(
         ));
     }
     let expected_type: Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM entity_types WHERE kb_id=$1 AND label=$2")
+        sqlx::query_scalar(
+            "SELECT id FROM entity_types
+             WHERE kb_id=$1
+               AND regexp_replace(lower(label),'[^a-z0-9]','','g')
+                 = regexp_replace(lower($2),'[^a-z0-9]','','g')",
+        )
             .bind(kb_id)
             .bind(kind)
             .fetch_optional(pool)
