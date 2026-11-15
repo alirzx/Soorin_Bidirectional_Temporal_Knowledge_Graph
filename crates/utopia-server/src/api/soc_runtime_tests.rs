@@ -502,6 +502,25 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
             .await?;
     assert_eq!(status.0, "quarantined");
     assert_eq!(status.1.as_deref(), Some("stored_event_requires_review"));
+    let app = router(state.clone(), &cfg);
+    // The curated ingest route creates the same native receipt and preserves
+    // source authentication/checksum idempotency before any graph work.
+    let curated = json!({"profile":"agentic-soc.splunk-curated.v1","record":{
+        "alert_row_id":"synthetic-http-ingest","event_time":"2026-11-01T10:00:00Z",
+        "hostname":"http.synthetic.example"}});
+    let path = format!("/api/v1/sources/{source}/soc/ingest");
+    let (code, first) = call(
+        app.clone(),
+        path.clone(),
+        "synthetic-only-token",
+        curated.clone(),
+    )
+    .await?;
+    assert_eq!(code, 200, "{first}");
+    let (code, duplicate) = call(app.clone(), path, "synthetic-only-token", curated).await?;
+    assert_eq!(code, 200, "{duplicate}");
+    assert_eq!(first["receipt_id"], duplicate["receipt_id"]);
+    assert_eq!(first["job_id"], duplicate["job_id"]);
     // Full supported relation flow, including a second revision under an
     // already-bound signature. No model/service or global worker is needed.
     let events: Value = serde_json::from_str(include_str!(

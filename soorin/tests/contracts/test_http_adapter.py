@@ -89,3 +89,8 @@ class HttpAdapterTests(unittest.TestCase):
                 capture_output=True,timeout=5,cwd=Path(__file__).parents[3])
             self.assertEqual(result.returncode,2)
             self.assertEqual(result.stdout+result.stderr,b'')
+
+    def test_nested_payload_strings_preserve_duplicate_key_rejection(self):
+        for payload in ['{', '{"alert_id":"a","alert_id":"b"}', '{"score":NaN}']:
+            with self.subTest(payload=payload),self.assertRaises(ValueError):
+                normalize(self.request(record={**RECORD,'raw_event':{'llm_payload':payload}}))

@@ -189,6 +189,9 @@ def normalize_llm_payload(
     raw = _unwrap_record(raw_record, tenant_id=tenant_id, source_instance=source_instance)
     if value is None:
         value = raw.get('llm_payload')
+        if isinstance(value, str):
+            from soorin.contracts.json_input import load_object
+            value = load_object(value)
     warnings: list[str] = []
     try:
         payload = _mapping(value, "llm_payload", allow_missing=False)
