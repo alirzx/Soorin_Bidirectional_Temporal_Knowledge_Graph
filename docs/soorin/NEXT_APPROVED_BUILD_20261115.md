@@ -5,35 +5,31 @@ a separately approved build/runtime session. Use existing dependencies/images/
 model caches where qualified; stop for missing dependencies rather than silently
 installing/downloading. Never delete or relabel an existing QA volume.
 
-1. **Environment preflight.** From the TKG checkout, record `git status --short
-   --branch`, `git rev-parse HEAD`, tool versions, memory/swap/disk and read-only
-   `docker ps`/volume/port inventory. Confirm ownership/disposability of
-   `soorin-tkg-v1-qa`, ports 2526/2527 and three model-cache volumes. Review exact
-   final-SHA core CI. Preserve `.env.qa`; if none exists, `make qa-env-init`
-   generates a new mode-0600 file. Never change an existing DB password.
-2. **Migration verification.** Inventory must contain 105 unique SQL versions,
-   latest 10004; CLI manifest schema 105. Export/check the applied checksum ledger
-   against `python3 -m soorin.ops.migrations --applied-json FILE` without printing
-   secrets. Prepare independent empty test DBs for fresh/upgrade checks. In the
-   approved compilation window, use the Rust/DB commands in
-   [Build and test handoff](BUILD_AND_TEST_HANDOFF.md), including mandatory DB
-   tests and backup restore into a separate instance. No applied SQL is rewritten.
-3. **Application build, bounded and once.** `make qa-config QA_ENV_FILE=.env.qa`,
-   then `SOORIN_BUILD_JOBS=1 timeout 1800s make qa-build QA_ENV_FILE=.env.qa`.
-   Preserve existing caches. Qualify the resulting immutable image hash.
-4. **DB/app startup.** `make qa-up QA_ENV_FILE=.env.qa QA_EXECUTE=YES` only after
-   step 1. Startup applies migrations through the migration connection. Verify
-   ledger 10004, runtime-role grants, UID 65532 writes, API health and frontend.
-   Check `/app/soorin` import under the nonroot read-only image; it requires
-   `python3 -S`, bundled stdlib modules/ontology and `UTOPIA_SOC_PYTHON_ROOT=/app`.
-   Health response alone does not prove worker/model/graph readiness.
+1. **Exact existing-QA preflight and backup.** Follow the complete
+   [app-only runbook](APP_ONLY_REBUILD_20261115.md), including Compose labels,
+   final-SHA green CI, the actual **`.env`**, immutable old image pin, coordinated
+   DB/app backup and independent restore verification. Never regenerate the
+   password, initialize `.env.qa`, delete historical volumes or modify the old KB.
+2. **Migration verification.** Inventory remains 105 unique SQL versions, latest
+   10004. Export the existing checksum ledger read only and audit it with
+   `python3 -m soorin.ops.migrations --applied-json FILE`. DB-dependent Rust tests
+   use independent disposable databases only; see [build checks](BUILD_AND_TEST_HANDOFF.md).
+3. **Application build, bounded and once.** After backup/restore qualification:
+   `make qa-config QA_ENV_FILE=.env`, then
+   `SOORIN_BUILD_JOBS=1 timeout 1800s make qa-build QA_ENV_FILE=.env`. Save the
+   exact Git SHA, build log and resulting immutable image ID. Stop on timeout.
+4. **App-only replacement.** Use the runbook's `up -d --no-deps --no-build
+   --pull never --force-recreate app` with the same `.env` and project. Never use
+   `qa-up` for this existing deployment. PostgreSQL and both original volumes
+   stay in place. Verify source counts, migration checksums and v3 Tantivy
+   recovery before native deterministic and ten-alert acceptance in new KBs.
 5. **Model-cache verification.** Build the revised model image separately only
-   with approval: `make qa-model-build QA_ENV_FILE=.env.qa`. For each role, mount
+   with approval: `make qa-model-build QA_ENV_FILE=.env`. For each role, mount
    its existing cache read only and run the documented network-none
    `verify-artifacts --role ROLE --cache PATH --hashes` from
    [Artifact management](MODEL_ARTIFACT_MANAGEMENT.md). All three pinned snapshots
    must pass. Missing snapshots are BLOCKED, not an automatic download request.
-6. **Model startup / smoke.** `make qa-model-up QA_ENV_FILE=.env.qa QA_EXECUTE=YES`.
+6. **Model startup / smoke.** `make qa-model-up QA_ENV_FILE=.env QA_EXECUTE=YES`.
    Verify readiness at loopback 2811/2812/2813, then bounded inference probes:
 
    ```bash

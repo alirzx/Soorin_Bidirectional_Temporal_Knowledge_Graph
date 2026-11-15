@@ -2,7 +2,7 @@
 
 **Soorin Temporal Knowledge Graph** is a standalone, evidence-first, bitemporal knowledge service for security operations. Its APIs and deployment contracts are implemented; full local image/model/agent acceptance remains pending. This documentation distinguishes *product capabilities*, *source-level validation*, *runtime acceptance* and *production approval*.
 
-[Product overview](../../README.md) · [Current engineering report](CONTINUATION_HARDENING_REPORT.md) · [Next local build](NEXT_APPROVED_BUILD_20261115.md)
+[Product overview](../../README.md) · [Current engineering report](FINAL_SOURCE_HARDENING_20261115.md) · [Next app-only build](APP_ONLY_REBUILD_20261115.md)
 
 ## Documentation map
 
@@ -25,8 +25,8 @@ flowchart TD
 | Search and AI engineers | [Hybrid retrieval and GraphRAG](RETRIEVAL_AND_RERANKING.md) · [Agent tools](AGENT_TOOL_CONTRACTS.md) · [Model configuration](MODEL_CONFIGURATION.md) · [Model artifact lifecycle](MODEL_ARTIFACT_MANAGEMENT.md) · [Review-only cybersecurity NER](CPU_CYBER_NER.md) |
 | Security and privacy reviewers | [Security boundaries](SECURITY_BOUNDARIES.md) · [Outbound privacy controls](OUTBOUND_PRIVACY.md) · [Agent compatibility](FUTURE_AGENT_COMPATIBILITY.md) |
 | QA on an existing Workspace and KB | [Existing-KB login, synthetic fixtures and E2E runbook](EXISTING_KB_LOCAL_QA.md) |
-| QA and SRE operators | [Next approved build and test sequence](NEXT_APPROVED_BUILD_20261115.md) · [Local development](LOCAL_DEVELOPMENT.md) · [Pre-build checks](PREBUILD_VALIDATION.md) · [Testing and evaluation](TESTING_AND_EVALUATION.md) · [Production deployment and rollback](PRODUCTION_DEPLOYMENT.md) |
-| Engineering reviewers | [Current continuation report](CONTINUATION_HARDENING_REPORT.md) · [19-task acceptance matrix](CONTINUATION_TASK_MATRIX.md) · [Build handoff](BUILD_AND_TEST_HANDOFF.md) · [Engineering gap register](ENGINEERING_GAP_REGISTER.md) |
+| QA and SRE operators | [App-only upgrade, backup and acceptance](APP_ONLY_REBUILD_20261115.md) · [Later model and integration gates](NEXT_APPROVED_BUILD_20261115.md) · [Local development](LOCAL_DEVELOPMENT.md) · [Pre-build checks](PREBUILD_VALIDATION.md) · [Testing and evaluation](TESTING_AND_EVALUATION.md) · [Production deployment and rollback](PRODUCTION_DEPLOYMENT.md) |
+| Engineering reviewers | [Final source report](FINAL_SOURCE_HARDENING_20261115.md) · [Earlier continuation report](CONTINUATION_HARDENING_REPORT.md) · [19-task acceptance matrix](CONTINUATION_TASK_MATRIX.md) · [Build handoff](BUILD_AND_TEST_HANDOFF.md) · [Engineering gap register](ENGINEERING_GAP_REGISTER.md) |
 
 ## Data lifecycle and verification
 
@@ -49,7 +49,7 @@ The [native curated HTTP profile](MANUAL_SOC_INGESTION.md) supports a single doc
 | Gate | State |
 |---|---|
 | Source implementation and automated Rust/Python/Frontend CI | **Passed on the 2026-11-15 source patch**; verify checks again for newer documentation commits |
-| Static Docker/Compose, schemas, fixtures and unit/mocked boundaries | **Checked**; evidence in the [continuation report](CONTINUATION_HARDENING_REPORT.md) |
+| Static Docker/Compose, schemas, fixtures and unit/mocked boundaries | **Checked**; evidence in the [final source report](FINAL_SOURCE_HARDENING_20261115.md) |
 | Fresh local image, migration/restore, real model startup and native receipt E2E | **Not yet accepted** |
 | Dense/reranker/NER quality, MCP PAT, protected external chat and agent tool continuation | **Not yet accepted** |
 | Production deployment and release approval | **Not granted** |

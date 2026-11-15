@@ -1,5 +1,7 @@
 # Controlled build and integration handoff
 
+> Current existing-QA upgrade: follow [the application-only rebuild runbook](APP_ONLY_REBUILD_20261115.md) and [final source report](FINAL_SOURCE_HARDENING_20261115.md). Both running Compose labels identify **`.env`**, so pass `QA_ENV_FILE=.env`. Preserve the historical lab and both volumes; test new ingestion in a new synthetic KB. Earlier full-stack startup and v2-marker examples below are historical and are superseded for this upgrade.
+
 Run this plan only in the next approved build/runtime window. The engineering
 pass did not execute heavy builds, database migrations, service startup or model
 inference. Never target an existing lab/production DB or reuse its data volume.

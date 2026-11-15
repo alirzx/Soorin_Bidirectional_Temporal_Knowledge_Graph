@@ -1,5 +1,7 @@
 # Existing-KB Soorin SOC QA: controlled local E2E
 
+> Current existing-QA upgrade: follow [the application-only rebuild runbook](APP_ONLY_REBUILD_20261115.md) and [final source report](FINAL_SOURCE_HARDENING_20261115.md). Both running Compose labels identify **`.env`**, so pass `QA_ENV_FILE=.env`. Preserve the historical lab and both volumes; test new ingestion in a new synthetic KB. Earlier full-stack startup and v2-marker examples below are historical and are superseded for this upgrade.
+
 **Purpose:** Qualify a clean source-built Soorin app/DB using the already-created
 `Soorin SOC Synthetic Lab` KB. **Never** reset/rename/delete the existing KB,
 workspace, PostgreSQL volume, other Docker projects, or source artifacts. The
@@ -133,9 +135,14 @@ python3 -m soorin.ops.qa_existing_kb validate --file "$QA_ALERTS" --count 10
 python3 -m soorin.ops.qa_existing_kb preview --file "$QA_ALERTS" --count 10
 python3 -m soorin.ops.qa_existing_kb ingest --file "$QA_ALERTS" --count 10 --execute
 python3 -m soorin.ops.qa_existing_kb status --file "$QA_ALERTS" --count 10 --wait --deadline 1200
+python3 -m soorin.ops.qa_existing_kb accept --file "$QA_ALERTS" --count 10
 ```
 
 The operator stores **receipt IDs only** in a private local state file.
+`accept` is a read-only deterministic graph/title-citation gate. Use the new
+synthetic KB selected with `--kb-name` on **every** command for final acceptance;
+the unqualified examples above target the historical lab and must not be used
+for new writes in the final hardening/build workflow.
 `status --wait` requires exactly the requested number of tracked receipts
 and all statuses `bound`; it will not falsely pass after partial ingestion.
 When a job or receipt stalls, stop bulk submission and inspect

@@ -196,7 +196,7 @@
         ],
         "responses": {
           "200": {
-            "description": "soorin.receipt-diagnostics.v1, <=128 entity rows, <=512 relations, <=30 jobs."
+            "description": "soorin.receipt-diagnostics.v1; <=128 entity rows, <=512 relations, <=30 jobs. Additive fields: entities_truncated, relations_truncated; each entity includes identity_conflict, linked_entity_id, candidate_count, candidate_ids (<=8), candidates_truncated. Conflicting graph identities return null entity_id and cannot satisfy relation endpoints. Counts reflect all candidates even when arrays are bounded."
           },
           "403": {
             "description": "KB administrator required."

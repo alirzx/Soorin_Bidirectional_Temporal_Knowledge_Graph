@@ -1,5 +1,7 @@
 # 2026-11-15 SOC ingestion / search local recovery gate
 
+> Current existing-QA upgrade: follow [the application-only rebuild runbook](APP_ONLY_REBUILD_20261115.md) and [final source report](FINAL_SOURCE_HARDENING_20261115.md). Both running Compose labels identify **`.env`**, so pass `QA_ENV_FILE=.env`. Preserve the historical lab and both volumes; test new ingestion in a new synthetic KB. Earlier full-stack startup and v2-marker examples below are historical and are superseded for this upgrade.
+
 **Scope:** Soorin TKG QA on `soorin-tkg-v1-qa`. Keep the original workspace,
 `Soorin SOC Synthetic Lab`, Source, receipts, PostgreSQL/pgvector and all
 Docker volumes. Do not delete, force-merge, or rewrite canonical identities.

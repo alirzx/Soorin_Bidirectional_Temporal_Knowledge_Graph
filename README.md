@@ -194,6 +194,14 @@ Raw SIEM payloads and sensitive excerpts are minimized by policy. Structural min
 
 ## Build and operate in an isolated environment
 
+The existing QA stack was inspected on 2026-11-15: it uses **`.env`**, project
+`soorin-tkg-v1-qa` and the original app/DB volumes. For its next upgrade use the
+[backup-first app-only rebuild](docs/soorin/APP_ONLY_REBUILD_20261115.md) with
+`QA_ENV_FILE=.env`; preserve the historical KB and test ingestion in new synthetic
+KBs. The [final source report](docs/soorin/FINAL_SOURCE_HARDENING_20261115.md)
+records identity, index-recovery, title-recall and acceptance-harness corrections.
+The fresh-stack commands below apply only to genuinely new environments.
+
 The codebase is prepared for a **controlled local qualification build**, not a blanket reset of previous laboratories. The source-development Compose, production Compose and legacy upstream-compatible Compose serve different purposes. Never use a generic `docker compose down -v` or prune as an upgrade procedure.
 
 ```bash
@@ -243,7 +251,7 @@ The current status is **`SOURCE_PATCH_COMPLETE` / `READY_FOR_NEXT_LOCAL_BUILD`**
 The [documentation index](docs/soorin/README.md) is the supported entry point for architects, integrators, security reviewers and operators. In particular:
 
 - [Producer contract mapping](docs/soorin/PRODUCER_MAPPING_V1_20261115.md) and [SOC integration](docs/soorin/AGENTIC_SOC_INTEGRATION_V1.md)
-- [Continuation engineering report](docs/soorin/CONTINUATION_HARDENING_REPORT.md) and [19-task completion matrix](docs/soorin/CONTINUATION_TASK_MATRIX.md)
+- [Final source hardening report](docs/soorin/FINAL_SOURCE_HARDENING_20261115.md) · [Earlier continuation report](docs/soorin/CONTINUATION_HARDENING_REPORT.md) and [19-task completion matrix](docs/soorin/CONTINUATION_TASK_MATRIX.md)
 - [Source-level data flow](docs/soorin/CONTINUATION_ARCHITECTURE.md) and [acceptance / evaluation](docs/soorin/TESTING_AND_EVALUATION.md)
 - [Next build, model verification and E2E runbook](docs/soorin/NEXT_APPROVED_BUILD_20261115.md)
 
