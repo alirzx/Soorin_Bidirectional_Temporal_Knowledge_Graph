@@ -244,18 +244,18 @@ pub async fn resolve_curated_canonical(
     kind: &str,
 ) -> AppResult<Uuid> {
     if !name.starts_with("soorin:") || name.len() > 256 {
-        return Err(AppError::Validation("invalid curated SOC canonical key".into()));
+        return Err(AppError::Validation(
+            "invalid curated SOC canonical key".into(),
+        ));
     }
-    let expected_type: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM entity_types WHERE kb_id=$1 AND label=$2",
-    )
-    .bind(kb_id)
-    .bind(kind)
-    .fetch_optional(pool)
-    .await?;
-    let expected_type = expected_type.ok_or_else(|| {
-        AppError::Validation("curated SOC entity type is not installed".into())
-    })?;
+    let expected_type: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM entity_types WHERE kb_id=$1 AND label=$2")
+            .bind(kb_id)
+            .bind(kind)
+            .fetch_optional(pool)
+            .await?;
+    let expected_type = expected_type
+        .ok_or_else(|| AppError::Validation("curated SOC entity type is not installed".into()))?;
     let known_as = crate::names::ensure_known_as(pool, kb_id).await?;
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
