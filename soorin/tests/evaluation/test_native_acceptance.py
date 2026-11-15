@@ -60,3 +60,13 @@ class NativeAcceptanceTests(unittest.TestCase):
         self.assertEqual(token,'synthetic-session')
         self.assertEqual([path for path,_ in calls],['/api/v1/auth/me','/api/v1/workspaces'])
         self.assertNotIn('/api/v1/auth/register',[path for path,_ in calls])
+
+    def test_truncated_or_duplicate_identity_diagnostics_never_pass(self):
+        event,detail=self.fixture()
+        detail['entities_truncated']=True
+        with self.assertRaisesRegex(AssertionError,'truncated'):
+            assert_receipt_graph(event,detail)
+        event,detail=self.fixture()
+        detail['entities'][0]['candidate_count']=2
+        with self.assertRaisesRegex(AssertionError,'identity_conflict'):
+            assert_receipt_graph(event,detail)

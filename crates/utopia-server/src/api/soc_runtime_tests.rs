@@ -603,6 +603,12 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     assert_eq!(entity["identity_conflict"],"duplicate_live_entities");
     assert!(entity["entity_id"].is_null());
     assert_eq!(entity["candidate_count"],2);
+    let (_,resolution)=call(app.clone(),format!("/api/v1/kbs/{kb}/knowledge/resolve"),&session,
+        json!({"tenant_id":"tenant-blue","source_system":"splunk","source_instance":"splunk-e2e",
+        "entity_type":"SecurityAlert","authority_name":"soc_alert_row_id","source_identifier":"synthetic-B"})).await?;
+    assert_eq!(resolution["status"],"ambiguous");
+    assert_eq!(resolution["automatic"],false);
+    assert!(resolution["candidates"][0]["entity_id"].is_null());
     assert!(conflicted["relations"].as_array().unwrap().iter().any(|r|r["binding"]["evidence_link_status"]==false));
     sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1 OR payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id=$2)")
         .bind(kb.to_string()).bind(kb).execute(&pool).await?;

@@ -241,6 +241,9 @@ pub async fn resolve(
     let (status, candidates) = match row {
         None => ("not_found", vec![]),
         Some((id, key, entity, state, conflict)) => {
+            let graph = utopia_store::resolution::inspect_curated_canonical(&state.pool,kb,&key).await?;
+            let conflict = conflict || graph.conflict.is_some();
+            let entity = if conflict { None } else { entity };
             let status = if conflict || state == "ambiguous" {
                 "ambiguous"
             } else if state != "active" {
@@ -254,7 +257,9 @@ pub async fn resolve(
                 status,
                 vec![
                     json!({"identity_id":id,"canonical_key":key,"entity_id":entity,
-                "identity_status":state,"has_conflict":conflict}),
+                "identity_status":state,"has_conflict":conflict,"graph_conflict":graph.conflict,
+                "candidate_count":graph.candidate_count,"candidate_ids":graph.candidate_ids,
+                "candidates_truncated":graph.candidates_truncated}),
                 ],
             )
         }

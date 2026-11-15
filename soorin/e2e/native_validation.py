@@ -25,6 +25,8 @@ def acceptance_events():
 
 
 def assert_receipt_graph(event, diagnostics, *, source_id=None):
+    if diagnostics.get('entities_truncated') or diagnostics.get('relations_truncated'):
+        raise AssertionError('diagnostics_truncated')
     if diagnostics.get('status') != 'bound':
         raise AssertionError('receipt_not_bound')
     if source_id is not None and diagnostics.get('source_id') != source_id:
@@ -39,9 +41,11 @@ def assert_receipt_graph(event, diagnostics, *, source_id=None):
         raise AssertionError('document_provenance_missing')
     expected_entities = {e.entity_id:e for e in event.entities}
     actual_entities = diagnostics.get('entities', [])
-    if {e['canonical_key'] for e in actual_entities} != set(expected_entities):
+    if len(actual_entities) != len(expected_entities) or {e['canonical_key'] for e in actual_entities} != set(expected_entities):
         raise AssertionError('expected_entity_set_mismatch')
     for entity in actual_entities:
+        if entity.get('identity_conflict') or entity.get('candidate_count',0)>1:
+            raise AssertionError('canonical_identity_conflict')
         if (entity.get('type_matches') is not True or entity.get('authority_linked') is not True or
             entity.get('expected_type') != expected_entities[entity['canonical_key']].entity_type):
             raise AssertionError('entity_type_or_authority_missing')

@@ -224,9 +224,61 @@ def check_core(token, kb, source, sample_record, source_token, *, strict=False):
         print("NOTE: Native reranker execution NOT VERIFIED by current search.")
 
 
+def accept_batch(token, kb, source, rows, tracked, *, request=None):
+    """Read-only ten-alert gate; submission or unrelated search hits cannot pass."""
+    from soorin.ops.preview import preview
+    from soorin.e2e.native_validation import assert_receipt_graph
+    request = request or api
+    if set(tracked) != {index for index, _ in rows} or not rows or len(rows)>10:
+        raise ValueError('acceptance_requires_complete_one_to_ten_record_batch')
+    graph_ids = {}
+    case_ids = set()
+    accepted = 0
+    for index, raw in rows:
+        event,_ = preview(json.dumps(raw['record']),tenant_id='tenant-blue',source_instance='splunk-e2e')
+        receipt = request('GET',f'/api/v1/kbs/{kb}/knowledge/receipts/{tracked[index]["receipt_id"]}',token)
+        assert_receipt_graph(event,receipt,source_id=source)
+        mapped = {e['canonical_key']:e['entity_id'] for e in receipt['entities']}
+        for entity in event.entities:
+            value=mapped[entity.entity_id]
+            if entity.entity_id in graph_ids and graph_ids[entity.entity_id] != value:
+                raise ValueError('shared_canonical_identity_split_across_alerts')
+            graph_ids[entity.entity_id]=value
+            if entity.entity_type=='SOCCase': case_ids.add(entity.entity_id)
+        alert=next(e for e in event.entities if e.entity_type=='SecurityAlert')
+        authority,identifier=next(iter(alert.source_identifiers.items()))
+        resolved=request('POST',f'/api/v1/kbs/{kb}/knowledge/resolve',token,{
+            'tenant_id':event.tenant_id,'source_system':event.source_system,'source_instance':event.source_instance,
+            'entity_type':'SecurityAlert','authority_name':authority,'source_identifier':identifier})
+        if (resolved.get('status')!='resolved' or resolved.get('automatic') is not True or
+            len(resolved.get('candidates',[]))!=1 or resolved['candidates'][0].get('entity_id')!=mapped[alert.entity_id]):
+            raise ValueError('exact_alert_identity_mismatch')
+        payload=raw['record'].get('llm_payload') or {}
+        if isinstance(payload,str):
+            from soorin.contracts.json_input import load_object
+            payload=load_object(payload)
+        title=(event.attributes.get('searchable_metadata',{}).get('alert_title') or
+               payload.get('rule_name') or raw['record'].get('search_name'))
+        if not isinstance(title,str) or not title.strip():
+            raise ValueError('source_search_title_missing')
+        search=request('POST',f'/api/v1/kbs/{kb}/search',token,{'q':title,'top_k':100})
+        if search.get('retrieval',{}).get('dense_executed') is True:
+            raise ValueError('deterministic_lexical_gate_requires_dense_disabled')
+        if search.get('retrieval',{}).get('lexical_method')!='tantivy_bm25':
+            raise ValueError('tantivy_execution_missing')
+        matching=[hit for hit in search.get('results',[]) if hit.get('document_id')==receipt['document']['document_id']
+                  and title.casefold() in hit.get('text','').casefold()]
+        if not matching or not all(hit.get('id') or hit.get('chunk_id') for hit in matching):
+            raise ValueError('source_title_or_document_citation_not_recalled')
+        accepted += 1
+    return {'status':'PASS','receipts_bound':accepted,'canonical_entities':len(graph_ids),
+            'shared_case_keys':len(case_ids),'lexical':'tantivy_bm25','dense':'NOT RUN',
+            'scope':'deterministic source/identity/typed evidence gate; not full production acceptance'}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("phase", choices=["ids", "inspect", "prepare", "validate", "preview", "ingest", "status", "search", "replay"])
+    ap.add_argument("phase", choices=["ids", "inspect", "prepare", "validate", "preview", "ingest", "status", "search", "replay", "accept"])
     ap.add_argument("--kb-name", default="Soorin SOC Synthetic Lab")
     ap.add_argument("--file", type=Path, default=Path.home()/".local/share/soorin-tkg-qa/soorin_tkg_synthetic_dataset/alerts.jsonl")
     ap.add_argument("--offset", type=int, default=0)
@@ -284,6 +336,18 @@ def main():
                 die("Deadline exceeded; receipts are not all bound. No cleanup or retry attempted")
             time.sleep(8)
     src = choose_source(token, kb_id)
+    if args.phase == "accept":
+        qa_guard()
+        rows = read_records(args.file,args.offset,args.count)
+        tracked = tracked_receipts(kb_id,args.file.name,args.offset,args.count)
+        try:
+            result=accept_batch(token,kb_id,src['id'],rows,tracked)
+        except (ValueError,AssertionError,KeyError,StopIteration) as error:
+            reason=str(error)
+            if not reason.replace('_','').isalpha(): reason='contract_or_provenance_check_failed'
+            die(f"Acceptance failed ({type(error).__name__}): {reason}; no recovery or cleanup attempted")
+        print(json.dumps(result,ensure_ascii=False))
+        return
     key = source_key(token, kb_id, src["id"])
     if args.phase in {"preview", "ingest", "replay"}:
         qa_guard()
