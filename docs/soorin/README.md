@@ -1,38 +1,64 @@
-# Soorin engineering documentation
+# Soorin TKG | Product & Engineering Documentation
 
-The native ingestion, persistent identity, typed alignment, bitemporal evidence,
-model lineage, reranking and read-only context implementations are in this branch.
-Engineering handoff is distinct from production release approval.
+**Soorin Temporal Knowledge Graph** is a standalone, evidence-first, bitemporal knowledge service for security operations. Its APIs and deployment contracts are implemented; full local image/model/agent acceptance remains pending. This documentation distinguishes *product capabilities*, *source-level validation*, *runtime acceptance* and *production approval*.
 
-| Purpose | Document |
+[Product overview](../../README.md) · [Current engineering report](CONTINUATION_HARDENING_REPORT.md) · [Next local build](NEXT_APPROVED_BUILD_20261115.md)
+
+## Documentation map
+
+```mermaid
+flowchart TD
+    P["Product and architecture"] --> S["SOC contracts and ingestion"]
+    P --> G["Identity, ontology and temporal graph"]
+    P --> R["Search, GraphRAG and agent integration"]
+    S --> V["Evidence and runtime acceptance"]
+    G --> V
+    R --> V
+    V --> O["Production operations and release gates"]
+```
+
+| Audience / purpose | Start here |
 |---|---|
-| Latest source continuation | [2026-11-15 review](CONTINUATION_HARDENING_REPORT.md), [task matrix](CONTINUATION_TASK_MATRIX.md), [call paths](CONTINUATION_ARCHITECTURE.md) |
-| Historical focused hardening / upstream / branding | [Pre-build hardening](PREBUILD_HARDENING_REPORT.md) |
-| Earlier implementation and evidence | [Final acceptance](FINAL_ACCEPTANCE_REPORT.md) |
-| Runtime ownership and call paths | [Production architecture](PRODUCTION_ARCHITECTURE.md) |
-| SOC data flow | [Knowledge architecture](SOC_KNOWLEDGE_ARCHITECTURE.md) |
-| Deployment and rollback | [Production deployment](PRODUCTION_DEPLOYMENT.md) |
-| Next controlled acceptance | [Build and test handoff](BUILD_AND_TEST_HANDOFF.md) |
-| Security and data minimization | [Security boundaries](SECURITY_BOUNDARIES.md) |
-| Agentic_SOC integration | [Integration v1](AGENTIC_SOC_INTEGRATION_V1.md) |
-| Source audit | [Agentic_SOC source contracts](AGENTIC_SOC_DATA_CONTRACT_ANALYSIS.md) |
-| Identity / temporal behavior | [Identity](ENTITY_RESOLUTION.md), [Temporal model](TEMPORAL_MODEL.md) |
-| Ontology | [SOC ontology](SOC_ONTOLOGY.md) |
-| Models and artifacts | [Configuration](MODEL_CONFIGURATION.md), [Artifact lifecycle](MODEL_ARTIFACT_MANAGEMENT.md), [CPU NER](CPU_CYBER_NER.md) |
-| Privacy and retrieval | [Outbound privacy](OUTBOUND_PRIVACY.md), [Retrieval/reranking](RETRIEVAL_AND_RERANKING.md) |
-| Development and tests | [Local development](LOCAL_DEVELOPMENT.md), [Pre-build](PREBUILD_VALIDATION.md), [E2E](LOCAL_E2E_VALIDATION.md), [Evaluation](TESTING_AND_EVALUATION.md) |
-| Remaining defects/gates | [Engineering register](ENGINEERING_GAP_REGISTER.md) |
-| Upstream changes | [Reconciliation](upstream-sync.md) |
+| Product stakeholders and architects | [Product README](../../README.md) · [Production architecture](PRODUCTION_ARCHITECTURE.md) · [Knowledge architecture](SOC_KNOWLEDGE_ARCHITECTURE.md) |
+| SOC integration developers | [Versioned producer mapping](PRODUCER_MAPPING_V1_20261115.md) · [Agentic_SOC integration](AGENTIC_SOC_INTEGRATION_V1.md) · [Curated and canonical ingestion](MANUAL_SOC_INGESTION.md) · [Curated HTTP OpenAPI](../../soorin/contracts/schemas/curated_http_v1.openapi.json) |
+| Graph and data-model engineers | [Reviewed SOC ontology](SOC_ONTOLOGY.md) · [Identity and authority](ENTITY_RESOLUTION.md) · [Bitemporal semantics](TEMPORAL_MODEL.md) · [Source-level call paths](CONTINUATION_ARCHITECTURE.md) |
+| Search and AI engineers | [Hybrid retrieval and GraphRAG](RETRIEVAL_AND_RERANKING.md) · [Agent tools](AGENT_TOOL_CONTRACTS.md) · [Model configuration](MODEL_CONFIGURATION.md) · [Model artifact lifecycle](MODEL_ARTIFACT_MANAGEMENT.md) · [Review-only cybersecurity NER](CPU_CYBER_NER.md) |
+| Security and privacy reviewers | [Security boundaries](SECURITY_BOUNDARIES.md) · [Outbound privacy controls](OUTBOUND_PRIVACY.md) · [Agent compatibility](FUTURE_AGENT_COMPATIBILITY.md) |
+| QA and SRE operators | [Next approved build and test sequence](NEXT_APPROVED_BUILD_20261115.md) · [Local development](LOCAL_DEVELOPMENT.md) · [Pre-build checks](PREBUILD_VALIDATION.md) · [Testing and evaluation](TESTING_AND_EVALUATION.md) · [Production deployment and rollback](PRODUCTION_DEPLOYMENT.md) |
+| Engineering reviewers | [Current continuation report](CONTINUATION_HARDENING_REPORT.md) · [19-task acceptance matrix](CONTINUATION_TASK_MATRIX.md) · [Build handoff](BUILD_AND_TEST_HANDOFF.md) · [Engineering gap register](ENGINEERING_GAP_REGISTER.md) |
 
-Implemented means source exists. Mock-tested means synthetic contracts passed.
-Integration-ready means a documented interface exists but may be unexercised.
-Build/model/migration/runtime acceptance remain separate evidence. PASS never
-means an omitted or skipped gate succeeded.
+## Data lifecycle and verification
 
-Earlier `SPRINT1_*`, foundation gap/capability reports and old lab notes are
-historical checkpoints; they do not override current implementation/evidence.
-Preserve all existing labs, KBs, caches, Graphify output and database volumes.
+```mermaid
+flowchart LR
+    A["Authenticated source"] --> B["Canonical event / receipt"]
+    B --> C["Deferred job / identity"]
+    C --> D["Extraction and typed materialization"]
+    D --> E["Versioned evidence"]
+    E --> F["Exact lookup, hybrid search and temporal context"]
+    F --> G["UI, REST, MCP and agents"]
+```
 
-## V1 baseline update
+A valid receipt confirms **admission**, not completion. A `bound` receipt requires the expected typed entities, current-document-version evidence and authority links. Exact identity lookup uses source authority; similarity never automatically merges identities. Hybrid search may operate lexical-only when dense inference is unavailable, so verify retrieval metadata rather than inferring model execution from returned results.
 
-Latest V1 source/configuration pass: [Baseline hardening](V1_BASELINE_HARDENING.md). Operator workflow: [Manual SOC ingestion](MANUAL_SOC_INGESTION.md). Current-main Agentic consumer/producer mapping: [Agent tool contracts](AGENT_TOOL_CONTRACTS.md). Prior reports remain historical checkpoints.
+The [native curated HTTP profile](MANUAL_SOC_INGESTION.md) supports a single documented Splunk/Agentic_SOC record envelope, not arbitrary vendor or batch input. Agentic_SOC remains a separate service and the producer source repository is a read-only integration reference.
+
+## Current qualification status
+
+| Gate | State |
+|---|---|
+| Source implementation and automated Rust/Python/Frontend CI | **Passed on the 2026-11-15 source patch**; verify checks again for newer documentation commits |
+| Static Docker/Compose, schemas, fixtures and unit/mocked boundaries | **Checked**; evidence in the [continuation report](CONTINUATION_HARDENING_REPORT.md) |
+| Fresh local image, migration/restore, real model startup and native receipt E2E | **Not yet accepted** |
+| Dense/reranker/NER quality, MCP PAT, protected external chat and agent tool continuation | **Not yet accepted** |
+| Production deployment and release approval | **Not granted** |
+
+For a genuinely **fresh PostgreSQL test environment**, do not erase the historical QA database or model caches. The current E2E ownership guard allows a specifically named Compose project; creating a second project requires separately adapting/revalidating that guard, or run tests inside new synthetic KBs on an existing verified QA instance without calling the database fresh. Follow [the local handoff](NEXT_APPROVED_BUILD_20261115.md) and record exact Git/image hashes.
+
+## Historical records and upstream heritage
+
+The [earlier final acceptance](FINAL_ACCEPTANCE_REPORT.md), [pre-build hardening report](PREBUILD_HARDENING_REPORT.md), [Sprint 1 implementation](SPRINT1_IMPLEMENTATION_REPORT.md), [foundation gap review](SOC_FOUNDATION_GAP_ANALYSIS.md), [capability matrix](UTOPIA_CAPABILITY_MATRIX.md) and [baseline hardening](V1_BASELINE_HARDENING.md) are preserved as **historical checkpoints**. They do not override current source or qualify the newest image.
+
+The project retains [upstream reconciliation notes](upstream-sync.md), [upstream documentation](../../README.upstream.md) and the bundled [Apache-2.0 license](../../LICENSE).
+
+Never commit secrets, real SOC payloads, model weights, databases or Graphify caches. Keep schema/checksum compatibility, tenant source bindings, evidence histories and applied migration bytes intact.
