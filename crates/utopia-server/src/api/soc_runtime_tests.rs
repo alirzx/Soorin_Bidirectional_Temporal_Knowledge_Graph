@@ -611,21 +611,39 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     let latest = &events["events"][2];
     let key = latest["entities"][0]["entity_id"].as_str().unwrap();
     sqlx::query("INSERT INTO entities(id,kb_id,canonical_name) VALUES($1,$2,$3)")
-        .bind(Uuid::now_v7()).bind(kb).bind(key).execute(&pool).await?;
-    let receipt_id:Uuid=sqlx::query_scalar("SELECT id FROM soorin_ingestion_receipts WHERE kb_id=$1 AND payload->>'event_id'=$2")
-        .bind(kb).bind(latest["event_id"].as_str()).fetch_one(&pool).await?;
-    let (_,conflicted)=receipt_diagnostic(app.clone(),kb,receipt_id,&session).await?;
-    let entity=conflicted["entities"].as_array().unwrap().iter().find(|e|e["canonical_key"]==key).unwrap();
-    assert_eq!(entity["identity_conflict"],"duplicate_live_entities");
+        .bind(Uuid::now_v7())
+        .bind(kb)
+        .bind(key)
+        .execute(&pool)
+        .await?;
+    let receipt_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM soorin_ingestion_receipts WHERE kb_id=$1 AND payload->>'event_id'=$2",
+    )
+    .bind(kb)
+    .bind(latest["event_id"].as_str())
+    .fetch_one(&pool)
+    .await?;
+    let (_, conflicted) = receipt_diagnostic(app.clone(), kb, receipt_id, &session).await?;
+    let entity = conflicted["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["canonical_key"] == key)
+        .unwrap();
+    assert_eq!(entity["identity_conflict"], "duplicate_live_entities");
     assert!(entity["entity_id"].is_null());
-    assert_eq!(entity["candidate_count"],2);
+    assert_eq!(entity["candidate_count"], 2);
     let (_,resolution)=call(app.clone(),format!("/api/v1/kbs/{kb}/knowledge/resolve"),&session,
         json!({"tenant_id":"tenant-blue","source_system":"splunk","source_instance":"splunk-e2e",
         "entity_type":"SecurityAlert","authority_name":"soc_alert_row_id","source_identifier":"synthetic-B"})).await?;
-    assert_eq!(resolution["status"],"ambiguous");
-    assert_eq!(resolution["automatic"],false);
+    assert_eq!(resolution["status"], "ambiguous");
+    assert_eq!(resolution["automatic"], false);
     assert!(resolution["candidates"][0]["entity_id"].is_null());
-    assert!(conflicted["relations"].as_array().unwrap().iter().any(|r|r["binding"]["evidence_link_status"]==false));
+    assert!(conflicted["relations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["binding"]["evidence_link_status"] == false));
     sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1 OR payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id=$2)")
         .bind(kb.to_string()).bind(kb).execute(&pool).await?;
     sqlx::query("DELETE FROM organizations WHERE id=$1")

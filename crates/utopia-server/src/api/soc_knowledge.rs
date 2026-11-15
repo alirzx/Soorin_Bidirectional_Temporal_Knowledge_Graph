@@ -240,13 +240,14 @@ pub async fn resolve(
         .bind(&query.entity_type).bind(key).fetch_optional(&state.pool).await?;
     let (status, candidates) = match row {
         None => ("not_found", vec![]),
-        Some((id, key, entity, state, conflict)) => {
-            let graph = utopia_store::resolution::inspect_curated_canonical(&state.pool,kb,&key).await?;
+        Some((id, key, entity, identity_state, conflict)) => {
+            let graph =
+                utopia_store::resolution::inspect_curated_canonical(&state.pool, kb, &key).await?;
             let conflict = conflict || graph.conflict.is_some();
             let entity = if conflict { None } else { entity };
-            let status = if conflict || state == "ambiguous" {
+            let status = if conflict || identity_state == "ambiguous" {
                 "ambiguous"
-            } else if state != "active" {
+            } else if identity_state != "active" {
                 "unavailable"
             } else if entity.is_none() {
                 "pending_materialization"
@@ -257,7 +258,7 @@ pub async fn resolve(
                 status,
                 vec![
                     json!({"identity_id":id,"canonical_key":key,"entity_id":entity,
-                "identity_status":state,"has_conflict":conflict,"graph_conflict":graph.conflict,
+                "identity_status":identity_state,"has_conflict":conflict,"graph_conflict":graph.conflict,
                 "candidate_count":graph.candidate_count,"candidate_ids":graph.candidate_ids,
                 "candidates_truncated":graph.candidates_truncated}),
                 ],
