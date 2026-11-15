@@ -28,7 +28,7 @@ class QaOperatorTests(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o077, 0)
             self.assertEqual(qa_login.load_token(path), "dummy-qa-token")
             with patch.dict(os.environ, {"UTOPIA_SESSION_TOKEN": ""}):
-                with patch.object(qa_login, "DEFAULT_STATE", path):
+                with patch.object(qa_login, "load_token", return_value=qa_login.load_token(path)):
                     self.assertEqual(qa_existing_kb.session_token(), "dummy-qa-token")
             path.chmod(0o644)
             with self.assertRaises(ValueError):
