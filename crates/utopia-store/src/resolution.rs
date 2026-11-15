@@ -248,17 +248,16 @@ pub async fn resolve_curated_canonical(
             "invalid curated SOC canonical key".into(),
         ));
     }
-    let expected_type: Option<Uuid> =
-        sqlx::query_scalar(
-            "SELECT id FROM entity_types
+    let expected_type: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM entity_types
              WHERE kb_id=$1
                AND regexp_replace(lower(label),'[^a-z0-9]','','g')
                  = regexp_replace(lower($2),'[^a-z0-9]','','g')",
-        )
-            .bind(kb_id)
-            .bind(kind)
-            .fetch_optional(pool)
-            .await?;
+    )
+    .bind(kb_id)
+    .bind(kind)
+    .fetch_optional(pool)
+    .await?;
     let expected_type = expected_type
         .ok_or_else(|| AppError::Validation("curated SOC entity type is not installed".into()))?;
     let known_as = crate::names::ensure_known_as(pool, kb_id).await?;
