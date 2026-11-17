@@ -1,6 +1,6 @@
 # Soorin TKG | Product & Engineering Documentation
 
-**Soorin Temporal Knowledge Graph** is a standalone, evidence-first, bitemporal knowledge service for security operations. Its APIs and deployment contracts are implemented; full local image/model/agent acceptance remains pending. This documentation distinguishes *product capabilities*, *source-level validation*, *runtime acceptance* and *production approval*.
+**Soorin Temporal Knowledge Graph** is a standalone, evidence-first, bitemporal knowledge service for security operations. Its API and deployment contracts are implemented; a synthetic Server 55 image/model/ingestion/retrieval E2E has passed, while live agents and production acceptance remain pending. This documentation distinguishes *product capabilities*, *source-level validation*, *runtime acceptance* and *production approval*.
 
 [Product overview](../../README.md) · [Current engineering report](FINAL_SOURCE_HARDENING_20261115.md) · [Next app-only build](APP_ONLY_REBUILD_20261115.md)
 
@@ -48,11 +48,12 @@ The [native curated HTTP profile](MANUAL_SOC_INGESTION.md) supports a single doc
 
 | Gate | State |
 |---|---|
-| Source implementation and automated Rust/Python/Frontend CI | **Passed on the 2026-11-15 source patch**; verify checks again for newer documentation commits |
-| Static Docker/Compose, schemas, fixtures and unit/mocked boundaries | **Checked**; evidence in the [final source report](FINAL_SOURCE_HARDENING_20261115.md) |
-| Fresh local image, migration/restore, real model startup and native receipt E2E | **Not yet accepted** |
-| Dense/reranker/NER quality, MCP PAT, protected external chat and agent tool continuation | **Not yet accepted** |
-| Production deployment and release approval | **Not granted** |
+| CI | Previous source baseline passed; verify current personal-fork CI fixes with a fresh run |
+| Isolated Server 55 source-build QA | **Passed**: app, db, model container; 105 migrations; 17/15 ontology |
+| Synthetic SOC admission and graph | **Passed**: 10/10 preview and bound receipts, canonical identity, typed evidence, exact/context and BM25 |
+| CPU hybrid retrieval | **Functional PASS**: all 10 chunks embedded; dense + BM25 + native reranking completed in 21.04 s; performance remains open |
+| MCP/PAT, Agentic_SOC, time revisions, privacy and hardened production | **Not accepted**: explicit follow-up gates required |
+
 
 For a genuinely **fresh PostgreSQL test environment**, do not erase the historical QA database or model caches. The current E2E ownership guard allows a specifically named Compose project; creating a second project requires separately adapting/revalidating that guard, or run tests inside new synthetic KBs on an existing verified QA instance without calling the database fresh. Follow [the local handoff](NEXT_APPROVED_BUILD_20261115.md) and record exact Git/image hashes.
 

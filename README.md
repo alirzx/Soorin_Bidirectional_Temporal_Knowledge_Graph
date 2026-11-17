@@ -16,7 +16,7 @@ Connect alerts, identities, infrastructure, investigations and evidence into an 
 
 </div>
 
-> **Release status:** The source-hardening and automated CI phase has passed. The exact rebuilt application image, an empty local PostgreSQL environment, real CPU-model inference and the complete SOC/agent integration sequence have **not yet been runtime-qualified**. This repository is **ready for the next controlled local build**, not an approved production release. See the [latest engineering report](docs/soorin/CONTINUATION_HARDENING_REPORT.md), [19-task acceptance matrix](docs/soorin/CONTINUATION_TASK_MATRIX.md) and [next build plan](docs/soorin/NEXT_APPROVED_BUILD_20261115.md). A green CI badge is not a substitute for deployment evidence.
+> **Release status (2026-11-17):** **Synthetic Server 55 E2E verified; production approval pending.** The source-built Rust/React app, PostgreSQL 16 + pgvector and pinned CPU models started successfully. An isolated SOC KB passed 17/15 ontology import, 10/10 curated previews and bound receipts, 134 canonical identities, typed graph/evidence acceptance, exact lookup and BM25. All 10 chunks were embedded; hybrid dense/BM25/RRF/reranking returned 5 results from 12 candidates in **21.04 s**. These are controlled synthetic results, not live Agentic_SOC, full bitemporal replay, MCP/PAT, HTTPS, backup/restore, tenant isolation, or production qualification. Personal-fork CI fixes require fresh checks. See [server binding](docs/soorin/SERVER55_LAN_VPN_BINDING.md), [agent contracts](docs/soorin/AGENT_TOOL_CONTRACTS.md), and [testing](docs/soorin/TESTING_AND_EVALUATION.md).
 
 ## The product
 
@@ -43,47 +43,57 @@ Soorin runs as a **standalone service** with its own users, workspaces, knowledg
 
 ```mermaid
 flowchart LR
-    subgraph P["Producers"]
-        SPL["Splunk curated data"]
-        SOC["Agentic_SOC alerts and findings"]
-        OTH["Other supported sources"]
+    subgraph P["PRODUCERS / AUTHORITIES"]
+        SPL["Splunk curated alerts"]
+        CAN["Canonical SOC events"]
     end
-
-    subgraph A["Soorin ingestion and governance"]
-        N["Bounded deterministic normalization"]
-        V["Canonical event and source authentication"]
-        Q["Durable receipt and PostgreSQL job queue"]
-        I["Identity, ontology and temporal rules"]
-        M["Typed materialization and evidence binding"]
+    subgraph A["AUTHENTICATED ADMISSION"]
+        PR["Preview + bounded normalization"]
+        VAL["Token + immutable KB binding"]
+        REC["Receipt + durable job queue"]
     end
-
-    subgraph S["Knowledge storage and search"]
-        DB[("PostgreSQL 16 / pgvector")]
-        BM["Tantivy lexical index"]
-        RET["Hybrid retrieval / reranking"]
-        CTX["Temporal graph / KnowledgeContext"]
+    subgraph G["IDENTITY + TEMPORAL MATERIALIZATION"]
+        ID["Canonical IDs / conflicts"]
+        ONT["Reviewed 17/15 ontology"]
+        FACT["Typed facts + versioned evidence"]
     end
-
-    subgraph C["Authorized consumers"]
-        UI["React operator UI"]
-        MCP["MCP and native agent tools"]
-        API["REST / integration clients"]
+    subgraph S["INDEPENDENT KNOWLEDGE STORE"]
+        PG[("PostgreSQL 16 / pgvector<br/>source of truth")]
+        BM[("Tantivy BM25<br/>rebuildable index")]
     end
-
-    SPL --> N
-    SOC --> N
-    OTH --> V
-    N --> V --> Q --> I --> M --> DB
-    DB --> RET
-    BM --> RET
-    DB --> CTX
-    RET --> CTX
-    CTX --> UI
-    CTX --> MCP
-    CTX --> API
-    CPU["Optional CPU models: BGE-M3 / reranker / NER"] -. "controlled inference" .-> RET
-    CPU -. "review-only proposals" .-> I
-    PG["Privacy Gateway and approved LLM origin"] -. "protected external chat" .-> MCP
+    subgraph Q["READ / RETRIEVAL"]
+        EX["Exact source authority"]
+        CT["Bitemporal KnowledgeContext"]
+        HY["BM25 + dense / RRF / rerank"]
+    end
+    subgraph C["SCOPED CONSUMERS"]
+        UI["React UI"]
+        API["REST / KB-scoped PAT"]
+        SOC["Agentic_SOC adapter · not yet connected"]
+    end
+    SPL --> PR --> VAL
+    CAN --> VAL --> REC --> ID --> FACT
+    ONT --> FACT
+    FACT --> PG
+    FACT --> BM
+    PG --> EX
+    PG --> CT
+    PG --> HY
+    BM --> HY
+    EX --> API
+    CT --> API
+    HY --> API
+    API --> UI
+    API -. "future integration" .-> SOC
+    CPU["CPU BGE-M3 + reranker"] -. "optional" .-> HY
+    NER["Cyber NER · review-only"] -. "suggestions, not authority" .-> ONT
+    classDef persisted fill:#e9f4fc,stroke:#2376a0,color:#164365
+    classDef governed fill:#e9f7ef,stroke:#267b57,color:#154e38
+    classDef planned fill:#fff1db,stroke:#a77722,color:#6b4712
+    class PG,BM persisted
+    class VAL,REC,ID,FACT governed
+    class SOC planned
+```
 ```
 
 The PostgreSQL database is authoritative. Tantivy is a rebuildable lexical index, not an alternative source of truth. The Python SOC normalizer is deterministic; graph extraction and Utopia's existing alignment/materialization pipeline run behind the Rust API.
@@ -194,7 +204,7 @@ Raw SIEM payloads and sensitive excerpts are minimized by policy. Structural min
 
 ## Build and operate in an isolated environment
 
-The existing QA stack was inspected on 2026-11-15: it uses **`.env`**, project
+The earlier local QA stack was inspected on 2026-11-15: it uses **`.env`**, project
 `soorin-tkg-v1-qa` and the original app/DB volumes. For its next upgrade use the
 [backup-first app-only rebuild](docs/soorin/APP_ONLY_REBUILD_20261115.md) with
 `QA_ENV_FILE=.env`; preserve the historical KB and test ingestion in new synthetic
@@ -202,7 +212,7 @@ KBs. The [final source report](docs/soorin/FINAL_SOURCE_HARDENING_20261115.md)
 records identity, index-recovery, title-recall and acceptance-harness corrections.
 The fresh-stack commands below apply only to genuinely new environments.
 
-The codebase is prepared for a **controlled local qualification build**, not a blanket reset of previous laboratories. The source-development Compose, production Compose and legacy upstream-compatible Compose serve different purposes. Never use a generic `docker compose down -v` or prune as an upgrade procedure.
+The codebase has passed an **isolated synthetic Server 55 source-build qualification**, not a production approval or permission to reset historical laboratories. The source-development Compose, production Compose and legacy upstream-compatible Compose serve different purposes. Never use a generic `docker compose down -v` or prune as an upgrade procedure.
 
 ```bash
 # Read-only preflight in the local checkout:
@@ -226,25 +236,26 @@ The current source contains **105 SQL migrations** (latest `10004`); applied mig
 
 ```mermaid
 flowchart LR
-    A["Source and CI checks"] -->|Passed| B["Fresh local image and DB"]
-    B --> C["Native receipt and typed graph E2E"]
-    C --> D["CPU model and retrieval acceptance"]
-    D --> E["MCP, privacy and agent acceptance"]
-    E --> F["Security, backup and rollback review"]
-    F --> G["Production release decision"]
-    classDef pending fill:#fff1d6,stroke:#a56c12,color:#473207
-    class B,C,D,E,F,G pending
+    A["Source + CI"] --> B["Synthetic server E2E"]
+    B --> C["CPU hybrid retrieval"]
+    C --> D["Live agents / temporal / MCP"]
+    D --> E["TLS / isolation / restore"]
+    E --> F["Production approval"]
+    classDef pass fill:#e9f7ef,stroke:#267b57,color:#154e38
+    classDef pending fill:#fff1db,stroke:#a77722,color:#6b4712
+    class B,C pass
+    class D,E,F pending
 ```
 
-| Verification layer | Evidence available | Still required |
+| Gate | Verified checkpoint | Outstanding work |
 |---|---|---|
-| Source changes, Rust/Python/Frontend and CI migrations | Automated tests and CI on the source patch | Re-check CI for any new documentation commit |
-| Ingestion, typed materialization and evidence | Synthetic/regression contracts | Fresh-image worker E2E, revisions, failures and retry under runtime load |
-| Search, GraphRAG and NER | Implemented APIs and mock/fixture tests | Real BGE/reranker relevance, NER quality, citations, temporal/tenant filters |
-| Identity, MCP and native agent | Authorization and handler tests | Valid scoped PAT, full tool calls and protected provider continuation |
-| Operations | Static Compose and deployment runbooks | Image scan, resource measurements, migrations, backup/restore, TLS and rollback |
+| CI | Prior baseline passed; personal-fork cleanup and chart guard patched | Obtain a fresh green run at the latest commit |
+| Ingestion / graph | Server 55: 10/10 bound, 134 canonical entities, 144 graph nodes, 240 edges, cited context and exact resolution | Live producers, revisions, stress and negative authorization |
+| Retrieval | 10 embedded chunks; BM25 + dense + native reranker completed in 21.04 s | Latency, relevance and load benchmarks |
+| Agent and time | REST contracts and bounded temporal context implemented | Live Agentic_SOC, scoped PAT/MCP, bitemporal replay |
+| Operations | Isolated healthy app, db and model services | HTTPS, separate DB roles, backup/restore and rollback drills |
 
-The current status is **`SOURCE_PATCH_COMPLETE` / `READY_FOR_NEXT_LOCAL_BUILD`**. It is **not** `FULL_E2E_VERIFIED` or `PRODUCTION_APPROVED`.
+**Status:** `SYNTHETIC_SERVER_E2E_VERIFIED` / `NOT_PRODUCTION_APPROVED`. Server 55 is a source-build QA deployment, not proof of complete production hardening.
 
 ## Documentation
 
