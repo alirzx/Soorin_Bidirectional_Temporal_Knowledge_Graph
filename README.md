@@ -41,70 +41,68 @@ The [SOC ontology](docs/soorin/SOC_ONTOLOGY.md) defines security-focused entity 
 
 ```mermaid
 flowchart LR
-    subgraph Sources["Security sources"]
-        SIEM["SIEM alerts and events"]
-        PROD["Curated SOC producers"]
+    subgraph PRODUCERS["Security data producers"]
+        SIEM["SIEM and Splunk alerts"]
+        CURATED["Curated SOC records"]
+        CANONICAL["Canonical knowledge events"]
     end
-
-    subgraph Intake["Governed ingestion"]
-        PRE["Preview and normalize"]
-        AUTH["Source authentication"]
-        REC["Durable receipts"]
+    subgraph INGEST["Source-governed ingestion"]
+        PREVIEW["Preview and normalize"]
+        AUTH["Authenticate source and KB scope"]
+        RECEIPT["Durable receipt and job queue"]
     end
-
-    subgraph Knowledge["Temporal knowledge engine"]
-        ID["Canonical identity"]
-        FACT["Typed facts and evidence"]
-        TIME["Bitemporal history"]
+    subgraph GRAPH["Temporal knowledge engine"]
+        IDENTITY["Canonical identity resolution"]
+        ONTOLOGY["Reviewed ontology"]
+        FACTS["Typed facts and provenance"]
     end
-
-    subgraph Storage["Knowledge persistence"]
-        DB[("PostgreSQL and pgvector")]
-        BM[("Tantivy search index")]
+    subgraph DATA["Persistent knowledge"]
+        POSTGRES[("PostgreSQL and pgvector")]
+        TANTIVY[("Tantivy BM25 index")]
     end
-
-    subgraph Access["Knowledge access"]
-        RES["Exact resolution"]
-        SEARCH["Hybrid search"]
-        CTX["Knowledge context"]
+    subgraph READ["Knowledge retrieval APIs"]
+        EXACT["Exact identity lookup"]
+        HYBRID["Lexical and semantic search"]
+        CONTEXT["Temporal graph context"]
     end
-
-    subgraph Consumers["Authorized consumers"]
-        REST["REST and MCP"]
+    subgraph CLIENTS["Authorized applications"]
         UI["Operator UI"]
-        AGENT["SOC agent integrations"]
+        API["REST and MCP"]
+        AGENTS["Agentic_SOC and other agents"]
     end
-
-    SIEM --> PRE
-    PROD --> PRE
-    PRE --> AUTH --> REC --> ID --> FACT --> TIME
-    TIME --> DB
-    FACT --> BM
-    DB --> RES
-    DB --> SEARCH
-    DB --> CTX
-    BM --> SEARCH
-    RES --> REST
-    SEARCH --> REST
-    CTX --> REST
-    REST --> UI
-    REST -.-> AGENT
-
-    MODELS["Optional CPU models"] -.-> SEARCH
-
-    classDef source fill:#eff6ff,stroke:#407eb4,color:#173a60
-    classDef core fill:#eaf7f0,stroke:#2c805b,color:#174b37
-    classDef store fill:#f2efff,stroke:#7767ad,color:#362964
-    classDef client fill:#fff4e8,stroke:#bb853d,color:#604116
-    class SIEM,PROD source
-    class AUTH,REC,ID,FACT,TIME core
-    class DB,BM store
-    class UI,AGENT,REST client
+    SIEM --> PREVIEW
+    CURATED --> PREVIEW
+    PREVIEW --> AUTH
+    CANONICAL --> AUTH
+    AUTH --> RECEIPT
+    RECEIPT --> IDENTITY
+    ONTOLOGY --> FACTS
+    IDENTITY --> FACTS
+    FACTS --> POSTGRES
+    FACTS --> TANTIVY
+    POSTGRES --> EXACT
+    POSTGRES --> HYBRID
+    POSTGRES --> CONTEXT
+    TANTIVY --> HYBRID
+    EXACT --> API
+    HYBRID --> API
+    CONTEXT --> API
+    API --> UI
+    API -.-> AGENTS
+    MODELS["Optional CPU embedding and reranking"] -.-> HYBRID
+    classDef producer fill:#eff6ff,stroke:#3976ac,color:#183b5b
+    classDef engine fill:#e8f5ed,stroke:#32805b,color:#194c37
+    classDef persistence fill:#f3effd,stroke:#7d6da7,color:#3c3062
+    classDef consumer fill:#fff3e5,stroke:#b88945,color:#5d421e
+    class SIEM,CURATED,CANONICAL producer
+    class AUTH,RECEIPT,IDENTITY,ONTOLOGY,FACTS engine
+    class POSTGRES,TANTIVY persistence
+    class UI,API,AGENTS consumer
 ```
 
-The knowledge ledger in **PostgreSQL** is authoritative. **Tantivy** is a rebuildable lexical index; **pgvector** supports semantic retrieval. Search relevance does not establish identity authority, and external agents are consumers of evidence rather than owners of the knowledge graph.
+**PostgreSQL** is the authoritative knowledge ledger; **Tantivy** is a rebuildable lexical index, and **pgvector** supports semantic recall. Curated records are previewed and normalized before admission, while already-canonical events use their dedicated authenticated contract. Identity is established by source authority, not search similarity. REST and MCP expose scoped knowledge without direct database access.
 
-For component responsibilities, deployment boundaries, and source-level design, see [Production Architecture](docs/soorin/PRODUCTION_ARCHITECTURE.md) and [Knowledge Architecture](docs/soorin/SOC_KNOWLEDGE_ARCHITECTURE.md).
+For deployment boundaries and component design, see [Production Architecture](docs/soorin/PRODUCTION_ARCHITECTURE.md) and [Knowledge Architecture](docs/soorin/SOC_KNOWLEDGE_ARCHITECTURE.md). For data contracts and temporal semantics, see [Manual SOC Ingestion](docs/soorin/MANUAL_SOC_INGESTION.md) and [Temporal Model](docs/soorin/TEMPORAL_MODEL.md).
 
 ## From an alert to grounded knowledge
 
