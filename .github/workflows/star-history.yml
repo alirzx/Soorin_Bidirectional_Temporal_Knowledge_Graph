@@ -28,7 +28,23 @@ jobs:
         with:
           node-version: 22
 
+      # Forks/personal mirrors do not automatically inherit METRICS_TOKEN.
+      # Avoid a failing scheduled workflow when the optional chart cannot run.
+      # Never render a misleading zero-star SVG without an authorized token.
+      - name: Check optional star-history credential
+        id: credential
+        env:
+          METRICS_TOKEN: ${{ secrets.METRICS_TOKEN }}
+        run: |
+          if [ -z "$METRICS_TOKEN" ]; then
+            echo "::notice::Star history not rendered: configure METRICS_TOKEN with authorized access."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Render the chart
+        if: steps.credential.outputs.ready == 'true'
         env:
           REPO: ${{ github.repository }}
           # **`GITHUB_TOKEN` 在这里不够**：GitHub 在 2026-06-30 把星标
@@ -44,6 +60,7 @@ jobs:
       # 直推一定被拒；而为了一张图去松保护是本末倒置。`assets` 与 `dev`
       # 没有共同历史，在那边提交碰不到任何源码。
       - name: Commit to the assets branch
+        if: steps.credential.outputs.ready == 'true'
         run: |
           set -euo pipefail
           git clone --depth 1 --branch assets \

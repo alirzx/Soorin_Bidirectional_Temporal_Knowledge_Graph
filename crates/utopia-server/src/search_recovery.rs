@@ -201,7 +201,11 @@ mod tests {
         }
         .await;
         pool.close().await;
-        sqlx::query(&format!("DROP DATABASE {database}"))
+        // This UUID-named database belongs exclusively to this test. Parallel
+        // asynchronous work may leave a transient backend connected during
+        // teardown even after the test pool has closed. PostgreSQL 16's FORCE
+        // closes those stragglers; never apply this to the shared CI database.
+        sqlx::query(&format!("DROP DATABASE {database} WITH (FORCE)"))
             .execute(&admin)
             .await?;
         result
