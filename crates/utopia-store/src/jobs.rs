@@ -24,6 +24,22 @@ pub struct Job {
     pub locked_at: DateTime<Utc>,
 }
 
+// Retry bookkeeping belongs to the queue, not to the logical delivery identity.
+async fn lock_delivery(
+    tx: &mut Transaction<'_, Postgres>,
+    kind: &str,
+    payload: &serde_json::Value,
+) -> AppResult<()> {
+    // Serialize the short check-and-insert transaction for identical deliveries.
+    // A running job must not suppress a later delivery after its snapshot read.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+        .bind(kind)
+        .bind(payload.to_string())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// 同种任务、同样载荷已经排着就不再排：一批文档各自抽完都想触发同一个库级任务
 /// （类型消解、对账），排十次跑十次是浪费，而且后九次看到的是第一次跑完的库。
 /// 返回 None = 已有一条在排队
@@ -44,11 +60,13 @@ pub async fn enqueue_unless_pending(
     after: Duration,
 ) -> AppResult<Option<i64>> {
     let mut tx = pool.begin().await?;
+    lock_delivery(&mut tx, kind, &payload).await?;
     let row: Option<(i64,)> = sqlx::query_as(
         "INSERT INTO jobs (kind, payload, run_at)
          SELECT $1, $2, now() + make_interval(secs => $3)
           WHERE NOT EXISTS (SELECT 1 FROM jobs
-                             WHERE kind = $1 AND payload = $2
+                             WHERE kind = $1 AND (payload = $2 OR
+                                   (payload ? 'deferred_since' AND payload - 'deferred_since' = $2))
                                AND status IN ('queued', 'running'))
          RETURNING id",
     )
@@ -83,17 +101,12 @@ pub async fn enqueue_unless_queued_tx(
     kind: &str,
     payload: serde_json::Value,
 ) -> AppResult<Option<i64>> {
-    // Serialize the short check-and-insert transaction for identical deliveries.
-    // A running job must not suppress a later delivery after its snapshot read.
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
-        .bind(kind)
-        .bind(payload.to_string())
-        .execute(&mut **tx)
-        .await?;
+    lock_delivery(tx, kind, &payload).await?;
     let row: Option<(i64,)> = sqlx::query_as(
         "INSERT INTO jobs (kind, payload)
          SELECT $1, $2
-          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND payload = $2 AND status = 'queued')
+          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND (payload = $2 OR
+                                   (payload ? 'deferred_since' AND payload - 'deferred_since' = $2)) AND status = 'queued')
          RETURNING id",
     )
     .bind(kind)
@@ -115,10 +128,12 @@ pub async fn enqueue_unless_queued_after(
     after: Duration,
 ) -> AppResult<Option<i64>> {
     let mut tx = pool.begin().await?;
+    lock_delivery(&mut tx, kind, &payload).await?;
     let row: Option<(i64,)> = sqlx::query_as(
         "INSERT INTO jobs (kind, payload, run_at)
          SELECT $1, $2, now() + make_interval(secs => $3)
-          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND payload = $2 AND status = 'queued')
+          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND (payload = $2 OR
+                                   (payload ? 'deferred_since' AND payload - 'deferred_since' = $2)) AND status = 'queued')
          RETURNING id",
     )
     .bind(kind)
@@ -289,7 +304,9 @@ pub async fn requeue_failed(pool: &PgPool, scope: RequeueScope<'_>) -> AppResult
     let mut tx = pool.begin().await?;
     let sql = format!(
         "UPDATE jobs j
-            SET status = 'queued', attempts = 0, run_at = now(), updated_at = now()
+            SET status = 'queued', attempts = 0, run_at = now(), updated_at = now(),
+                failure_class = NULL, last_error = NULL,
+                payload = CASE WHEN jsonb_typeof(payload)='object' THEN payload - 'deferred_since' ELSE payload END
           WHERE j.status = 'failed' AND j.kind <> 'hydrate_rss_entry'
             AND ($1::text IS NULL OR j.kind = $1)
             AND ($2::timestamptz IS NULL OR j.updated_at >= $2)
@@ -433,7 +450,13 @@ impl JobOutcome {
             utopia_core::is_deferred(err).map(deferred_retry_secs)
         };
         Self::Failed {
-            class: if terminal { "terminal" } else if deferred_secs.is_some() { "deferred" } else { "unknown" },
+            class: if terminal {
+                "terminal"
+            } else if deferred_secs.is_some() {
+                "deferred"
+            } else {
+                "unknown"
+            },
             error: format!("{err:#}"),
             backoff_secs: retry_delay(job.attempts, job.max_attempts, terminal),
             deferred_secs,

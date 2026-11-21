@@ -598,8 +598,8 @@ async fn process_locked(
     // must finish before its document is replaced. This also prevents a retry
     // from quarantining itself against a newer, partially submitted version.
     if status != "submitted" {
-        let predecessor: Option<String> = sqlx::query_scalar(
-            "SELECT COALESCE(j.status,'missing') FROM soorin_ingestion_receipts r
+        let predecessor_terminal: Option<bool> = sqlx::query_scalar(
+            "SELECT COALESCE(j.status='failed' AND j.failure_class='terminal', false) FROM soorin_ingestion_receipts r
              JOIN soorin_ingestion_receipts current ON current.id=$2
              LEFT JOIN jobs j ON j.id=r.job_id
              WHERE r.source_id=$1 AND r.source_key=current.source_key AND r.id<>$2
@@ -611,12 +611,12 @@ async fn process_locked(
         .bind(id)
         .fetch_optional(&state.pool)
         .await?;
-        match predecessor.as_deref() {
-            Some("failed" | "missing" | "done") => {
+        match predecessor_terminal {
+            Some(true) => {
                 return Err(anyhow::Error::new(utopia_core::Terminal)
                     .context("soc_revision_predecessor_failed"))
             }
-            Some(_) => return Err(wait_for_dependency("soc_revision_predecessor_pending")),
+            Some(false) => return Err(wait_for_dependency("soc_revision_predecessor_pending")),
             None => {}
         }
     }
@@ -968,8 +968,13 @@ pub async fn diagnostics(
     .bind(&key)
     .fetch_optional(&state.pool)
     .await?;
-    let delivery: String = sqlx::query_scalar("SELECT delivery_state FROM soorin_receipt_delivery WHERE kb_id=$1 AND id=$2")
-        .bind(kb).bind(id).fetch_one(&state.pool).await?;
+    let delivery: String = sqlx::query_scalar(
+        "SELECT delivery_state FROM soorin_receipt_delivery WHERE kb_id=$1 AND id=$2",
+    )
+    .bind(kb)
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await?;
     let entities = receipt_entities(&state.pool, kb, &event).await?;
     let jobs: Vec<Value> = sqlx::query_scalar(
         "SELECT jsonb_build_object('job_id',id,'kind',kind,'status',status,'attempts',attempts,
@@ -1031,11 +1036,16 @@ pub async fn retry(
         let key = format!("statements:{}", field(&rendered, "external_id")?);
         if let Some(child) = failed_child(&mut *tx, kb, source, &key).await? {
             if child.failure_class.as_deref() == Some("terminal") {
-                return Err(AppError::Conflict("repair terminal document dependency first".into()).into());
+                return Err(
+                    AppError::Conflict("repair terminal document dependency first".into()).into(),
+                );
             }
             utopia_store::jobs::enqueue_unless_queued_tx(
-                &mut tx, &child.kind, json!({"document_id": child.document_id}),
-            ).await?;
+                &mut tx,
+                &child.kind,
+                json!({"document_id": child.document_id}),
+            )
+            .await?;
         }
     }
     let pending: bool = sqlx::query_scalar(
