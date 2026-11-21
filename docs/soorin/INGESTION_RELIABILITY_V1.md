@@ -9,3 +9,61 @@ Baseline 506cbb40, 2026-11-21. The incident totals describe 863 receipts and 1,3
 | 429 or temporary outage | document or ontology embedding | ModelGates uses deployment default 10 unless overridden. CPU runtime advertises one active and four queued. Caller-level ontology batch 64 is split into <=16 wire inputs for the pinned BGE model by LlmClient::embed. No evidence that this model sends a 64-input wire request. | High for saturation. Apply provider-aware background concurrency, bounded deferral and configurable batch limits. Verify existing CPU wire tests. |
 | name_not_in_text | extract_document / open extraction drop | span_in_quote compares normalized text literally. Serialized JSON can double backslashes. A drop is recorded independently of receipt job status. The incident values alone do not prove a false drop. | Medium. Decode valid JSON string values for matching. Test against actual escaped chunk values and absent names. |
 | Many waiting jobs per source | soc_ingest / source lease contention | One lease per source, 120s expiry, 90s handler timeout, 15s deferred polls. SKIP LOCKED claims due jobs. Deferred restores the attempt within a 1h window. Separate corrections of a record must execute in order. | Preserve lease and revision rules. Make waits observable and retain bounded retry budgets. |
+
+## Delivery and recovery
+
+```mermaid
+flowchart TD
+  A[Source-authorized curated record or canonical event] --> B[Validate scope, checksum and size]
+  B --> C[Commit receipt and soc_ingest together]
+  C --> D[Acquire source lease and check revision predecessor]
+  D --> E[Register canonical identities and aliases]
+  E --> F[Upsert versioned Statements document and enqueue process_document]
+  F --> G[Read current bytes, write chunks and commit Tantivy index]
+  G --> H[Commit current document readiness and dependent deliveries]
+  H --> I[extract_document reads deterministic Statements]
+  H --> V[Optional soc_reembed_document]
+  I --> P[align_phrases]
+  I --> T[align_types]
+  P --> M[materialize_typed under KB lock]
+  T --> M
+  M --> R[soc_ingest checks identity, type, direction and current document evidence]
+  R --> S[Bound]
+```
+
+Each arrow between queued jobs is a durable dependency, not a guarantee of execution order. The receipt worker revisits prerequisites. Alignment and enrichment can run independently. An accepted source revision can bind while dense indexing is pending. Dense writes still require a live chunk and the current workspace model identity. A superseded or deleted document cannot pass the new hash-guarded readiness update. BM25 indexing occurs before the transaction that marks a structured document ready. An interrupted worker can rebuild the lexical index from durable chunks.
+
+| Delivery | Prerequisite and failure handling |
+|---|---|
+| `soc_ingest` | A source lease serializes registration/revision work. Conflicting identity claims or late/ambiguous source clocks enter review. Confirmed terminal child failure stops the parent. Missing or legacy-unclassified child outcomes remain eligible for explicit repair. |
+| `process_document` | Reads and chunks a live document. An unreadable input can be terminal. After lexical indexing, the Statements path commits readiness, extraction (when enabled) and configured enrichment in one transaction. |
+| `extract_document` | Requires current chunks and the applicable source policy. Structured statements supply typed source data. Open extraction can record individual evidence drops or document-level incomplete extraction. A drop counter alone cannot diagnose a failed receipt. |
+| `align_types`, `align_phrases` | KB-wide jobs match type and phrase signatures. A human rejection remains binding. Neither queue order nor success of only one job proves graph readiness. |
+| `materialize_typed` | Recomputes under a KB lock. A competing owner defers. The queue compares the logical payload without its internal deferral timestamp. Fresh delivery after a running job took its snapshot is allowed. |
+| `soc_reembed_document` | Fills missing vectors using the active model configuration and live chunk identifiers. Its retry budget and status are independent of evidence binding. |
+| `resolve_time`, inference and review | Other deliveries can coexist in the same KB. A count from `jobs/failed` includes unrelated jobs. Investigate by job ID, kind and receipt dependency. |
+
+Worker acknowledgement checks the original `locked_at` and retries failed database writeback with bounded backoff. Startup requeues orphaned running jobs. This assumes the supported single application worker process. Deploying multiple active application replicas would require worker-owner heartbeats and scoped orphan recovery. The per-source lease and per-KB materialization lock live in PostgreSQL.
+
+## Operator settings
+
+| Setting | Default and operation |
+|---|---|
+| Workers | Deployment default 64, adjustable from 1 to 256 through authenticated administrator `PUT /api/v1/admin/deployment` with `worker_concurrency`. The production Compose template defaults to a 16-connection application pool. On a small CPU host, start with 4–8 workers, monitor queue age and pool acquisition time, then measure before increasing. |
+| Source lease | One owner per source, 120 s expiry, 90 s processing deadline. The queue skips SOC deliveries with a live source lease. A claim that races with lease acquisition still checks ownership. Dependency checks normally retry after 15 s. |
+| Model concurrency | Background permits are per application process and keyed by endpoint and model. Explicit `model_limit` on the deployment API wins. The pinned CPU BGE embedding model defaults to one. Other models use the deployment default (10). Interactive search bypasses background permits. The CPU service still enforces its shared inference limit across roles. |
+| CPU request queue | One active inference across embedding, reranking and NER, with 0–4 waiting requests (`SOORIN_MODEL_QUEUE_CAPACITY`, default 4). Queue acquisition timeout is `SOORIN_MODEL_QUEUE_TIMEOUT_SECONDS`, default 20, maximum 120. Overflow returns HTTP 429. Read `/ready` for the configured queue capacity. |
+| Wire batches | `UTOPIA_EMBED_BATCH_LIMITS` accepts a JSON object keyed by exact model name, e.g. `{"BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181":8}`. Generic providers keep their caller batches by default. The pinned CPU model always caps requests at 16 windows, regardless of the larger logical ontology batch. |
+| Provider deadlines | Direct model HTTP connect timeout 10 s, read inactivity timeout 300 s. Override the latter per model with `UTOPIA_MODEL_READ_SECONDS`, e.g. `{"BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181":90}`. Values are 1–3600 s. Restart the application after environment changes. A separate privacy gateway controls its own exchange deadline. |
+| Retry budgets | SOC admission schedules five attempts. Ordinary deliveries default to three. Typed 429, temporary gateway failures and interrupted transports defer for Retry-After or 15 s, bounded to 1–3600 s. Waiting restores the claim attempt within a one-hour deferral window. Exhaustion returns to the ordinary finite budget and quadratic backoff (30 s × attempts²). Read inactivity timeouts use the ordinary budget. |
+| Search under load | One foreground search can still encounter provider saturation. Inspect `retrieval.dense_executed`, `lexical_method`, `reranker_status` and results. A successful lexical fallback is distinguishable from vector search. |
+
+For a stalled receipt, fetch its KB-scoped diagnostic detail. Match the current document ID/version and stage to the corresponding child job. Check the parent separately. A failed child with an unknown historical class warrants inspection. After repairing a recoverable dependency, a KB administrator posts to `/api/v1/kbs/{kb}/knowledge/receipts/{id}/retry`. That transaction requeues the failed child if needed and reuses an active parent or creates a replacement. Resolve a failed predecessor before retrying a later revision. A completed or quarantined receipt cannot be retried through this endpoint. Full job error chains remain internal. The public job status exposes a bounded class.
+
+## Producer and investigation clients
+
+Use the per-source ingest token for preview and curated ingestion under `/api/v1/sources/{source_id}/soc/`, or for a canonical event at `/api/v1/sources/{source_id}/knowledge-events`. Configure the KB tenant, system and source-instance binding first. Replay the identical event after an uncertain admission response and retain the returned receipt ID. Use a KB administrator session for receipt listing, diagnostics and explicit retry. The additive `delivery_state` distinguishes accepted, queued, running, waiting_for_dependency, failed_recoverable, terminal_failure, quarantined and bound. Existing `status` and `failure_code` remain available.
+
+Resolve an alert through its exact authority and identifier within tenant, KB, source system and instance. Continue to KnowledgeContext on an unambiguous resolution and retain source document/version, evidence references, valid time and record time. Use scoped read credentials for search and supported read-only MCP tools. The Python client/adapter or external agent must persist the receipt, back off while polling, handle ambiguous and review outcomes, distinguish lexical fallback, and preserve citations. Source writes and administrator receipt operations require their respective REST credentials. A live external Agentic_SOC connector remains a separate integration.
+
+The bounded load driver uses two admission clients, one transaction per record, a unique new synthetic KB per size and one idempotent replay. Admission was faster than binding in both initial completed batches. A bulk HTTP endpoint would not address the measured wait. From the isolated application network run `SOORIN_ISOLATED_LOAD=1 python3 -m soorin.e2e.reliability_load --port 31261 --report /tmp/load.json`. Polling has a deadline and safe retries for transient timeouts. The report contains synthetic identifiers, counts and elapsed times.
