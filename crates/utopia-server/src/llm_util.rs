@@ -214,9 +214,10 @@ pub async fn acquire(
     base_url: &str,
     model: &str,
 ) -> Option<OwnedSemaphorePermit> {
-    let limit = utopia_store::model_limits::limit_for(&state.pool, base_url, model)
+    let default = (model == utopia_llm::SOORIN_CPU_EMBED_MODEL).then_some(1);
+    let limit = utopia_store::model_limits::limit_with_default(&state.pool, base_url, model, default)
         .await
-        .ok()?;
+        .unwrap_or(1);
     let key = format!("{base_url}|{model}");
     state
         .model_gates

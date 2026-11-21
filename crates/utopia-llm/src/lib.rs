@@ -1202,18 +1202,23 @@ impl LlmClient {
         // Generic providers keep their original request and vector semantics.
         // Window pooling is a local BGE representation policy, not a universal
         // OpenAI-compatible embedding operation.
+        let per_model = std::env::var("UTOPIA_EMBED_BATCH_LIMITS")
+            .ok()
+            .map(|value| serde_json::from_str::<std::collections::HashMap<String, usize>>(&value))
+            .transpose().map_err(|_| anyhow::anyhow!("invalid embedding batch limits"))?;
+        let configured = per_model.as_ref().and_then(|limits| limits.get(&self.model)).copied();
+        anyhow::ensure!(configured.is_none_or(|limit| (1..=1024).contains(&limit)), "invalid embedding batch limit");
         if self.model != SOORIN_CPU_EMBED_MODEL {
-            let body = self
-                .json_response("/embeddings", &json!({"model":self.model,"input":texts}))
-                .await?;
-            let data = body["data"]
-                .as_array()
-                .ok_or_else(|| anyhow::anyhow!("Unexpected embedding response shape"))?;
+            let mut result = Vec::with_capacity(texts.len());
             let mut dimension = None;
-            return ordered_by_index(data, texts.len())?
-                .into_iter()
-                .map(|item| embedding_vector(item, &mut dimension))
-                .collect();
+            for batch in texts.chunks(configured.unwrap_or(texts.len().max(1))) {
+                let body = self.json_response("/embeddings", &json!({"model":self.model,"input":batch})).await?;
+                let data = body["data"].as_array().ok_or_else(|| anyhow::anyhow!("Unexpected embedding response shape"))?;
+                for item in ordered_by_index(data, batch.len())? {
+                    result.push(embedding_vector(item, &mut dimension)?);
+                }
+            }
+            return Ok(result);
         }
         // All pinned CPU consumers share the wire limits. Stored source text
         // remains intact; multi-window centroids are a retrieval approximation.
@@ -1223,7 +1228,7 @@ impl LlmClient {
         let mut dimension = Some(1024);
         let mut offset = 0;
         while offset < windows.len() {
-            let mut end = (offset + 16).min(windows.len());
+            let mut end = (offset + configured.unwrap_or(16).min(16)).min(windows.len());
             let body = loop {
                 let inputs: Vec<_> = windows[offset..end].iter().map(|(_, text)| text).collect();
                 let body = json!({"model": self.model, "input": inputs});
@@ -1279,7 +1284,7 @@ impl LlmClient {
     }
 }
 
-const SOORIN_CPU_EMBED_MODEL: &str = "BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181";
+pub const SOORIN_CPU_EMBED_MODEL: &str = "BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181";
 
 // Unicode scalar boundaries match Python's character limit, not UTF-8 bytes.
 fn embedding_windows(texts: &[String]) -> anyhow::Result<Vec<(usize, String)>> {

@@ -206,9 +206,16 @@ async fn main() -> anyhow::Result<()> {
                 // 判据在这一侧，因为 `utopia-store` 看不见 LLM 的错误类型
                 let result = dispatch(&st, &job)
                     .await
-                    .map_err(|e| match alerting::hopeless(&e) {
-                        true => e.context(utopia_core::Terminal),
-                        false => e,
+                    .map_err(|e| {
+                        if alerting::hopeless(&e) {
+                            e.context(utopia_core::Terminal)
+                        } else if let Some((_, retry)) = utopia_llm::transient(&e) {
+                            let delay = retry.unwrap_or(std::time::Duration::from_secs(15))
+                                .clamp(std::time::Duration::from_secs(1), std::time::Duration::from_secs(3600));
+                            e.context(utopia_core::Deferred::new(delay))
+                        } else {
+                            e
+                        }
                     });
                 if let Err(e) = &result {
                     alerting::observe_job_failure(&st, &job, e).await;
