@@ -129,9 +129,12 @@ pub(crate) fn name_in_chunk(name: &str, chunk: &str) -> bool {
             _ => false,
         }
     }
-    if span_in_quote(name, chunk) { return true; }
-    chunk.trim_start().starts_with(['{', '[']) &&
-        serde_json::from_str(chunk).is_ok_and(|value| in_value(name, &value))
+    if chunk.trim_start().starts_with(['{', '[']) {
+        if let Ok(value) = serde_json::from_str(chunk) {
+            return in_value(name, &value);
+        }
+    }
+    span_in_quote(name, chunk)
 }
 
 /// 记一条丢弃信号。抽取器有七处 `continue`，每一处都是"事实抽出来了、被挡掉、
@@ -425,11 +428,22 @@ mod tests {
             "path": r"C:\Windows\System32\agent.exe",
             "user": r"DOMÄIN\Analyst",
             "registry": r"HKLM\Software\Example"
-        }).to_string();
-        for name in [r"c:\windows\system32\agent.exe", r"domäin\analyst", r"HKLM\Software\Example"] {
+        })
+        .to_string();
+        for name in [
+            r"c:\windows\system32\agent.exe",
+            r"domäin\analyst",
+            r"HKLM\Software\Example",
+        ] {
             assert!(super::name_in_chunk(name, &chunk));
         }
-        for absent in [r"C:\Config.Msi,", r"1\AppData", r"DOMÄIN\Admin", r"agent.exeHKLM"] {
+        for absent in [
+            r"C:\Config.Msi,",
+            r"1\AppData",
+            r"DOMÄIN\Admin",
+            r"agent.exeHKLM",
+            "registry",
+        ] {
             assert!(!super::name_in_chunk(absent, &chunk));
         }
     }

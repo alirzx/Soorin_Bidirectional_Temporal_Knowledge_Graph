@@ -223,16 +223,30 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
              reader_task=NULL,text_len=$4,chunk_count=$5,updated_at=now()
              WHERE id=$1 AND sha256=$2 AND deleted_at IS NULL",
         )
-        .bind(document_id).bind(&doc.sha256)
+        .bind(document_id)
+        .bind(&doc.sha256)
         .bind(if extracts { "queued" } else { "skipped" })
-        .bind(text_len).bind(chunk_count).execute(&mut *tx).await?;
+        .bind(text_len)
+        .bind(chunk_count)
+        .execute(&mut *tx)
+        .await?;
         if updated.rows_affected() == 1 {
             let payload = serde_json::json!({"document_id":document_id});
             if extracts {
-                utopia_store::jobs::enqueue_unless_queued_tx(&mut tx, "extract_document", payload.clone()).await?;
+                utopia_store::jobs::enqueue_unless_queued_tx(
+                    &mut tx,
+                    "extract_document",
+                    payload.clone(),
+                )
+                .await?;
             }
             if settings.as_ref().is_some_and(|s| s.embed_ready()) {
-                utopia_store::jobs::enqueue_unless_queued_tx(&mut tx, "soc_reembed_document", payload).await?;
+                utopia_store::jobs::enqueue_unless_queued_tx(
+                    &mut tx,
+                    "soc_reembed_document",
+                    payload,
+                )
+                .await?;
             }
         }
         tx.commit().await?;

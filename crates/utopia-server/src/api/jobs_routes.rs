@@ -60,9 +60,14 @@ pub async fn job_in_kb(
     Path((kb_id, job_id)): Path<(Uuid, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
-    let job = utopia_store::jobs::status_in_kb(&state.pool, kb_id, job_id)
+    let mut job = utopia_store::jobs::status_in_kb(&state.pool, kb_id, job_id)
         .await?
         .ok_or(utopia_core::AppError::NotFound)?;
+    // Provider and parser errors may include source content. Keep the full chain
+    // in the internal queue. Viewers receive a stable category in the same field.
+    if job.last_error.is_some() {
+        job.last_error = Some(job.failure_class.as_deref().unwrap_or("unknown").to_owned());
+    }
     Ok(Json(json!({ "job": job })))
 }
 

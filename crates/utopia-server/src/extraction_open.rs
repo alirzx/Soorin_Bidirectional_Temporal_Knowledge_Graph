@@ -21,8 +21,8 @@
 //! 之后由时间解析那一步按节写到陈述上（`time_resolution::attest_statements`）。
 
 use crate::extraction::{
-    chat_retrying_rate_limits_at, drop_signal, incomplete_reason, origin_ceiling, resolve_handle,
-    name_in_chunk,
+    chat_retrying_rate_limits_at, drop_signal, incomplete_reason, name_in_chunk, origin_ceiling,
+    resolve_handle,
 };
 use crate::state::AppState;
 use sqlx::PgPool;
