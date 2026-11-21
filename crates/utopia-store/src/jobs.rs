@@ -329,6 +329,7 @@ pub struct JobStatus {
     pub attempts: i32,
     pub max_attempts: i32,
     pub last_error: Option<String>,
+    pub failure_class: Option<String>,
     pub run_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -337,7 +338,7 @@ pub struct JobStatus {
 /// 它的任务；别的库的任务 id 猜对了也只得到 None，与看不见的文档一样答 404。
 pub async fn status_in_kb(pool: &PgPool, kb_id: Uuid, id: i64) -> AppResult<Option<JobStatus>> {
     let sql = format!(
-        "SELECT j.id, j.kind, j.status, j.attempts, j.max_attempts, j.last_error, j.run_at, j.updated_at
+        "SELECT j.id, j.kind, j.status, j.attempts, j.max_attempts, j.last_error, j.failure_class, j.run_at, j.updated_at
            FROM jobs j WHERE j.id = $1 AND {}",
         KB_SCOPE.replace("$KB", "$2")
     );

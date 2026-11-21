@@ -487,7 +487,7 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
     let acquired=sqlx::query("INSERT INTO soorin_ingestion_leases(source_id,owner,expires_at) VALUES($1,$2,now()+interval '2 minutes') ON CONFLICT(source_id) DO UPDATE SET owner=$2,expires_at=now()+interval '2 minutes' WHERE soorin_ingestion_leases.expires_at<now()")
         .bind(source_id).bind(owner).execute(&state.pool).await?;
     if acquired.rows_affected() != 1 {
-        sqlx::query("UPDATE soorin_ingestion_receipts SET failure_code='soc_source_busy_retry',updated_at=now() WHERE id=$1 AND status NOT IN ('bound','quarantined')")
+        sqlx::query("UPDATE soorin_ingestion_receipts SET failure_code='soc_source_busy_retry',updated_at=now() WHERE id=$1 AND status NOT IN ('bound','quarantined') AND failure_code IS NULL")
             .bind(id).execute(&state.pool).await?;
         return Err(wait_for_dependency("soc_source_busy_retry"));
     }
@@ -501,11 +501,6 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
         process_locked(state, id, kb, source_id, &event, &status),
     )
     .await;
-    let _ = sqlx::query("DELETE FROM soorin_ingestion_leases WHERE source_id=$1 AND owner=$2")
-        .bind(source_id)
-        .bind(owner)
-        .execute(&state.pool)
-        .await;
     let result = result.unwrap_or_else(|_| Err(anyhow::anyhow!("soc_ingest_timeout_retry")));
     if let Err(error) = &result {
         let message = error.to_string();
@@ -529,6 +524,11 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
         .execute(&state.pool)
         .await;
     }
+    let _ = sqlx::query("DELETE FROM soorin_ingestion_leases WHERE source_id=$1 AND owner=$2")
+        .bind(source_id)
+        .bind(owner)
+        .execute(&state.pool)
+        .await;
     result
 }
 
