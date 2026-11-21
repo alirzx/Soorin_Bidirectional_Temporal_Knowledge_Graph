@@ -22,7 +22,7 @@
 
 use crate::extraction::{
     chat_retrying_rate_limits_at, drop_signal, incomplete_reason, origin_ceiling, resolve_handle,
-    span_in_quote,
+    name_in_chunk,
 };
 use crate::state::AppState;
 use sqlx::PgPool;
@@ -292,7 +292,7 @@ async fn apply_open_extraction(
             }
             // 名字就在这一块原文里时，给名字事实补出处（0041）。记忆日志里的不补：
             // 那一句算不算出处，要等人点头（0018）
-            if !await_nod && span_in_quote(name, &chunk.text) {
+            if !await_nod && name_in_chunk(name, &chunk.text) {
                 let _ = utopia_store::names::record(
                     pool,
                     kb_id,
@@ -655,7 +655,7 @@ async fn apply_open_extraction(
             .await;
             continue;
         };
-        if !span_in_quote(name, &chunk.text) {
+        if !name_in_chunk(name, &chunk.text) {
             drop_signal(
                 state,
                 kb_id,

@@ -117,6 +117,23 @@ pub(crate) fn span_in_quote(span: &str, quote: &str) -> bool {
     !s.is_empty() && q.contains(&s)
 }
 
+/// Statements chunks retain their JSON encoding. Compare decoded string
+/// values independently so an escape sequence or a field boundary cannot
+/// manufacture a name absent from the source.
+pub(crate) fn name_in_chunk(name: &str, chunk: &str) -> bool {
+    fn in_value(name: &str, value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::String(s) => span_in_quote(name, s),
+            serde_json::Value::Array(items) => items.iter().any(|v| in_value(name, v)),
+            serde_json::Value::Object(items) => items.values().any(|v| in_value(name, v)),
+            _ => false,
+        }
+    }
+    if span_in_quote(name, chunk) { return true; }
+    chunk.trim_start().starts_with(['{', '[']) &&
+        serde_json::from_str(chunk).is_ok_and(|value| in_value(name, &value))
+}
+
 /// 记一条丢弃信号。抽取器有七处 `continue`，每一处都是"事实抽出来了、被挡掉、
 /// 什么都不说"。信号写失败绝不能带垮整篇文档的抽取，所以这里吞掉错误。
 pub(crate) async fn drop_signal(
@@ -401,6 +418,21 @@ mod tests {
     use super::{incomplete_reason, resolve_handle, span_in_quote};
     use std::collections::HashMap;
     use uuid::Uuid;
+
+    #[test]
+    fn json_evidence_preserves_backslashes_and_value_boundaries() {
+        let chunk = serde_json::json!({
+            "path": r"C:\Windows\System32\agent.exe",
+            "user": r"DOMÄIN\Analyst",
+            "registry": r"HKLM\Software\Example"
+        }).to_string();
+        for name in [r"c:\windows\system32\agent.exe", r"domäin\analyst", r"HKLM\Software\Example"] {
+            assert!(super::name_in_chunk(name, &chunk));
+        }
+        for absent in [r"C:\Config.Msi,", r"1\AppData", r"DOMÄIN\Admin", r"agent.exeHKLM"] {
+            assert!(!super::name_in_chunk(absent, &chunk));
+        }
+    }
 
     #[test]
     fn a_span_is_found_in_its_quote_regardless_of_case_and_spacing() {
