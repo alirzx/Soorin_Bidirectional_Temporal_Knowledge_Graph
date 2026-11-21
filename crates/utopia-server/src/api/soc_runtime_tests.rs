@@ -279,6 +279,18 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
         .bind(source)
         .fetch_one(&pool)
         .await?;
+    // A historical exhausted child has no persisted classification. Its
+    // parent must expose repair and retain the submitted source revision.
+    sqlx::query("UPDATE jobs SET status='failed' WHERE kind='process_document' AND payload->>'document_id'=$1")
+        .bind(doc.to_string()).execute(&pool).await?;
+    utopia_store::documents::set_failed(&pool, doc, "synthetic provider outage").await?;
+    let dependency = soc_ingestion::process(&state, id).await.unwrap_err();
+    assert!(utopia_core::is_deferred(&dependency).is_some(), "{dependency:#}");
+    let (code, _) = call(app.clone(), format!("/api/v1/kbs/{kb}/knowledge/receipts/{id}/retry"), &session, json!({})).await?;
+    assert_eq!(code, 200);
+    let repairs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind='process_document' AND payload->>'document_id'=$1 AND status='queued'")
+        .bind(doc.to_string()).fetch_one(&pool).await?;
+    assert_eq!(repairs, 1);
     crate::pipeline::process_document(&state, doc).await?;
     crate::extraction::extract_document(&state, doc, Default::default()).await?;
     crate::soc_alignment::types(&pool, kb).await?;
