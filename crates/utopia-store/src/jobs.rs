@@ -25,6 +25,13 @@ pub struct Job {
 }
 
 // Retry bookkeeping belongs to the queue, not to the logical delivery identity.
+fn delivery_payload(mut payload: serde_json::Value) -> serde_json::Value {
+    if let Some(fields) = payload.as_object_mut() {
+        fields.remove("deferred_since");
+    }
+    payload
+}
+
 async fn lock_delivery(
     tx: &mut Transaction<'_, Postgres>,
     kind: &str,
@@ -60,6 +67,7 @@ pub async fn enqueue_unless_pending(
     after: Duration,
 ) -> AppResult<Option<i64>> {
     let mut tx = pool.begin().await?;
+    let payload = delivery_payload(payload);
     lock_delivery(&mut tx, kind, &payload).await?;
     let row: Option<(i64,)> = sqlx::query_as(
         "INSERT INTO jobs (kind, payload, run_at)
@@ -101,6 +109,7 @@ pub async fn enqueue_unless_queued_tx(
     kind: &str,
     payload: serde_json::Value,
 ) -> AppResult<Option<i64>> {
+    let payload = delivery_payload(payload);
     lock_delivery(tx, kind, &payload).await?;
     let row: Option<(i64,)> = sqlx::query_as(
         "INSERT INTO jobs (kind, payload)
@@ -128,6 +137,7 @@ pub async fn enqueue_unless_queued_after(
     after: Duration,
 ) -> AppResult<Option<i64>> {
     let mut tx = pool.begin().await?;
+    let payload = delivery_payload(payload);
     lock_delivery(&mut tx, kind, &payload).await?;
     let row: Option<(i64,)> = sqlx::query_as(
         "INSERT INTO jobs (kind, payload, run_at)
@@ -301,6 +311,14 @@ const KB_SCOPE: &str = "(
 /// 其他处理器都是幂等的（启动时回收孤儿就靠这一点）；
 /// 此前 `failed` 是终点，余额耗尽一批文档全失败，充值之后只能逐个点或整源重抽
 pub async fn requeue_failed(pool: &PgPool, scope: RequeueScope<'_>) -> AppResult<u64> {
+    requeue_with_policy(pool, scope, false).await
+}
+
+pub async fn requeue_with_policy(
+    pool: &PgPool,
+    scope: RequeueScope<'_>,
+    include_terminal: bool,
+) -> AppResult<u64> {
     let mut tx = pool.begin().await?;
     let sql = format!(
         "UPDATE jobs j
@@ -308,6 +326,7 @@ pub async fn requeue_failed(pool: &PgPool, scope: RequeueScope<'_>) -> AppResult
                 failure_class = NULL, last_error = NULL,
                 payload = CASE WHEN jsonb_typeof(payload)='object' THEN payload - 'deferred_since' ELSE payload END
           WHERE j.status = 'failed' AND j.kind <> 'hydrate_rss_entry'
+            AND ($4 OR j.failure_class IS DISTINCT FROM 'terminal')
             AND ($1::text IS NULL OR j.kind = $1)
             AND ($2::timestamptz IS NULL OR j.updated_at >= $2)
             AND ($3::uuid IS NULL OR {})",
@@ -317,6 +336,7 @@ pub async fn requeue_failed(pool: &PgPool, scope: RequeueScope<'_>) -> AppResult
         .bind(scope.kind)
         .bind(scope.failed_since)
         .bind(scope.kb_id)
+        .bind(include_terminal)
         .execute(&mut *tx)
         .await?;
     let count = res.rows_affected();
@@ -367,23 +387,30 @@ pub async fn status_in_kb(pool: &PgPool, kb_id: Uuid, id: i64) -> AppResult<Opti
 }
 
 /// 认领一个到期任务；没有则返回 None。
-async fn claim_one(pool: &PgPool) -> AppResult<Option<Job>> {
+async fn claim_one(owner: &mut sqlx::PgConnection) -> AppResult<Option<Job>> {
     let job = sqlx::query_as(
         "UPDATE jobs SET status = 'running', locked_at = now(),
+                document_version = CASE WHEN kind IN ('process_document','extract_document') AND
+                    pg_input_is_valid(payload->>'document_id','uuid') THEN
+                    (SELECT max(version) FROM document_versions WHERE document_id=(jobs.payload->>'document_id')::uuid)
+                END,
                 attempts = attempts + 1, updated_at = now()
          WHERE id = (
              SELECT id FROM jobs
              WHERE status = 'queued' AND run_at <= now()
-               AND (kind <> 'soc_ingest' OR NOT EXISTS (
+               AND (kind <> 'soc_ingest' OR (NOT EXISTS (
+                 SELECT 1 FROM jobs active WHERE active.status='running' AND active.kind='soc_ingest'
+                   AND active.payload->>'source_id'=jobs.payload->>'source_id'
+               ) AND NOT EXISTS (
                  SELECT 1 FROM soorin_ingestion_leases l
-                 WHERE l.source_id::text=jobs.payload->>'source_id' AND l.expires_at>=now()))
+                 WHERE l.source_id::text=jobs.payload->>'source_id' AND l.expires_at>=now())))
              ORDER BY run_at, id
              FOR UPDATE SKIP LOCKED
              LIMIT 1
          )
          RETURNING id, kind, payload, attempts, max_attempts, locked_at",
     )
-    .fetch_optional(pool)
+    .fetch_optional(owner)
     .await?;
     Ok(job)
 }
@@ -598,7 +625,25 @@ async fn persist_with_retry(
 /// 空闲时等入队通知、2s 轮询兜底（#517）；每个任务在独立 tokio task 中执行，长抽取不再阻塞同步。
 /// `concurrency` 每轮热读——系统设置里改并发数即时生效。
 /// 任务分发逻辑由调用方以 handler 注入（store 不依赖上层 crate）。
-pub async fn run_worker<F, Fut>(pool: PgPool, concurrency: Arc<AtomicUsize>, handler: F)
+pub async fn worker_owner(pool: &PgPool) -> anyhow::Result<sqlx::PgConnection> {
+    use sqlx::Connection;
+    let mut conn = sqlx::PgConnection::connect_with(&pool.connect_options()).await?;
+    let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(6371059920174301)")
+        .fetch_one(&mut conn)
+        .await?;
+    anyhow::ensure!(
+        acquired,
+        "another application worker already owns this database"
+    );
+    Ok(conn)
+}
+
+pub async fn run_worker<F, Fut>(
+    pool: PgPool,
+    mut owner: sqlx::PgConnection,
+    concurrency: Arc<AtomicUsize>,
+    handler: F,
+) -> anyhow::Result<()>
 where
     F: Fn(Job) -> Fut + Clone + Send + Sync + 'static,
     Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
@@ -606,22 +651,14 @@ where
     let running = Arc::new(AtomicUsize::new(0));
     // 孤儿回收：进程被杀时 running 任务无人收尸，文档会永远停在 extracting。
     // 单进程部署下，启动时仍为 running 的必是孤儿——一律重排队（处理器均幂等）。
-    match sqlx::query(
-        "UPDATE jobs SET status = 'queued', locked_at = NULL, updated_at = now()
-         WHERE status = 'running'",
+    let recovered = sqlx::query(
+        "UPDATE jobs SET status='queued', locked_at=NULL, updated_at=now() WHERE status='running'",
     )
-    .execute(&pool)
-    .await
-    {
-        Ok(r) if r.rows_affected() > 0 => {
-            tracing::warn!(
-                count = r.rows_affected(),
-                "回收孤儿任务（上次进程退出时正在运行）"
-            );
-        }
-        Ok(_) => {}
-        Err(e) => tracing::error!(error = %e, "孤儿任务回收失败"),
-    }
+    .execute(&mut owner)
+    .await?
+    .rows_affected();
+    tracing::info!(recovered, "queue ownership acquired");
+    let finished = Arc::new(tokio::sync::Notify::new());
     tracing::info!(
         concurrency = concurrency.load(Ordering::Relaxed),
         "jobs worker 已启动"
@@ -629,15 +666,19 @@ where
     let mut listener = listen_for_jobs(&pool).await;
     loop {
         if pool.is_closed() {
-            return;
+            return Ok(());
         }
-        let cap = concurrency.load(Ordering::Relaxed).max(1);
+        let cap = concurrency.load(Ordering::Acquire);
+        if cap == 0 && running.load(Ordering::Acquire) == 0 {
+            return Ok(());
+        }
         if running.load(Ordering::Relaxed) >= cap {
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::select! { _ = finished.notified() => {}, _ = tokio::time::sleep(IDLE_POLL) => { sqlx::query("SELECT 1").execute(&mut owner).await?; } }
             continue;
         }
-        match claim_one(&pool).await {
-            Ok(Some(job)) => {
+        match claim_one(&mut owner).await? {
+            Some(job) => {
+                let finished = finished.clone();
                 running.fetch_add(1, Ordering::Relaxed);
                 let pool = pool.clone();
                 let handler = handler.clone();
@@ -669,14 +710,11 @@ where
                     };
                     persist_with_retry(&pool, &job, &outcome, completed_at).await;
                     running.fetch_sub(1, Ordering::Relaxed);
+                    finished.notify_one();
                 });
             }
-            Ok(None) => {
-                wait_for_work(listener.as_mut(), IDLE_POLL).await;
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "任务认领失败，5s 后重试");
-                tokio::time::sleep(Duration::from_secs(5)).await;
+            None => {
+                tokio::select! { _ = finished.notified() => {}, _ = wait_for_work(listener.as_mut(), IDLE_POLL) => {} }
             }
         }
     }

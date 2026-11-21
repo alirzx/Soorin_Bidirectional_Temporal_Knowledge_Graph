@@ -61,6 +61,7 @@ async fn requeue_api_combines_policies_and_preserves_scope_filters() -> anyhow::
                 kind: scope_kind,
                 failed_since: Some(window),
             },
+            false,
         )
         .await?;
         assert_eq!(count, expected_ids.len() as u64);
@@ -78,6 +79,28 @@ async fn requeue_api_combines_policies_and_preserves_scope_filters() -> anyhow::
         queued.sort_unstable();
         expected_ids.sort_unstable();
         assert_eq!(queued, expected_ids);
+    }
+    for class in [Some("terminal"), Some("deferred"), Some("unknown"), None] {
+        sqlx::query("UPDATE jobs SET status='failed',failure_class=$2 WHERE id=$1")
+            .bind(generic)
+            .bind(class)
+            .execute(&pool)
+            .await?;
+        let scope = RequeueScope {
+            kb_id: Some(kb),
+            kind: Some(&kind),
+            failed_since: None,
+        };
+        let terminal = class == Some("terminal");
+        assert_eq!(
+            requeue_failed(&pool, scope, false).await?,
+            u64::from(!terminal)
+        );
+        assert_eq!(
+            requeue_failed(&pool, scope, true).await?,
+            u64::from(terminal)
+        );
+        assert_eq!(requeue_failed(&pool, scope, true).await?, 0);
     }
     sqlx::query("DELETE FROM jobs WHERE id=ANY($1)")
         .bind(ids.as_slice())

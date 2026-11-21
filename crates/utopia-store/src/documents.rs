@@ -194,7 +194,7 @@ pub async fn replace_content_and_enqueue_processing(
         return Err(AppError::NotFound);
     }
     sqlx::query(
-        "UPDATE documents SET filename = $2, mime = $3, size_bytes = $4, sha256 = $5,
+        "UPDATE documents SET filename = $2, mime = $3, size_bytes = $4, sha256 = $5, extract_epoch=extract_epoch+1,
                 doc_time = COALESCE($6, doc_time),
                 doc_time_source = CASE WHEN $6 IS NULL THEN doc_time_source ELSE 'source' END,
                 status = 'pending', graph_status = 'none', error = NULL,
@@ -271,7 +271,7 @@ pub async fn upsert_source_document_tx(
             return Ok(document);
         }
         sqlx::query(
-            "UPDATE documents SET filename = $2, mime = $3, size_bytes = $4, sha256 = $5,
+            "UPDATE documents SET filename = $2, mime = $3, size_bytes = $4, sha256 = $5, extract_epoch=extract_epoch+1,
                     doc_time = COALESCE($6, doc_time), status = 'pending', graph_status = 'none',
                     error = NULL, missing_since = NULL, updated_at = now()
              WHERE id = $1",
@@ -326,7 +326,7 @@ pub async fn upsert_source_document_tx(
             .await?;
         if document.sha256 != sha256 {
             sqlx::query(
-                "UPDATE documents SET filename = $2, mime = $3, size_bytes = $4, sha256 = $5,
+                "UPDATE documents SET filename = $2, mime = $3, size_bytes = $4, sha256 = $5, extract_epoch=extract_epoch+1,
                         doc_time = COALESCE($6, doc_time), status = 'pending', graph_status = 'none',
                         error = NULL, missing_since = NULL, updated_at = now()
                  WHERE id = $1",

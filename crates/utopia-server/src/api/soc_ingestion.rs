@@ -307,11 +307,7 @@ pub async fn ingest(
     let (receipt,status):(Uuid,String)=sqlx::query_as("INSERT INTO soorin_ingestion_receipts(id,kb_id,source_id,source_key,checksum,payload) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(source_id,source_key,checksum) DO UPDATE SET updated_at=now() RETURNING id,status")
         .bind(Uuid::now_v7()).bind(source.kb_id).bind(source_id).bind(key).bind(field(&event,"content_checksum")?).bind(&event).fetch_one(&mut *tx).await?;
     let existing:Option<(i64,String)>=sqlx::query_as("SELECT j.id,j.status FROM jobs j JOIN soorin_ingestion_receipts r ON r.job_id=j.id WHERE r.id=$1").bind(receipt).fetch_optional(&mut *tx).await?;
-    let job = if matches!(status.as_str(), "bound" | "quarantined")
-        || existing
-            .as_ref()
-            .is_some_and(|(_, status)| matches!(status.as_str(), "queued" | "running"))
-    {
+    let job = if matches!(status.as_str(), "bound" | "quarantined") || existing.is_some() {
         existing.map(|(id, _)| id)
     } else {
         Some(
@@ -555,18 +551,14 @@ async fn failed_child<'e>(
     external_key: &str,
 ) -> Result<Option<FailedChild>, sqlx::Error> {
     sqlx::query_as(
-        "WITH dependency AS (
-            SELECT id, CASE WHEN status='failed' THEN 'process_document' ELSE 'extract_document' END AS kind
-            FROM documents WHERE kb_id=$1 AND source_id=$2 AND external_key=$3
-              AND deleted_at IS NULL AND (status='failed' OR graph_status='failed')
-         ) SELECT d.id AS document_id,d.kind,
-             (SELECT failure_class FROM jobs j WHERE j.payload->>'document_id'=d.id::text
-              AND j.kind=d.kind ORDER BY id DESC LIMIT 1) AS failure_class
-           FROM dependency d WHERE NOT EXISTS (
-             SELECT 1 FROM jobs j WHERE j.payload->>'document_id'=d.id::text
-             AND j.kind=d.kind AND j.status IN ('queued','running'))",
+        "SELECT document_id,kind,failure_class FROM soorin_failed_document_dependencies
+         WHERE kb_id=$1 AND source_id=$2 AND external_key=$3 AND NOT active",
     )
-    .bind(kb).bind(source).bind(external_key).fetch_optional(executor).await
+    .bind(kb)
+    .bind(source)
+    .bind(external_key)
+    .fetch_optional(executor)
+    .await
 }
 
 fn source_clock_advances(
@@ -809,18 +801,72 @@ async fn process_locked(
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+pub struct ReceiptPage {
+    before: Option<Uuid>,
+    limit: Option<i64>,
+}
+
 /// Payload-free operator diagnostics, protected by KB administration.
 pub async fn receipts(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(kb): Path<Uuid>,
+    axum::extract::Query(page): axum::extract::Query<ReceiptPage>,
 ) -> ApiResult<Json<Value>> {
     utopia_store::access::require_kb(&state.pool, &user, kb, Role::Admin).await?;
-    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('receipt_id',r.id,'source_id',r.source_id,'status',r.status,'failure_code',r.failure_code,'created_at',r.created_at,'updated_at',r.updated_at,'job_id',r.job_id,'job_status',j.status,'attempts',j.attempts,'max_attempts',j.max_attempts,'delivery_state',v.delivery_state,'failure_class',v.failure_class,'age_seconds',extract(epoch from now()-r.created_at)) FROM soorin_ingestion_receipts r JOIN soorin_receipt_delivery v ON v.id=r.id LEFT JOIN jobs j ON j.id=r.job_id WHERE r.kb_id=$1 ORDER BY r.created_at DESC LIMIT 100").bind(kb).fetch_all(&state.pool).await?;
+    let limit = page.limit.unwrap_or(100);
+    if !(1..=100).contains(&limit) {
+        return Err(AppError::Validation("limit must be 1..100".into()).into());
+    }
+    let mut rows:Vec<Value> = sqlx::query_scalar("WITH page AS MATERIALIZED (
+        SELECT id,created_at FROM soorin_ingestion_receipts WHERE kb_id=$1 AND
+        ($2::uuid IS NULL OR (created_at,id)<(SELECT created_at,id FROM soorin_ingestion_receipts WHERE kb_id=$1 AND id=$2))
+        ORDER BY created_at DESC,id DESC LIMIT $3)
+        SELECT jsonb_build_object('receipt_id',r.id,'source_id',r.source_id,'status',r.status,'failure_code',r.failure_code,
+        'created_at',r.created_at,'updated_at',r.updated_at,'job_id',r.job_id,'job_status',j.status,'attempts',j.attempts,
+        'max_attempts',j.max_attempts,'delivery_state',v.delivery_state,'failure_class',v.failure_class,
+        'age_seconds',extract(epoch from now()-r.created_at))
+        FROM page p JOIN soorin_ingestion_receipts r ON r.id=p.id JOIN soorin_receipt_delivery v ON v.id=p.id
+        LEFT JOIN jobs j ON j.id=r.job_id ORDER BY p.created_at DESC,p.id DESC")
+        .bind(kb).bind(page.before).bind(limit+1).fetch_all(&state.pool).await?;
+    let has_more = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    let next = rows
+        .last()
+        .filter(|_| has_more)
+        .map(|r| r["receipt_id"].clone());
     let counts:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('status',status,'count',count(*)) FROM soorin_ingestion_receipts WHERE kb_id=$1 GROUP BY status ORDER BY status").bind(kb).fetch_all(&state.pool).await?;
     Ok(Json(
-        json!({"schema_version":"soorin.ingestion-status.v1","counts":counts,"receipts":rows,"limit":100}),
+        json!({"schema_version":"soorin.ingestion-status.v1","counts":counts,"receipts":rows,"limit":limit,"next_cursor":next}),
     ))
+}
+
+/// Payload-free polling. No entity, relation, or evidence traversal.
+pub async fn status(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb, id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<Value>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb, Role::Admin).await?;
+    let row = sqlx::query_scalar("SELECT jsonb_build_object('receipt_id',r.id,'status',r.status,
+        'job_id',r.job_id,'failure_code',r.failure_code,'delivery_state',v.delivery_state,'updated_at',r.updated_at)
+        FROM soorin_ingestion_receipts r JOIN soorin_receipt_delivery v USING(id,kb_id) WHERE r.id=$1 AND r.kb_id=$2")
+        .bind(id).bind(kb).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
+    Ok(Json(row))
+}
+
+pub async fn summary(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb, Role::Admin).await?;
+    let rows: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('status',r.status,'delivery_state',v.delivery_state,
+        'failure_class',v.failure_class,'count',count(*),'oldest_age_seconds',extract(epoch from now()-min(r.created_at)))
+        FROM soorin_ingestion_receipts r JOIN soorin_receipt_delivery v USING(id,kb_id) WHERE r.kb_id=$1 GROUP BY r.status,v.delivery_state,v.failure_class")
+        .bind(kb).fetch_all(&state.pool).await?;
+    Ok(Json(json!({"groups":rows})))
 }
 
 async fn receipt_entities(
@@ -1030,6 +1076,10 @@ pub async fn retry(
             "receipt is terminal; quarantine requires identity/revision review".into(),
         )
         .into());
+    }
+    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM jobs WHERE id=$1 AND status='failed' AND failure_class='terminal')")
+        .bind(previous).fetch_one(&mut *tx).await? {
+        return Err(AppError::Conflict("terminal receipt requires administrator review".into()).into());
     }
     if status == "submitted" {
         let rendered = render(&event)?;

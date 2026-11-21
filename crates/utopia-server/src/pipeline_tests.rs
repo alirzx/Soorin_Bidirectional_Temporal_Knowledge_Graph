@@ -1163,3 +1163,66 @@ async fn a_memory_that_cannot_be_embedded_does_not_hold_back_the_others() -> any
     assert_eq!(embedded, vec![true, false, true, true, true]);
     f.cleanup().await
 }
+
+#[tokio::test]
+async fn delayed_index_writer_cannot_replace_current_revision() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::ZERO)).await? else {
+        return Ok(());
+    };
+    let doc = f.document_with_chunks(1).await?;
+    let old = format!("sha-{doc}");
+    assert!(super::index_current(&f.state, doc, Some(&old)).await?);
+    let mut revision = f.pool.begin().await?;
+    sqlx::query("UPDATE documents SET sha256='next' WHERE id=$1")
+        .bind(doc)
+        .execute(&mut *revision)
+        .await?;
+    let state = f.state.clone();
+    let delayed = tokio::spawn(async move { super::index_current(&state, doc, Some(&old)).await });
+    sqlx::query("UPDATE chunks SET text='updatedsearchablecontent' WHERE document_id=$1")
+        .bind(doc)
+        .execute(&mut *revision)
+        .await?;
+    revision.commit().await?;
+    assert!(super::index_current(&f.state, doc, Some("next")).await?);
+    assert!(!delayed.await??);
+    assert!(!super::index_current(&f.state,doc,None).await?);
+    assert!(!super::index_current(&f.state, doc, Some(&format!("sha-{doc}"))).await?);
+    assert_eq!(
+        f.state
+            .search
+            .search(&f.kb.to_string(), "updatedsearchablecontent", 5)?
+            .len(),
+        1
+    );
+    assert!(f
+        .state
+        .search
+        .search(&f.kb.to_string(), "chunk", 5)?
+        .is_empty());
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn backfill_skips_old_deleted_and_already_embedded_chunks() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::ZERO)).await? else { return Ok(()) };
+    let doc = f.document_with_chunks(3).await?;
+    let settings = utopia_store::settings::get(&f.pool,f.ws).await?.unwrap();
+    let items = utopia_store::soorin_embeddings::pending(&f.pool,doc,&settings).await?;
+    let ids: Vec<_> = items.iter().map(|r|r.0).collect();
+    sqlx::query("UPDATE chunks SET superseded_at=now() WHERE id=$1").bind(ids[0]).execute(&f.pool).await?;
+    let pool = &f.pool;
+    let settings = &settings;
+    let write = |id, vector| async move { utopia_store::soorin_embeddings::write(pool,&[(id,vector)],settings).await };
+    write(ids[0],vec![1.,0.]).await?;
+    write(ids[1],vec![1.,0.]).await?;
+    write(ids[1],vec![0.,1.]).await?;
+    sqlx::query("UPDATE documents SET deleted_at=now() WHERE id=$1").bind(doc).execute(&f.pool).await?;
+    write(ids[2],vec![1.,0.]).await?;
+    let saved:Vec<(Uuid,String)> = sqlx::query_as("SELECT id,embedding::text FROM chunks WHERE document_id=$1 AND embedding IS NOT NULL")
+        .bind(doc).fetch_all(&f.pool).await?;
+    assert_eq!(saved,vec![(ids[1],"[1,0]".to_owned())]);
+    sqlx::query("UPDATE llm_settings SET embed_model='changed' WHERE workspace_id=$1").bind(f.ws).execute(&f.pool).await?;
+    assert!(write(ids[1],vec![0.,1.]).await.is_err());
+    f.cleanup().await
+}

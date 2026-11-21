@@ -1083,6 +1083,9 @@ pub(crate) async fn run_open(
                 ..entry.clone()
             });
         }
+        if utopia_store::documents::extract_epoch(pool, document_id).await? != my_epoch {
+            return Ok(());
+        }
         apply_open_extraction(
             state,
             pool,
@@ -1124,7 +1127,19 @@ pub(crate) async fn run_open(
     // 抽不成的话，让它后面每一句的确认卡都不出现（#1187）。错留到最后再报
     let incomplete = incomplete_reason(&unextracted, chunks.len());
     if incomplete.is_none() {
-        utopia_store::documents::set_graph_status(pool, document_id, "done").await?;
+        if sqlx::query(
+            "UPDATE documents SET graph_status='done',graph_error=NULL,updated_at=now()
+            WHERE id=$1 AND extract_epoch=$2 AND deleted_at IS NULL",
+        )
+        .bind(document_id)
+        .bind(my_epoch)
+        .execute(pool)
+        .await?
+        .rows_affected()
+            == 0
+        {
+            return Ok(());
+        }
         state.emit_document(kb_id, document_id);
     }
     state.emit_graph(kb_id);

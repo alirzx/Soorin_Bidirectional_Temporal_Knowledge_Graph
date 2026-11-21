@@ -126,6 +126,14 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/kbs/{id}/knowledge/resolve", post(soc_knowledge::resolve))
         .route("/kbs/{id}/knowledge/receipts", get(soc_ingestion::receipts))
         .route(
+            "/kbs/{id}/knowledge/receipts/summary",
+            get(soc_ingestion::summary),
+        )
+        .route(
+            "/kbs/{id}/knowledge/receipts/{receipt}/status",
+            get(soc_ingestion::status),
+        )
+        .route(
             "/kbs/{id}/knowledge/receipts/{receipt}",
             get(soc_ingestion::diagnostics),
         )

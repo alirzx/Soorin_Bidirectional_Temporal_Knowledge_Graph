@@ -284,10 +284,14 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     sqlx::query("UPDATE jobs SET status='failed' WHERE kind='process_document' AND payload->>'document_id'=$1")
         .bind(doc.to_string()).execute(&pool).await?;
     utopia_store::documents::set_failed(&pool, doc, "synthetic provider outage").await?;
-    sqlx::query("UPDATE jobs SET failure_class='terminal' WHERE kind='process_document' AND payload->>'document_id'=$1")
+    sqlx::query("UPDATE jobs SET failure_class='terminal',document_version=(SELECT max(version) FROM document_versions WHERE document_id::text=$1) WHERE kind='process_document' AND payload->>'document_id'=$1")
         .bind(doc.to_string()).execute(&pool).await?;
     let terminal = soc_ingestion::process(&state, id).await.unwrap_err();
     assert!(utopia_core::is_terminal(&terminal));
+    sqlx::query("UPDATE jobs SET document_version=0 WHERE kind='process_document' AND payload->>'document_id'=$1").bind(doc.to_string()).execute(&pool).await?;
+    assert!(
+        utopia_core::is_deferred(&soc_ingestion::process(&state, id).await.unwrap_err()).is_some()
+    );
     sqlx::query("UPDATE jobs SET failure_class=NULL WHERE kind='process_document' AND payload->>'document_id'=$1")
         .bind(doc.to_string()).execute(&pool).await?;
     let dependency = soc_ingestion::process(&state, id).await.unwrap_err();
@@ -295,14 +299,17 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
         utopia_core::is_deferred(&dependency).is_some(),
         "{dependency:#}"
     );
-    let (code, _) = call(
-        app.clone(),
-        format!("/api/v1/kbs/{kb}/knowledge/receipts/{id}/retry"),
-        &session,
-        json!({}),
-    )
-    .await?;
-    assert_eq!(code, 200);
+    let calls = (0..5).map(|_| {
+        call(
+            app.clone(),
+            format!("/api/v1/kbs/{kb}/knowledge/receipts/{id}/retry"),
+            &session,
+            json!({}),
+        )
+    });
+    for result in futures_util::future::join_all(calls).await {
+        assert_eq!(result?.0, 200);
+    }
     let repairs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind='process_document' AND payload->>'document_id'=$1 AND status='queued'")
         .bind(doc.to_string()).fetch_one(&pool).await?;
     assert_eq!(repairs, 1);
@@ -338,6 +345,11 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     assert_eq!(code, 200);
     assert_eq!(fallback["retrieval"]["dense_executed"], false);
     assert_eq!(fallback["retrieval"]["lexical_method"], "tantivy_bm25");
+    crate::errata::schedule_if_ready(&state,kb).await?;
+    let errata_jobs:i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind='errata_review' AND payload->>'kb_id'=$1")
+        .bind(kb.to_string()).fetch_one(&pool).await?;
+    assert_eq!(errata_jobs,0);
+    crate::errata::review(&state,kb).await?;
     provider.reset().await;
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .respond_with(

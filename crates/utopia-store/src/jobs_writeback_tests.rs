@@ -380,6 +380,15 @@ async fn concurrent_projection_deliveries_coalesce_queued_but_not_running() -> a
     }
     assert_eq!(deliveries.len(), 1);
     let first = deliveries[0];
+    let marked = json!({"synthetic":true,"deferred_since":"internal"});
+    assert!(super::enqueue_unless_queued(&pool, &kind, marked)
+        .await?
+        .is_none());
+    assert!(
+        super::enqueue_unless_queued(&pool, &kind, json!({"synthetic":false}))
+            .await?
+            .is_some()
+    );
     claim_job(&pool, first).await?;
     let next = super::enqueue_unless_queued(&pool, &kind, payload).await?;
     assert!(next.is_some());
@@ -387,5 +396,18 @@ async fn concurrent_projection_deliveries_coalesce_queued_but_not_running() -> a
         .bind(&kind)
         .execute(&pool)
         .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_second_worker_cannot_recover_live_claims() -> anyhow::Result<()> {
+    let Some(url) = crate::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let first = super::worker_owner(&pool).await?;
+    assert!(super::worker_owner(&pool).await.is_err());
+    sqlx::Connection::close(first).await?;
+    sqlx::Connection::close(super::worker_owner(&pool).await?).await?;
     Ok(())
 }

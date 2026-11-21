@@ -43,6 +43,25 @@ pub struct DocumentOutcome {
     pub requests: usize,
 }
 
+pub async fn schedule_if_ready(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
+    let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
+    if utopia_store::settings::get(&state.pool, kb.workspace_id)
+        .await?
+        .is_some_and(|s| s.chat_ready())
+        && !errata::documents_due(&state.pool, kb_id, 1)
+            .await?
+            .is_empty()
+    {
+        utopia_store::jobs::enqueue_unless_queued(
+            &state.pool,
+            errata::JOB_KIND,
+            serde_json::json!({"kb_id":kb_id}),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// `errata_review` 任务：有类型化行还没看过的文档，一份一份看；看不完再排一次
 pub async fn review(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
     let pool = &state.pool;
@@ -52,11 +71,13 @@ pub async fn review(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
         return Ok(());
     }
     let kb = utopia_store::kbs::get(pool, kb_id).await?;
-    let settings = utopia_store::settings::get(pool, kb.workspace_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot review errata"))?;
-    let client = llm_util::chat_client(&settings)
-        .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot review errata"))?;
+    let Some(settings) = utopia_store::settings::get(pool, kb.workspace_id).await? else {
+        return Ok(());
+    };
+    // Capability may have been removed after scheduling. Unreviewed facts stay due.
+    let Some(client) = llm_util::chat_client(&settings) else {
+        return Ok(());
+    };
     let props = utopia_store::ontology::relation_type_views(pool, kb_id).await?;
     let classes = utopia_store::graph::entity_types(pool, kb_id).await?;
     let class_key: HashMap<Uuid, &str> = classes.iter().map(|c| (c.id, c.key.as_str())).collect();
