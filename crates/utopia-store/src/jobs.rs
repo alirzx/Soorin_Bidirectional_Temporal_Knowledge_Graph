@@ -356,7 +356,10 @@ async fn claim_one(pool: &PgPool) -> AppResult<Option<Job>> {
          WHERE id = (
              SELECT id FROM jobs
              WHERE status = 'queued' AND run_at <= now()
-             ORDER BY run_at
+               AND (kind <> 'soc_ingest' OR NOT EXISTS (
+                 SELECT 1 FROM soorin_ingestion_leases l
+                 WHERE l.source_id::text=jobs.payload->>'source_id' AND l.expires_at>=now()))
+             ORDER BY run_at, id
              FOR UPDATE SKIP LOCKED
              LIMIT 1
          )
@@ -412,6 +415,7 @@ fn deferred_retry_secs(retry_in: std::time::Duration) -> i64 {
 enum JobOutcome {
     Done,
     Failed {
+        class: &'static str,
         error: String,
         backoff_secs: Option<i64>,
         deferred_secs: Option<i64>,
@@ -428,6 +432,7 @@ impl JobOutcome {
             utopia_core::is_deferred(err).map(deferred_retry_secs)
         };
         Self::Failed {
+            class: if terminal { "terminal" } else if deferred_secs.is_some() { "deferred" } else { "unknown" },
             error: format!("{err:#}"),
             backoff_secs: retry_delay(job.attempts, job.max_attempts, terminal),
             deferred_secs,
@@ -443,6 +448,7 @@ async fn persist_outcome(
     completed_at: DateTime<Utc>,
 ) -> AppResult<bool> {
     let JobOutcome::Failed {
+        class,
         error,
         backoff_secs,
         deferred_secs,
@@ -450,7 +456,7 @@ async fn persist_outcome(
     else {
         // 成功要清掉前一次错误，避免任务显示 done 却仍带着失败原因。
         let res = sqlx::query(
-            "UPDATE jobs SET status = 'done', last_error = NULL, updated_at = now()
+            "UPDATE jobs SET status = 'done', failure_class = NULL, last_error = NULL, updated_at = now()
              WHERE id = $1 AND status = 'running' AND locked_at = $2",
         )
         .bind(job.id)
@@ -464,7 +470,7 @@ async fn persist_outcome(
         // Deferred 退回认领消耗的次数；等待窗口耗尽后才走普通失败预算。
         // 等待窗口和下次运行时刻固定在 handler 完成时，不随写回重试滑动。
         let res = sqlx::query(
-            "UPDATE jobs SET status = 'queued', last_error = $2,
+            "UPDATE jobs SET status = 'queued', failure_class = 'deferred', last_error = $2,
                     attempts = GREATEST(0, attempts - 1),
                     run_at = $4::timestamptz + make_interval(secs => $5::float8),
                     payload = payload || jsonb_build_object('deferred_since',
@@ -494,7 +500,7 @@ async fn persist_outcome(
         "failed"
     };
     let res = sqlx::query(
-        "UPDATE jobs SET status = $3, last_error = $4,
+        "UPDATE jobs SET status = $3, failure_class = $7, last_error = $4,
                 run_at = CASE WHEN $5::float8 IS NULL THEN run_at
                     ELSE $6::timestamptz + make_interval(secs => $5::float8) END,
                 updated_at = now()
@@ -506,6 +512,7 @@ async fn persist_outcome(
     .bind(error)
     .bind(backoff_secs.map(|secs| secs as f64))
     .bind(completed_at)
+    .bind(*class)
     .execute(pool)
     .await?;
     Ok(res.rows_affected() > 0)

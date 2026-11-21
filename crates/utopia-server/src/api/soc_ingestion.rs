@@ -318,7 +318,7 @@ pub async fn ingest(
             utopia_store::jobs::enqueue_with_max_attempts_tx(
                 &mut tx,
                 "soc_ingest",
-                json!({"receipt_id":receipt,"kb_id":source.kb_id}),
+                json!({"receipt_id":receipt,"kb_id":source.kb_id,"source_id":source_id}),
                 5,
             )
             .await?,
@@ -487,7 +487,7 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
     let acquired=sqlx::query("INSERT INTO soorin_ingestion_leases(source_id,owner,expires_at) VALUES($1,$2,now()+interval '2 minutes') ON CONFLICT(source_id) DO UPDATE SET owner=$2,expires_at=now()+interval '2 minutes' WHERE soorin_ingestion_leases.expires_at<now()")
         .bind(source_id).bind(owner).execute(&state.pool).await?;
     if acquired.rows_affected() != 1 {
-        sqlx::query("UPDATE soorin_ingestion_receipts SET failure_code='soc_source_busy_retry',updated_at=now() WHERE id=$1")
+        sqlx::query("UPDATE soorin_ingestion_receipts SET failure_code='soc_source_busy_retry',updated_at=now() WHERE id=$1 AND status NOT IN ('bound','quarantined')")
             .bind(id).execute(&state.pool).await?;
         return Err(wait_for_dependency("soc_source_busy_retry"));
     }
@@ -514,6 +514,7 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
             "soc_revision_predecessor_pending",
             "soc_revision_predecessor_failed",
             "soc_document_failed",
+            "soc_document_repair_required",
             "soc_binding_rejected",
             "soc_identity_conflict",
         ]
@@ -521,7 +522,7 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
         .find(|code| message.starts_with(code))
         .unwrap_or("soc_ingest_retryable_failure");
         let _ = sqlx::query(
-            "UPDATE soorin_ingestion_receipts SET failure_code=$2,updated_at=now() WHERE id=$1",
+            "UPDATE soorin_ingestion_receipts SET failure_code=$2,updated_at=now() WHERE id=$1 AND status NOT IN ('bound','quarantined')",
         )
         .bind(id)
         .bind(code)
@@ -536,6 +537,36 @@ fn wait_for_dependency(code: &'static str) -> anyhow::Error {
         15,
     )))
     .context(code)
+}
+
+#[derive(sqlx::FromRow)]
+struct FailedChild {
+    document_id: Uuid,
+    kind: String,
+    failure_class: Option<String>,
+}
+
+// Only the failed prerequisite for this document matters. An unrelated
+// enrichment delivery cannot repair a failed extract or prove it permanent.
+async fn failed_child<'e>(
+    executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    kb: Uuid,
+    source: Uuid,
+    external_key: &str,
+) -> Result<Option<FailedChild>, sqlx::Error> {
+    sqlx::query_as(
+        "WITH dependency AS (
+            SELECT id, CASE WHEN status='failed' THEN 'process_document' ELSE 'extract_document' END AS kind
+            FROM documents WHERE kb_id=$1 AND source_id=$2 AND external_key=$3
+              AND deleted_at IS NULL AND (status='failed' OR graph_status='failed')
+         ) SELECT d.id AS document_id,d.kind,
+             (SELECT failure_class FROM jobs j WHERE j.payload->>'document_id'=d.id::text
+              AND j.kind=d.kind ORDER BY id DESC LIMIT 1) AS failure_class
+           FROM dependency d WHERE NOT EXISTS (
+             SELECT 1 FROM jobs j WHERE j.payload->>'document_id'=d.id::text
+             AND j.kind=d.kind AND j.status IN ('queued','running'))",
+    )
+    .bind(kb).bind(source).bind(external_key).fetch_optional(executor).await
 }
 
 fn source_clock_advances(
@@ -705,10 +736,11 @@ async fn process_locked(
     }
     let rendered = render(event)?;
     let external_key = format!("statements:{}", field(&rendered, "external_id")?);
-    let document_failed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents d WHERE source_id=$1 AND external_key=$2 AND deleted_at IS NULL AND (status='failed' OR graph_status='failed') AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.payload->>'document_id'=d.id::text AND j.kind IN ('process_document','extract_document','soc_reembed_document') AND j.status IN ('queued','running')))")
-        .bind(source_id).bind(&external_key).fetch_one(&state.pool).await?;
-    if document_failed {
-        return Err(anyhow::Error::new(utopia_core::Terminal).context("soc_document_failed"));
+    if let Some(child) = failed_child(&state.pool, kb, source_id, &external_key).await? {
+        if child.failure_class.as_deref() == Some("terminal") {
+            return Err(anyhow::Error::new(utopia_core::Terminal).context("soc_document_failed"));
+        }
+        return Err(wait_for_dependency("soc_document_repair_required"));
     }
     let mut missing = false;
     let keys: Vec<&str> = event["entities"]
@@ -978,19 +1010,31 @@ pub async fn retry(
 ) -> ApiResult<Json<Value>> {
     utopia_store::access::require_kb(&state.pool, &user, kb, Role::Admin).await?;
     let mut tx = state.pool.begin().await?;
-    let row: Option<(String, Option<i64>)> = sqlx::query_as(
-        "SELECT status,job_id FROM soorin_ingestion_receipts WHERE kb_id=$1 AND id=$2 FOR UPDATE",
+    let row: Option<(String, Option<i64>, Uuid, Value)> = sqlx::query_as(
+        "SELECT status,job_id,source_id,payload FROM soorin_ingestion_receipts WHERE kb_id=$1 AND id=$2 FOR UPDATE",
     )
     .bind(kb)
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    let (status, previous) = row.ok_or(AppError::NotFound)?;
+    let (status, previous, source, event) = row.ok_or(AppError::NotFound)?;
     if matches!(status.as_str(), "bound" | "quarantined") {
         return Err(AppError::Conflict(
             "receipt is terminal; quarantine requires identity/revision review".into(),
         )
         .into());
+    }
+    if status == "submitted" {
+        let rendered = render(&event)?;
+        let key = format!("statements:{}", field(&rendered, "external_id")?);
+        if let Some(child) = failed_child(&mut *tx, kb, source, &key).await? {
+            if child.failure_class.as_deref() == Some("terminal") {
+                return Err(AppError::Conflict("repair terminal document dependency first".into()).into());
+            }
+            utopia_store::jobs::enqueue_unless_queued_tx(
+                &mut tx, &child.kind, json!({"document_id": child.document_id}),
+            ).await?;
+        }
     }
     let pending: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM jobs WHERE id=$1 AND status IN ('queued','running'))",
@@ -1004,7 +1048,7 @@ pub async fn retry(
         utopia_store::jobs::enqueue_with_max_attempts_tx(
             &mut tx,
             "soc_ingest",
-            json!({"receipt_id":id,"kb_id":kb}),
+            json!({"receipt_id":id,"kb_id":kb,"source_id":source}),
             5,
         )
         .await?

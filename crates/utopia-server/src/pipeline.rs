@@ -215,6 +215,31 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let did = document_id.to_string();
     tokio::task::spawn_blocking(move || search.reindex_document(&kb, &did, &chunk_pairs)).await??;
 
+    if pushed_statements {
+        let extracts = source_extracts(state, doc.source_id).await?;
+        let mut tx = state.pool.begin().await?;
+        let updated = sqlx::query(
+            "UPDATE documents SET status='ready',graph_status=$3,error=NULL,reader_needed=NULL,
+             reader_task=NULL,text_len=$4,chunk_count=$5,updated_at=now()
+             WHERE id=$1 AND sha256=$2 AND deleted_at IS NULL",
+        )
+        .bind(document_id).bind(&doc.sha256)
+        .bind(if extracts { "queued" } else { "skipped" })
+        .bind(text_len).bind(chunk_count).execute(&mut *tx).await?;
+        if updated.rows_affected() == 1 {
+            let payload = serde_json::json!({"document_id":document_id});
+            if extracts {
+                utopia_store::jobs::enqueue_unless_queued_tx(&mut tx, "extract_document", payload.clone()).await?;
+            }
+            if settings.as_ref().is_some_and(|s| s.embed_ready()) {
+                utopia_store::jobs::enqueue_unless_queued_tx(&mut tx, "soc_reembed_document", payload).await?;
+            }
+        }
+        tx.commit().await?;
+        state.emit_document(doc.kb_id, document_id);
+        return Ok(());
+    }
+
     // 4. embedding（工作区配置了 embedding 模型才做；没配也算 ready，先享受 BM25 搜索）
     if let Some((settings, client)) = embedder(settings.as_ref()) {
         utopia_store::documents::set_status(&state.pool, document_id, "embedding").await?;
@@ -239,7 +264,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
 
     // 两段式：索引就绪后，若配置了对话模型则排队图谱抽取（不阻塞可搜可问）。
     // 推送来的陈述不问模型（0054），没配也排
-    if pushed_statements || settings.as_ref().is_some_and(|s| s.chat_ready()) {
+    if settings.as_ref().is_some_and(|s| s.chat_ready()) {
         utopia_store::documents::set_graph_status(&state.pool, document_id, "queued").await?;
         utopia_store::jobs::enqueue(
             &state.pool,
