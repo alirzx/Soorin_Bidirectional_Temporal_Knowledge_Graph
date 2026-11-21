@@ -816,7 +816,7 @@ pub async fn receipts(
     Path(kb): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
     utopia_store::access::require_kb(&state.pool, &user, kb, Role::Admin).await?;
-    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('receipt_id',r.id,'source_id',r.source_id,'status',r.status,'failure_code',r.failure_code,'created_at',r.created_at,'updated_at',r.updated_at,'job_id',r.job_id,'job_status',j.status,'attempts',j.attempts,'max_attempts',j.max_attempts,'age_seconds',extract(epoch from now()-r.created_at)) FROM soorin_ingestion_receipts r LEFT JOIN jobs j ON j.id=r.job_id WHERE r.kb_id=$1 ORDER BY r.created_at DESC LIMIT 100").bind(kb).fetch_all(&state.pool).await?;
+    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('receipt_id',r.id,'source_id',r.source_id,'status',r.status,'failure_code',r.failure_code,'created_at',r.created_at,'updated_at',r.updated_at,'job_id',r.job_id,'job_status',j.status,'attempts',j.attempts,'max_attempts',j.max_attempts,'delivery_state',v.delivery_state,'failure_class',v.failure_class,'age_seconds',extract(epoch from now()-r.created_at)) FROM soorin_ingestion_receipts r JOIN soorin_receipt_delivery v ON v.id=r.id LEFT JOIN jobs j ON j.id=r.job_id WHERE r.kb_id=$1 ORDER BY r.created_at DESC LIMIT 100").bind(kb).fetch_all(&state.pool).await?;
     let counts:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('status',status,'count',count(*)) FROM soorin_ingestion_receipts WHERE kb_id=$1 GROUP BY status ORDER BY status").bind(kb).fetch_all(&state.pool).await?;
     Ok(Json(
         json!({"schema_version":"soorin.ingestion-status.v1","counts":counts,"receipts":rows,"limit":100}),
@@ -968,11 +968,13 @@ pub async fn diagnostics(
     .bind(&key)
     .fetch_optional(&state.pool)
     .await?;
+    let delivery: String = sqlx::query_scalar("SELECT delivery_state FROM soorin_receipt_delivery WHERE kb_id=$1 AND id=$2")
+        .bind(kb).bind(id).fetch_one(&state.pool).await?;
     let entities = receipt_entities(&state.pool, kb, &event).await?;
     let jobs: Vec<Value> = sqlx::query_scalar(
         "SELECT jsonb_build_object('job_id',id,'kind',kind,'status',status,'attempts',attempts,
           'max_attempts',max_attempts,'run_at',run_at,'updated_at',updated_at,
-          'deferred_since',payload->'deferred_since') FROM jobs
+          'failure_class',failure_class,'deferred_since',payload->'deferred_since') FROM jobs
          WHERE payload->>'receipt_id'=$1 OR (payload->>'kb_id'=$2 AND kind IN ('align_types','align_phrases','materialize_typed'))
          OR payload->>'document_id'=$3 ORDER BY id DESC LIMIT 30"
     ).bind(id.to_string()).bind(kb.to_string())
@@ -995,7 +997,7 @@ pub async fn diagnostics(
     Ok(Json(
         json!({"schema_version":"soorin.receipt-diagnostics.v1","receipt_id":id,
         "source_id":source,"source_scope":{"tenant_id":event["tenant_id"],"source_system":event["source_system"],"source_instance":event["source_instance"]},
-        "status":status,"failure_code":failure,"document":document,"evidence_view":"current_document_version",
+        "status":status,"delivery_state":delivery,"failure_code":failure,"document":document,"evidence_view":"current_document_version",
         "entities":entities,"relations":relations,"unsupported_relation_count":unsupported_relations,
         "jobs":jobs,"job_limit":30,"relation_limit":512,
         "relations_truncated":event["relations"].as_array().is_some_and(|rows| rows.len()>512),
