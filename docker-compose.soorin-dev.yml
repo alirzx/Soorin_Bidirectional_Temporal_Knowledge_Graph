@@ -35,6 +35,8 @@ services:
         APT_LAST_DEBIAN_URL: ${APT_LAST_DEBIAN_URL:-https://mirrors.huaweicloud.com/repository/debian}
         APT_LAST_SECURITY_URL: ${APT_LAST_SECURITY_URL:-https://mirrors.huaweicloud.com/repository/debian-security}
     environment:
+      UTOPIA_MODEL_READ_SECONDS: ${UTOPIA_MODEL_READ_SECONDS:-}
+      UTOPIA_EMBED_BATCH_LIMITS: ${UTOPIA_EMBED_BATCH_LIMITS:-}
       UTOPIA_DATABASE_URL: postgres://utopia:${SOORIN_DEV_DB_PASSWORD:-utopia-dev-only}@db:5432/utopia
       UTOPIA_BIND_ADDR: 0.0.0.0:1516
       UTOPIA_WEB_DIST: /app/web-dist

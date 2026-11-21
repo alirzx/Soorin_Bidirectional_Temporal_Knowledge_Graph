@@ -18,7 +18,12 @@ pub async fn limit_for(pool: &PgPool, base_url: &str, model: &str) -> AppResult<
     limit_with_default(pool, base_url, model, None).await
 }
 
-pub async fn limit_with_default(pool: &PgPool, base_url: &str, model: &str, provider_default: Option<usize>) -> AppResult<usize> {
+pub async fn limit_with_default(
+    pool: &PgPool,
+    base_url: &str,
+    model: &str,
+    provider_default: Option<usize>,
+) -> AppResult<usize> {
     let row: Option<(i32,)> = sqlx::query_as(
         "SELECT max_concurrent FROM model_concurrency WHERE base_url = $1 AND model = $2",
     )
@@ -29,7 +34,9 @@ pub async fn limit_with_default(pool: &PgPool, base_url: &str, model: &str, prov
     if let Some((n,)) = row {
         return Ok(n.max(1) as usize);
     }
-    if let Some(limit) = provider_default { return Ok(limit); }
+    if let Some(limit) = provider_default {
+        return Ok(limit);
+    }
     let (dflt,): (i32,) =
         sqlx::query_as("SELECT default_model_concurrency FROM deployment_settings LIMIT 1")
             .fetch_optional(pool)

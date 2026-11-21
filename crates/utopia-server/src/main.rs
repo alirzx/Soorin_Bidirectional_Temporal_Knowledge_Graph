@@ -99,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    utopia_llm::model_request_limits()?;
     let cfg = AppConfig::load()?;
 
     // 迁移要建表建触发器，运行时不需要那些权限。两者分开，应用才能用一个
@@ -204,19 +205,19 @@ async fn main() -> anyhow::Result<()> {
                 //
                 // 没救的失败在这里挂上标记，队列据此不再退避重试（#195）：
                 // 判据在这一侧，因为 `utopia-store` 看不见 LLM 的错误类型
-                let result = dispatch(&st, &job)
-                    .await
-                    .map_err(|e| {
-                        if alerting::hopeless(&e) {
-                            e.context(utopia_core::Terminal)
-                        } else if let Some((_, retry)) = utopia_llm::transient(&e) {
-                            let delay = retry.unwrap_or(std::time::Duration::from_secs(15))
-                                .clamp(std::time::Duration::from_secs(1), std::time::Duration::from_secs(3600));
-                            e.context(utopia_core::Deferred::new(delay))
-                        } else {
-                            e
-                        }
-                    });
+                let result = dispatch(&st, &job).await.map_err(|e| {
+                    if alerting::hopeless(&e) {
+                        e.context(utopia_core::Terminal)
+                    } else if let Some((_, retry)) = utopia_llm::transient(&e) {
+                        let delay = retry.unwrap_or(std::time::Duration::from_secs(15)).clamp(
+                            std::time::Duration::from_secs(1),
+                            std::time::Duration::from_secs(3600),
+                        );
+                        e.context(utopia_core::Deferred::new(delay))
+                    } else {
+                        e
+                    }
+                });
                 if let Err(e) = &result {
                     alerting::observe_job_failure(&st, &job, e).await;
                 }
