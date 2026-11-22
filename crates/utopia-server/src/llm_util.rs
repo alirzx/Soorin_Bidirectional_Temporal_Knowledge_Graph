@@ -207,16 +207,17 @@ impl ModelGates {
 /// 不走这里——让人打字等在十个后台抽取后面，产品就成了坏的；真正会打爆
 /// 供应商速率限制的也从来不是一个人在打字。
 ///
-/// 限额读不到（表还没建、库暂时不可达）时**放行**：并发限制是保护措施，
-/// 不该因为读不到配置而把整条流水线卡死。
+/// If the configured capacity cannot be read, allow one background call.
 pub async fn acquire(
     state: &AppState,
     base_url: &str,
     model: &str,
 ) -> Option<OwnedSemaphorePermit> {
-    let limit = utopia_store::model_limits::limit_for(&state.pool, base_url, model)
-        .await
-        .ok()?;
+    let default = (model == utopia_llm::SOORIN_CPU_EMBED_MODEL).then_some(1);
+    let limit =
+        utopia_store::model_limits::limit_with_default(&state.pool, base_url, model, default)
+            .await
+            .unwrap_or(1);
     let key = format!("{base_url}|{model}");
     state
         .model_gates

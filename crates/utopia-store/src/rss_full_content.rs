@@ -14,6 +14,14 @@ pub const HYDRATION_JOB_KIND: &str = "hydrate_rss_entry";
 /// Re-admit failed hydration jobs through the same source lock, generation,
 /// purge fence and capacity limit as first admission. Generic jobs exclude these.
 pub async fn requeue_failed(pool: &PgPool, scope: crate::jobs::RequeueScope<'_>) -> AppResult<u64> {
+    requeue_with_policy(pool, scope, false).await
+}
+
+pub async fn requeue_with_policy(
+    pool: &PgPool,
+    scope: crate::jobs::RequeueScope<'_>,
+    include_terminal: bool,
+) -> AppResult<u64> {
     let mut count = 0;
     if scope.kind.is_some_and(|kind| kind != HYDRATION_JOB_KIND) {
         return Ok(count);
@@ -66,17 +74,18 @@ pub async fn requeue_failed(pool: &PgPool, scope: crate::jobs::RequeueScope<'_>)
              WHERE e.source_id = $1 AND e.activation_generation = $2
                AND j.kind = 'hydrate_rss_entry' AND j.status = 'failed'
                AND ($3::timestamptz IS NULL OR j.updated_at >= $3)
+               AND ($5 OR j.failure_class IS DISTINCT FROM 'terminal')
                AND j.payload ? 'observed_at'
                AND NOT EXISTS (
                  SELECT 1 FROM document_deletions dd JOIN documents d ON d.id = dd.document_id
                  WHERE d.source_id = e.source_id AND dd.external_key = e.external_key
                    AND GREATEST(dd.created_at, d.purged_at) >= (j.payload->>'observed_at')::timestamptz)
              ORDER BY j.id LIMIT $4 FOR UPDATE OF e, j",
-        ).bind(source_id).bind(generation).bind(scope.failed_since).bind(capacity)
+        ).bind(source_id).bind(generation).bind(scope.failed_since).bind(capacity).bind(include_terminal)
             .fetch_all(&mut *tx).await?;
         let requeued = sqlx::query(
             "UPDATE jobs SET status = 'queued', attempts = 0, last_error = NULL,
-             locked_at = NULL, run_at = now(), updated_at = now()
+             failure_class=NULL, payload=payload - 'deferred_since', locked_at = NULL, run_at = now(), updated_at = now()
              WHERE id = ANY($1) AND status = 'failed'",
         )
         .bind(&jobs)

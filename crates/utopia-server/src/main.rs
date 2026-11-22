@@ -99,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    utopia_llm::model_request_limits()?;
     let cfg = AppConfig::load()?;
 
     // 迁移要建表建触发器，运行时不需要那些权限。两者分开，应用才能用一个
@@ -139,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!(rows = sealed, "凭据补封完成");
     }
 
+    let owner = utopia_store::jobs::worker_owner(&pool).await?;
     let index_dir = std::path::Path::new(&cfg.data_dir).join("index");
     let search = Arc::new(SearchIndex::open(&index_dir)?);
     tracing::info!("全文索引就绪: {}", index_dir.display());
@@ -193,8 +195,10 @@ async fn main() -> anyhow::Result<()> {
 
     // 任务分发：新任务类型在这里注册
     let worker_state = state.clone();
-    tokio::spawn(utopia_store::jobs::run_worker(
+    let shutdown_workers = state.worker_concurrency.clone();
+    let mut worker = tokio::spawn(utopia_store::jobs::run_worker(
         pool,
+        owner,
         state.worker_concurrency.clone(),
         move |job| {
             let st = worker_state.clone();
@@ -204,12 +208,19 @@ async fn main() -> anyhow::Result<()> {
                 //
                 // 没救的失败在这里挂上标记，队列据此不再退避重试（#195）：
                 // 判据在这一侧，因为 `utopia-store` 看不见 LLM 的错误类型
-                let result = dispatch(&st, &job)
-                    .await
-                    .map_err(|e| match alerting::hopeless(&e) {
-                        true => e.context(utopia_core::Terminal),
-                        false => e,
-                    });
+                let result = dispatch(&st, &job).await.map_err(|e| {
+                    if alerting::hopeless(&e) {
+                        e.context(utopia_core::Terminal)
+                    } else if let Some((_, retry)) = utopia_llm::transient(&e) {
+                        let delay = retry.unwrap_or(std::time::Duration::from_secs(15)).clamp(
+                            std::time::Duration::from_secs(1),
+                            std::time::Duration::from_secs(3600),
+                        );
+                        e.context(utopia_core::Deferred::new(delay))
+                    } else {
+                        e
+                    }
+                });
                 if let Err(e) = &result {
                     alerting::observe_job_failure(&st, &job, e).await;
                 }
@@ -339,7 +350,15 @@ async fn main() -> anyhow::Result<()> {
     // with_connect_info：审计需要真实的 TCP 对端地址。直连部署时它是唯一真值——
     // X-Forwarded-For 那些头此时并不存在，且本就不可轻信。
     let svc = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
-    axum::serve(listener, svc).await?;
+    use std::future::IntoFuture;
+    tokio::select! {
+        result = axum::serve(listener, svc).with_graceful_shutdown(shutdown_signal()).into_future() => {
+            result?;
+            shutdown_workers.store(0,std::sync::atomic::Ordering::Release);
+            worker.await??;
+        }
+        result = &mut worker => { result??; anyhow::bail!("queue worker stopped"); }
+    }
     Ok(())
 }
 
@@ -348,6 +367,18 @@ async fn main() -> anyhow::Result<()> {
 ///
 /// 单拎成函数而不是内联在闭包里，是为了让失败**有一个统一的出口**——
 /// 上面那层要在每次失败时看一眼错误链，内联的话每个分支都得自己记得。
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! { _ = terminate.recv() => {}, _ = tokio::signal::ctrl_c() => {} }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
+}
+
 async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow::Result<()> {
     match job.kind.as_str() {
         "soc_reembed_document" => {
@@ -512,12 +543,7 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                     }
                     // 有新行才值得勘误看一眼；没新行的重算不排
                     if typed.added > 0 {
-                        utopia_store::jobs::enqueue_unless_queued(
-                            &st.pool,
-                            utopia_store::errata::JOB_KIND,
-                            serde_json::json!({ "kb_id": kb_id }),
-                        )
-                        .await?;
+                        errata::schedule_if_ready(st, kb_id).await?;
                     }
                     // 队列卡片按绑定的状态显示，重算完了才算这条判定「落地」
                     st.emit_review(kb_id);

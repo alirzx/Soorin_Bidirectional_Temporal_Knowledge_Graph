@@ -449,12 +449,7 @@ pub async fn delete(
 
     // 墓碑，不是减法（#268）：文档、分块、证据、原始文件都留着；只作废没有别的出处的事实
     let report = utopia_store::documents::delete(&state.pool, doc.kb_id, id, Some(user.id)).await?;
-    let search = state.search.clone();
-    let did = id.to_string();
-    tokio::task::spawn_blocking(move || search.delete_document(&did))
-        .await
-        .map_err(|e| AppError::Other(e.into()))?
-        .map_err(AppError::Other)?;
+    crate::pipeline::index_current(&state,id,None).await.map_err(AppError::Other)?;
     // 前提作废了，靠它推出来的派生随之失效——不等下一次定时重推
     settle_derivations(&state, doc.kb_id).await?;
     let _ = utopia_store::audit::record(
@@ -543,17 +538,8 @@ pub async fn purge(
 
 /// 复活的文档回到全文索引：分块的正文一直都在，只是重写一遍索引条目
 pub async fn reindex(state: &AppState, doc: &Document) -> utopia_core::AppResult<()> {
-    let chunks =
-        utopia_store::documents::chunks_in_document(&state.pool, doc.kb_id, doc.id).await?;
-    let pairs: Vec<(String, String)> = chunks
-        .into_iter()
-        .map(|c| (c.id.to_string(), c.text))
-        .collect();
-    let search = state.search.clone();
-    let (kb, did) = (doc.kb_id.to_string(), doc.id.to_string());
-    tokio::task::spawn_blocking(move || search.reindex_document(&kb, &did, &pairs))
+    crate::pipeline::index_current(state, doc.id, Some(&doc.sha256))
         .await
-        .map_err(|e| AppError::Other(e.into()))?
         .map_err(AppError::Other)?;
     Ok(())
 }

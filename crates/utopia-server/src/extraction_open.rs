@@ -21,8 +21,8 @@
 //! 之后由时间解析那一步按节写到陈述上（`time_resolution::attest_statements`）。
 
 use crate::extraction::{
-    chat_retrying_rate_limits_at, drop_signal, incomplete_reason, origin_ceiling, resolve_handle,
-    span_in_quote,
+    chat_retrying_rate_limits_at, drop_signal, incomplete_reason, name_in_chunk, origin_ceiling,
+    resolve_handle,
 };
 use crate::state::AppState;
 use sqlx::PgPool;
@@ -292,7 +292,7 @@ async fn apply_open_extraction(
             }
             // 名字就在这一块原文里时，给名字事实补出处（0041）。记忆日志里的不补：
             // 那一句算不算出处，要等人点头（0018）
-            if !await_nod && span_in_quote(name, &chunk.text) {
+            if !await_nod && name_in_chunk(name, &chunk.text) {
                 let _ = utopia_store::names::record(
                     pool,
                     kb_id,
@@ -655,7 +655,7 @@ async fn apply_open_extraction(
             .await;
             continue;
         };
-        if !span_in_quote(name, &chunk.text) {
+        if !name_in_chunk(name, &chunk.text) {
             drop_signal(
                 state,
                 kb_id,
@@ -1083,6 +1083,9 @@ pub(crate) async fn run_open(
                 ..entry.clone()
             });
         }
+        if utopia_store::documents::extract_epoch(pool, document_id).await? != my_epoch {
+            return Ok(());
+        }
         apply_open_extraction(
             state,
             pool,
@@ -1124,7 +1127,19 @@ pub(crate) async fn run_open(
     // 抽不成的话，让它后面每一句的确认卡都不出现（#1187）。错留到最后再报
     let incomplete = incomplete_reason(&unextracted, chunks.len());
     if incomplete.is_none() {
-        utopia_store::documents::set_graph_status(pool, document_id, "done").await?;
+        if sqlx::query(
+            "UPDATE documents SET graph_status='done',graph_error=NULL,updated_at=now()
+            WHERE id=$1 AND extract_epoch=$2 AND deleted_at IS NULL",
+        )
+        .bind(document_id)
+        .bind(my_epoch)
+        .execute(pool)
+        .await?
+        .rows_affected()
+            == 0
+        {
+            return Ok(());
+        }
         state.emit_document(kb_id, document_id);
     }
     state.emit_graph(kb_id);

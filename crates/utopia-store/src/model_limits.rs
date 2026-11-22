@@ -15,6 +15,15 @@ use utopia_core::AppResult;
 /// 每次 LLM 调用前查一次——相对于一次动辄二十几秒的调用，这个查询的成本可以
 /// 忽略，换来的是"管理员改完即时生效"，不必做缓存失效。
 pub async fn limit_for(pool: &PgPool, base_url: &str, model: &str) -> AppResult<usize> {
+    limit_with_default(pool, base_url, model, None).await
+}
+
+pub async fn limit_with_default(
+    pool: &PgPool,
+    base_url: &str,
+    model: &str,
+    provider_default: Option<usize>,
+) -> AppResult<usize> {
     let row: Option<(i32,)> = sqlx::query_as(
         "SELECT max_concurrent FROM model_concurrency WHERE base_url = $1 AND model = $2",
     )
@@ -24,6 +33,9 @@ pub async fn limit_for(pool: &PgPool, base_url: &str, model: &str) -> AppResult<
     .await?;
     if let Some((n,)) = row {
         return Ok(n.max(1) as usize);
+    }
+    if let Some(limit) = provider_default {
+        return Ok(limit);
     }
     let (dflt,): (i32,) =
         sqlx::query_as("SELECT default_model_concurrency FROM deployment_settings LIMIT 1")

@@ -127,6 +127,8 @@ async fn a_judged_entity_waits_its_turn() -> anyhow::Result<()> {
         let first = jobs::enqueue_unless_queued(&pool, "resolve_types", payload.clone()).await?;
         assert!(first.is_some());
         job_ids.extend(first);
+        sqlx::query("UPDATE jobs SET payload = payload || jsonb_build_object('deferred_since', now()) WHERE id = $1")
+            .bind(first).execute(&pool).await?;
         let second = jobs::enqueue_unless_queued(&pool, "resolve_types", payload.clone()).await?;
         assert!(second.is_none(), "one queued job per base is enough");
         sqlx::query("UPDATE jobs SET status = 'done' WHERE id = $1")

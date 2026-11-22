@@ -21,6 +21,17 @@ class CpuServiceTests(unittest.TestCase):
         self.assertTrue(gate.acquire())
         gate.release()
 
+    def test_queue_configuration_reports_effective_capacity(self):
+        with patch.dict('os.environ', {'SOORIN_MODEL_QUEUE_CAPACITY': '0'}):
+            gate = InferenceGate.configured()
+            self.assertEqual(gate.queue_capacity, 0)
+            self.assertTrue(gate.acquire())
+            self.assertFalse(gate.acquire())
+            gate.release()
+        with patch.dict('os.environ', {'SOORIN_MODEL_QUEUE_CAPACITY': '8'}):
+            with self.assertRaises(ValueError):
+                InferenceGate.configured()
+
     def test_capacity_overflow_does_not_wait(self):
         gate = InferenceGate(capacity=1, wait_seconds=10)
         self.assertTrue(gate.acquire())

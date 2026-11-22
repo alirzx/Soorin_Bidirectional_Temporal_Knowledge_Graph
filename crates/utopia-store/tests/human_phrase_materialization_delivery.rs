@@ -143,7 +143,8 @@ async fn delivery_rollback_late_arrivals_recovery_and_cost() -> anyhow::Result<(
         let (sent,mut received)=tokio::sync::mpsc::unbounded_channel();
         let worker_pool=pool.clone();
         let run_pool=pool.clone();
-        let worker=tokio::spawn(jobs::run_worker(worker_pool,std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1)),move |job| {
+        let owner=jobs::worker_owner(&worker_pool).await?;
+        let worker=tokio::spawn(jobs::run_worker(worker_pool,owner,std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1)),move |job| {
             let pool=run_pool.clone(); let sent=sent.clone();
             async move {
                 anyhow::ensure!(job.kind=="test_human_phrase_materialize");

@@ -24,6 +24,29 @@ pub struct Job {
     pub locked_at: DateTime<Utc>,
 }
 
+// Retry bookkeeping belongs to the queue, not to the logical delivery identity.
+fn delivery_payload(mut payload: serde_json::Value) -> serde_json::Value {
+    if let Some(fields) = payload.as_object_mut() {
+        fields.remove("deferred_since");
+    }
+    payload
+}
+
+async fn lock_delivery(
+    tx: &mut Transaction<'_, Postgres>,
+    kind: &str,
+    payload: &serde_json::Value,
+) -> AppResult<()> {
+    // Serialize the short check-and-insert transaction for identical deliveries.
+    // A running job must not suppress a later delivery after its snapshot read.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+        .bind(kind)
+        .bind(payload.to_string())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// 同种任务、同样载荷已经排着就不再排：一批文档各自抽完都想触发同一个库级任务
 /// （类型消解、对账），排十次跑十次是浪费，而且后九次看到的是第一次跑完的库。
 /// 返回 None = 已有一条在排队
@@ -44,11 +67,14 @@ pub async fn enqueue_unless_pending(
     after: Duration,
 ) -> AppResult<Option<i64>> {
     let mut tx = pool.begin().await?;
+    let payload = delivery_payload(payload);
+    lock_delivery(&mut tx, kind, &payload).await?;
     let row: Option<(i64,)> = sqlx::query_as(
         "INSERT INTO jobs (kind, payload, run_at)
          SELECT $1, $2, now() + make_interval(secs => $3)
           WHERE NOT EXISTS (SELECT 1 FROM jobs
-                             WHERE kind = $1 AND payload = $2
+                             WHERE kind = $1 AND (payload = $2 OR
+                                   (payload ? 'deferred_since' AND payload - 'deferred_since' = $2))
                                AND status IN ('queued', 'running'))
          RETURNING id",
     )
@@ -83,17 +109,13 @@ pub async fn enqueue_unless_queued_tx(
     kind: &str,
     payload: serde_json::Value,
 ) -> AppResult<Option<i64>> {
-    // Serialize the short check-and-insert transaction for identical deliveries.
-    // A running job must not suppress a later delivery after its snapshot read.
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
-        .bind(kind)
-        .bind(payload.to_string())
-        .execute(&mut **tx)
-        .await?;
+    let payload = delivery_payload(payload);
+    lock_delivery(tx, kind, &payload).await?;
     let row: Option<(i64,)> = sqlx::query_as(
         "INSERT INTO jobs (kind, payload)
          SELECT $1, $2
-          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND payload = $2 AND status = 'queued')
+          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND (payload = $2 OR
+                                   (payload ? 'deferred_since' AND payload - 'deferred_since' = $2)) AND status = 'queued')
          RETURNING id",
     )
     .bind(kind)
@@ -115,10 +137,13 @@ pub async fn enqueue_unless_queued_after(
     after: Duration,
 ) -> AppResult<Option<i64>> {
     let mut tx = pool.begin().await?;
+    let payload = delivery_payload(payload);
+    lock_delivery(&mut tx, kind, &payload).await?;
     let row: Option<(i64,)> = sqlx::query_as(
         "INSERT INTO jobs (kind, payload, run_at)
          SELECT $1, $2, now() + make_interval(secs => $3)
-          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND payload = $2 AND status = 'queued')
+          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND (payload = $2 OR
+                                   (payload ? 'deferred_since' AND payload - 'deferred_since' = $2)) AND status = 'queued')
          RETURNING id",
     )
     .bind(kind)
@@ -286,11 +311,22 @@ const KB_SCOPE: &str = "(
 /// 其他处理器都是幂等的（启动时回收孤儿就靠这一点）；
 /// 此前 `failed` 是终点，余额耗尽一批文档全失败，充值之后只能逐个点或整源重抽
 pub async fn requeue_failed(pool: &PgPool, scope: RequeueScope<'_>) -> AppResult<u64> {
+    requeue_with_policy(pool, scope, false).await
+}
+
+pub async fn requeue_with_policy(
+    pool: &PgPool,
+    scope: RequeueScope<'_>,
+    include_terminal: bool,
+) -> AppResult<u64> {
     let mut tx = pool.begin().await?;
     let sql = format!(
         "UPDATE jobs j
-            SET status = 'queued', attempts = 0, run_at = now(), updated_at = now()
+            SET status = 'queued', attempts = 0, run_at = now(), updated_at = now(),
+                failure_class = NULL, last_error = NULL,
+                payload = CASE WHEN jsonb_typeof(payload)='object' THEN payload - 'deferred_since' ELSE payload END
           WHERE j.status = 'failed' AND j.kind <> 'hydrate_rss_entry'
+            AND ($4 OR j.failure_class IS DISTINCT FROM 'terminal')
             AND ($1::text IS NULL OR j.kind = $1)
             AND ($2::timestamptz IS NULL OR j.updated_at >= $2)
             AND ($3::uuid IS NULL OR {})",
@@ -300,6 +336,7 @@ pub async fn requeue_failed(pool: &PgPool, scope: RequeueScope<'_>) -> AppResult
         .bind(scope.kind)
         .bind(scope.failed_since)
         .bind(scope.kb_id)
+        .bind(include_terminal)
         .execute(&mut *tx)
         .await?;
     let count = res.rows_affected();
@@ -329,6 +366,7 @@ pub struct JobStatus {
     pub attempts: i32,
     pub max_attempts: i32,
     pub last_error: Option<String>,
+    pub failure_class: Option<String>,
     pub run_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -337,7 +375,7 @@ pub struct JobStatus {
 /// 它的任务；别的库的任务 id 猜对了也只得到 None，与看不见的文档一样答 404。
 pub async fn status_in_kb(pool: &PgPool, kb_id: Uuid, id: i64) -> AppResult<Option<JobStatus>> {
     let sql = format!(
-        "SELECT j.id, j.kind, j.status, j.attempts, j.max_attempts, j.last_error, j.run_at, j.updated_at
+        "SELECT j.id, j.kind, j.status, j.attempts, j.max_attempts, j.last_error, j.failure_class, j.run_at, j.updated_at
            FROM jobs j WHERE j.id = $1 AND {}",
         KB_SCOPE.replace("$KB", "$2")
     );
@@ -349,20 +387,30 @@ pub async fn status_in_kb(pool: &PgPool, kb_id: Uuid, id: i64) -> AppResult<Opti
 }
 
 /// 认领一个到期任务；没有则返回 None。
-async fn claim_one(pool: &PgPool) -> AppResult<Option<Job>> {
+async fn claim_one(owner: &mut sqlx::PgConnection) -> AppResult<Option<Job>> {
     let job = sqlx::query_as(
         "UPDATE jobs SET status = 'running', locked_at = now(),
+                document_version = CASE WHEN kind IN ('process_document','extract_document') AND
+                    pg_input_is_valid(payload->>'document_id','uuid') THEN
+                    (SELECT max(version) FROM document_versions WHERE document_id=(jobs.payload->>'document_id')::uuid)
+                END,
                 attempts = attempts + 1, updated_at = now()
          WHERE id = (
              SELECT id FROM jobs
              WHERE status = 'queued' AND run_at <= now()
-             ORDER BY run_at
+               AND (kind <> 'soc_ingest' OR (NOT EXISTS (
+                 SELECT 1 FROM jobs active WHERE active.status='running' AND active.kind='soc_ingest'
+                   AND active.payload->>'source_id'=jobs.payload->>'source_id'
+               ) AND NOT EXISTS (
+                 SELECT 1 FROM soorin_ingestion_leases l
+                 WHERE l.source_id::text=jobs.payload->>'source_id' AND l.expires_at>=now())))
+             ORDER BY run_at, id
              FOR UPDATE SKIP LOCKED
              LIMIT 1
          )
          RETURNING id, kind, payload, attempts, max_attempts, locked_at",
     )
-    .fetch_optional(pool)
+    .fetch_optional(owner)
     .await?;
     Ok(job)
 }
@@ -412,6 +460,7 @@ fn deferred_retry_secs(retry_in: std::time::Duration) -> i64 {
 enum JobOutcome {
     Done,
     Failed {
+        class: &'static str,
         error: String,
         backoff_secs: Option<i64>,
         deferred_secs: Option<i64>,
@@ -428,6 +477,13 @@ impl JobOutcome {
             utopia_core::is_deferred(err).map(deferred_retry_secs)
         };
         Self::Failed {
+            class: if terminal {
+                "terminal"
+            } else if deferred_secs.is_some() {
+                "deferred"
+            } else {
+                "unknown"
+            },
             error: format!("{err:#}"),
             backoff_secs: retry_delay(job.attempts, job.max_attempts, terminal),
             deferred_secs,
@@ -443,6 +499,7 @@ async fn persist_outcome(
     completed_at: DateTime<Utc>,
 ) -> AppResult<bool> {
     let JobOutcome::Failed {
+        class,
         error,
         backoff_secs,
         deferred_secs,
@@ -450,7 +507,7 @@ async fn persist_outcome(
     else {
         // 成功要清掉前一次错误，避免任务显示 done 却仍带着失败原因。
         let res = sqlx::query(
-            "UPDATE jobs SET status = 'done', last_error = NULL, updated_at = now()
+            "UPDATE jobs SET status = 'done', failure_class = NULL, last_error = NULL, updated_at = now()
              WHERE id = $1 AND status = 'running' AND locked_at = $2",
         )
         .bind(job.id)
@@ -464,7 +521,7 @@ async fn persist_outcome(
         // Deferred 退回认领消耗的次数；等待窗口耗尽后才走普通失败预算。
         // 等待窗口和下次运行时刻固定在 handler 完成时，不随写回重试滑动。
         let res = sqlx::query(
-            "UPDATE jobs SET status = 'queued', last_error = $2,
+            "UPDATE jobs SET status = 'queued', failure_class = 'deferred', last_error = $2,
                     attempts = GREATEST(0, attempts - 1),
                     run_at = $4::timestamptz + make_interval(secs => $5::float8),
                     payload = payload || jsonb_build_object('deferred_since',
@@ -494,7 +551,7 @@ async fn persist_outcome(
         "failed"
     };
     let res = sqlx::query(
-        "UPDATE jobs SET status = $3, last_error = $4,
+        "UPDATE jobs SET status = $3, failure_class = $7, last_error = $4,
                 run_at = CASE WHEN $5::float8 IS NULL THEN run_at
                     ELSE $6::timestamptz + make_interval(secs => $5::float8) END,
                 updated_at = now()
@@ -506,6 +563,7 @@ async fn persist_outcome(
     .bind(error)
     .bind(backoff_secs.map(|secs| secs as f64))
     .bind(completed_at)
+    .bind(*class)
     .execute(pool)
     .await?;
     Ok(res.rows_affected() > 0)
@@ -567,7 +625,25 @@ async fn persist_with_retry(
 /// 空闲时等入队通知、2s 轮询兜底（#517）；每个任务在独立 tokio task 中执行，长抽取不再阻塞同步。
 /// `concurrency` 每轮热读——系统设置里改并发数即时生效。
 /// 任务分发逻辑由调用方以 handler 注入（store 不依赖上层 crate）。
-pub async fn run_worker<F, Fut>(pool: PgPool, concurrency: Arc<AtomicUsize>, handler: F)
+pub async fn worker_owner(pool: &PgPool) -> anyhow::Result<sqlx::PgConnection> {
+    use sqlx::Connection;
+    let mut conn = sqlx::PgConnection::connect_with(&pool.connect_options()).await?;
+    let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(6371059920174301)")
+        .fetch_one(&mut conn)
+        .await?;
+    anyhow::ensure!(
+        acquired,
+        "another application worker already owns this database"
+    );
+    Ok(conn)
+}
+
+pub async fn run_worker<F, Fut>(
+    pool: PgPool,
+    mut owner: sqlx::PgConnection,
+    concurrency: Arc<AtomicUsize>,
+    handler: F,
+) -> anyhow::Result<()>
 where
     F: Fn(Job) -> Fut + Clone + Send + Sync + 'static,
     Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
@@ -575,22 +651,14 @@ where
     let running = Arc::new(AtomicUsize::new(0));
     // 孤儿回收：进程被杀时 running 任务无人收尸，文档会永远停在 extracting。
     // 单进程部署下，启动时仍为 running 的必是孤儿——一律重排队（处理器均幂等）。
-    match sqlx::query(
-        "UPDATE jobs SET status = 'queued', locked_at = NULL, updated_at = now()
-         WHERE status = 'running'",
+    let recovered = sqlx::query(
+        "UPDATE jobs SET status='queued', locked_at=NULL, updated_at=now() WHERE status='running'",
     )
-    .execute(&pool)
-    .await
-    {
-        Ok(r) if r.rows_affected() > 0 => {
-            tracing::warn!(
-                count = r.rows_affected(),
-                "回收孤儿任务（上次进程退出时正在运行）"
-            );
-        }
-        Ok(_) => {}
-        Err(e) => tracing::error!(error = %e, "孤儿任务回收失败"),
-    }
+    .execute(&mut owner)
+    .await?
+    .rows_affected();
+    tracing::info!(recovered, "queue ownership acquired");
+    let finished = Arc::new(tokio::sync::Notify::new());
     tracing::info!(
         concurrency = concurrency.load(Ordering::Relaxed),
         "jobs worker 已启动"
@@ -598,15 +666,19 @@ where
     let mut listener = listen_for_jobs(&pool).await;
     loop {
         if pool.is_closed() {
-            return;
+            return Ok(());
         }
-        let cap = concurrency.load(Ordering::Relaxed).max(1);
+        let cap = concurrency.load(Ordering::Acquire);
+        if cap == 0 && running.load(Ordering::Acquire) == 0 {
+            return Ok(());
+        }
         if running.load(Ordering::Relaxed) >= cap {
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::select! { _ = finished.notified() => {}, _ = tokio::time::sleep(IDLE_POLL) => { sqlx::query("SELECT 1").execute(&mut owner).await?; } }
             continue;
         }
-        match claim_one(&pool).await {
-            Ok(Some(job)) => {
+        match claim_one(&mut owner).await? {
+            Some(job) => {
+                let finished = finished.clone();
                 running.fetch_add(1, Ordering::Relaxed);
                 let pool = pool.clone();
                 let handler = handler.clone();
@@ -638,14 +710,11 @@ where
                     };
                     persist_with_retry(&pool, &job, &outcome, completed_at).await;
                     running.fetch_sub(1, Ordering::Relaxed);
+                    finished.notify_one();
                 });
             }
-            Ok(None) => {
-                wait_for_work(listener.as_mut(), IDLE_POLL).await;
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "任务认领失败，5s 后重试");
-                tokio::time::sleep(Duration::from_secs(5)).await;
+            None => {
+                tokio::select! { _ = finished.notified() => {}, _ = wait_for_work(listener.as_mut(), IDLE_POLL) => {} }
             }
         }
     }

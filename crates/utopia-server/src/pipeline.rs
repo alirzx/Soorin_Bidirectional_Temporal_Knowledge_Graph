@@ -47,53 +47,44 @@ const EMBED_BATCH: usize = 16;
 const EMBED_JOBS: usize = 4;
 
 pub async fn process_document(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
-    match run(state, document_id).await {
+    let doc = utopia_store::documents::get(&state.pool, document_id).await?;
+    match run(state, &doc).await {
         Ok(()) => Ok(()),
-        // 在等读字的服务读完：文档照旧是 parsing，任务过一会儿再来问
         Err(e) if utopia_core::is_deferred(&e).is_some() => Err(e),
         Err(e) => {
-            let doc = utopia_store::documents::get(&state.pool, document_id)
-                .await
-                .ok();
-            // 字要靠模型读、而那种模型没配（0040）：**降级**。文件留着，文档停在 failed
-            // 并记下缺哪一种，报一条库级告警；配上模型会自己重新处理。重试没用——
-            // 模型不会在两分钟里自己配上，所以挂 Terminal。
-            // 转写回来却分不出说话人，跟没配一样对待（决定 5）：换个会标说话人的模型再来
-            let waiting = e
+            let reader = e
                 .downcast_ref::<utopia_ingest::NeedsReader>()
                 .map(|n| n.reader)
                 .or_else(|| {
                     e.downcast_ref::<utopia_ingest::NoSpeakers>()
                         .map(|_| utopia_ingest::Reader::Transcribe)
                 });
-            if let Some(reader) = waiting {
-                let _ = utopia_store::documents::set_needs_reader(
-                    &state.pool,
+            let written = sqlx::query(
+                "UPDATE documents SET status='failed',error=$3,reader_needed=$4,
+                reader_task=NULL,updated_at=now() WHERE id=$1 AND sha256=$2 AND deleted_at IS NULL",
+            )
+            .bind(document_id)
+            .bind(&doc.sha256)
+            .bind(e.to_string())
+            .bind(reader.map(|r| r.as_str()))
+            .execute(&state.pool)
+            .await?;
+            if written.rows_affected() == 0 {
+                return Ok(());
+            }
+            state.emit_document(doc.kb_id, document_id);
+            if let Some(reader) = reader {
+                crate::alerting::observe_document_needs_reader(
+                    state,
+                    doc.kb_id,
                     document_id,
-                    reader.as_str(),
+                    &doc.filename,
+                    reader,
                     &e.to_string(),
                 )
                 .await;
-                if let Some(doc) = &doc {
-                    crate::alerting::observe_document_needs_reader(
-                        state,
-                        doc.kb_id,
-                        document_id,
-                        &doc.filename,
-                        reader,
-                        &e.to_string(),
-                    )
-                    .await;
-                    state.emit_document(doc.kb_id, document_id);
-                }
                 return Err(e.context(utopia_core::Terminal));
             }
-            let _ =
-                utopia_store::documents::set_failed(&state.pool, document_id, &e.to_string()).await;
-            if let Some(doc) = &doc {
-                state.emit_document(doc.kb_id, document_id);
-            }
-            // 读不了的格式（视频、二进制、空文件）换多少次也一样
             if e.downcast_ref::<utopia_ingest::Unreadable>().is_some() {
                 return Err(e.context(utopia_core::Terminal));
             }
@@ -102,8 +93,34 @@ pub async fn process_document(state: &AppState, document_id: Uuid) -> anyhow::Re
     }
 }
 
-async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
-    let doc = utopia_store::documents::get(&state.pool, document_id).await?;
+// A revision update and a delayed index writer must agree on publication order.
+// The spawned task retains the row lock even if the requesting future is cancelled.
+pub(crate) async fn index_current(
+    state: &AppState,
+    document: Uuid,
+    live_sha: Option<&str>,
+) -> anyhow::Result<bool> {
+    let pool = state.pool.clone();
+    let search = state.search.clone();
+    let live_sha = live_sha.map(str::to_owned);
+    tokio::spawn(async move {
+        let mut tx = pool.begin().await?;
+        let kb: Option<Uuid> = sqlx::query_scalar(
+            "SELECT kb_id FROM documents WHERE id=$1 AND
+             ((sha256=$2 AND deleted_at IS NULL) OR ($2::text IS NULL AND deleted_at IS NOT NULL)) FOR NO KEY UPDATE"
+        ).bind(document).bind(live_sha.as_deref()).fetch_optional(&mut *tx).await?;
+        let Some(kb) = kb else { return Ok(false) };
+        let pairs: Vec<(String,String)> = if live_sha.is_some() { sqlx::query_as(
+            "SELECT id::text,text FROM chunks WHERE document_id=$1 AND superseded_at IS NULL ORDER BY seq"
+        ).bind(document).fetch_all(&mut *tx).await? } else { Vec::new() };
+        tokio::task::spawn_blocking(move || search.reindex_document(&kb.to_string(), &document.to_string(), &pairs)).await??;
+        tx.commit().await?;
+        Ok(true)
+    }).await?
+}
+
+async fn run(state: &AppState, doc: &utopia_core::models::Document) -> anyhow::Result<()> {
+    let document_id = doc.id;
     // 排队之后被删了（#268）：墓碑不重建分块、不回索引；清过的连原文都没了
     if doc.deleted_at.is_some() {
         tracing::info!(document = %document_id, "skipping a deleted document");
@@ -111,7 +128,19 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     }
 
     // 1. 解析（CPU 密集，放 blocking 线程）
-    utopia_store::documents::set_status(&state.pool, document_id, "parsing").await?;
+    if sqlx::query(
+        "UPDATE documents SET status='parsing',error=NULL,reader_needed=NULL,updated_at=now()
+        WHERE id=$1 AND sha256=$2 AND deleted_at IS NULL",
+    )
+    .bind(document_id)
+    .bind(&doc.sha256)
+    .execute(&state.pool)
+    .await?
+    .rows_affected()
+        == 0
+    {
+        return Ok(());
+    }
     state.emit_document(doc.kb_id, document_id);
     let bytes = state.blob.get(&doc.sha256).await?;
     let filename = doc.filename.clone();
@@ -157,13 +186,13 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             let reading = match (needs.reader, settings.as_ref()) {
                 (utopia_ingest::Reader::Ocr, Some(s)) => {
                     match crate::readers::Ocr::from_settings(s) {
-                        Some(ocr) => ocr.read(state, &doc, bytes).await?,
+                        Some(ocr) => ocr.read(state, doc, bytes).await?,
                         None => return Err(e),
                     }
                 }
                 (utopia_ingest::Reader::Transcribe, Some(s)) => {
                     match crate::readers::Transcriber::from_settings(s) {
-                        Some(t) => t.read(&doc, bytes).await?,
+                        Some(t) => t.read(doc, bytes).await?,
                         None => return Err(e),
                     }
                 }
@@ -208,12 +237,48 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     }
 
     // 3. 全文索引（Tantivy）
-    utopia_store::documents::set_status(&state.pool, document_id, "indexing").await?;
-    state.emit_document(doc.kb_id, document_id);
-    let search = state.search.clone();
-    let kb = doc.kb_id.to_string();
-    let did = document_id.to_string();
-    tokio::task::spawn_blocking(move || search.reindex_document(&kb, &did, &chunk_pairs)).await??;
+    if !index_current(state, document_id, Some(&doc.sha256)).await? {
+        return Ok(());
+    }
+
+    if pushed_statements {
+        let extracts = source_extracts(state, doc.source_id).await?;
+        let mut tx = state.pool.begin().await?;
+        let updated = sqlx::query(
+            "UPDATE documents SET status='ready',graph_status=$3,error=NULL,reader_needed=NULL,
+             reader_task=NULL,text_len=$4,chunk_count=$5,updated_at=now()
+             WHERE id=$1 AND sha256=$2 AND deleted_at IS NULL",
+        )
+        .bind(document_id)
+        .bind(&doc.sha256)
+        .bind(if extracts { "queued" } else { "skipped" })
+        .bind(text_len)
+        .bind(chunk_count)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() == 1 {
+            let payload = serde_json::json!({"document_id":document_id});
+            if extracts {
+                utopia_store::jobs::enqueue_unless_queued_tx(
+                    &mut tx,
+                    "extract_document",
+                    payload.clone(),
+                )
+                .await?;
+            }
+            if settings.as_ref().is_some_and(|s| s.embed_ready()) {
+                utopia_store::jobs::enqueue_unless_queued_tx(
+                    &mut tx,
+                    "soc_reembed_document",
+                    payload,
+                )
+                .await?;
+            }
+        }
+        tx.commit().await?;
+        state.emit_document(doc.kb_id, document_id);
+        return Ok(());
+    }
 
     // 4. embedding（工作区配置了 embedding 模型才做；没配也算 ready，先享受 BM25 搜索）
     if let Some((settings, client)) = embedder(settings.as_ref()) {
@@ -239,7 +304,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
 
     // 两段式：索引就绪后，若配置了对话模型则排队图谱抽取（不阻塞可搜可问）。
     // 推送来的陈述不问模型（0054），没配也排
-    if pushed_statements || settings.as_ref().is_some_and(|s| s.chat_ready()) {
+    if settings.as_ref().is_some_and(|s| s.chat_ready()) {
         utopia_store::documents::set_graph_status(&state.pool, document_id, "queued").await?;
         utopia_store::jobs::enqueue(
             &state.pool,
@@ -280,15 +345,9 @@ pub async fn memory_ingest(
         embed_each(state, settings, &client, document_id).await?;
     }
 
-    let chunks = utopia_store::documents::chunks_full(&state.pool, document_id).await?;
-    let pairs: Vec<(String, String)> = chunks
-        .iter()
-        .map(|c| (c.id.to_string(), c.text.clone()))
-        .collect();
-    let search = state.search.clone();
-    let kb = doc.kb_id.to_string();
-    let did = document_id.to_string();
-    tokio::task::spawn_blocking(move || search.reindex_document(&kb, &did, &pairs)).await??;
+    if !index_current(state, document_id, Some(&doc.sha256)).await? {
+        return Ok(());
+    }
 
     if settings.as_ref().is_some_and(|s| s.chat_ready()) {
         utopia_store::documents::set_graph_status(&state.pool, document_id, "queued").await?;

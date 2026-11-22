@@ -279,12 +279,104 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
         .bind(source)
         .fetch_one(&pool)
         .await?;
+    // A historical exhausted child has no persisted classification. Its
+    // parent must expose repair and retain the submitted source revision.
+    sqlx::query("UPDATE jobs SET status='failed' WHERE kind='process_document' AND payload->>'document_id'=$1")
+        .bind(doc.to_string()).execute(&pool).await?;
+    utopia_store::documents::set_failed(&pool, doc, "synthetic provider outage").await?;
+    sqlx::query("UPDATE jobs SET failure_class='terminal',document_version=(SELECT max(version) FROM document_versions WHERE document_id::text=$1) WHERE kind='process_document' AND payload->>'document_id'=$1")
+        .bind(doc.to_string()).execute(&pool).await?;
+    let terminal = soc_ingestion::process(&state, id).await.unwrap_err();
+    assert!(utopia_core::is_terminal(&terminal));
+    sqlx::query("UPDATE jobs SET document_version=0 WHERE kind='process_document' AND payload->>'document_id'=$1").bind(doc.to_string()).execute(&pool).await?;
+    assert!(
+        utopia_core::is_deferred(&soc_ingestion::process(&state, id).await.unwrap_err()).is_some()
+    );
+    sqlx::query("UPDATE jobs SET failure_class=NULL WHERE kind='process_document' AND payload->>'document_id'=$1")
+        .bind(doc.to_string()).execute(&pool).await?;
+    let dependency = soc_ingestion::process(&state, id).await.unwrap_err();
+    assert!(
+        utopia_core::is_deferred(&dependency).is_some(),
+        "{dependency:#}"
+    );
+    let calls = (0..5).map(|_| {
+        call(
+            app.clone(),
+            format!("/api/v1/kbs/{kb}/knowledge/receipts/{id}/retry"),
+            &session,
+            json!({}),
+        )
+    });
+    for result in futures_util::future::join_all(calls).await {
+        assert_eq!(result?.0, 200);
+    }
+    let repairs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind='process_document' AND payload->>'document_id'=$1 AND status='queued'")
+        .bind(doc.to_string()).fetch_one(&pool).await?;
+    assert_eq!(repairs, 1);
+    let provider = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(wiremock::ResponseTemplate::new(429).insert_header("Retry-After", "2"))
+        .mount(&provider)
+        .await;
+    sqlx::query("INSERT INTO llm_settings(workspace_id,embed_base_url,embed_model,embed_dim) VALUES($1,$2,'synthetic',2)")
+        .bind(ws).bind(provider.uri()).execute(&pool).await?;
     crate::pipeline::process_document(&state, doc).await?;
     crate::extraction::extract_document(&state, doc, Default::default()).await?;
     crate::soc_alignment::types(&pool, kb).await?;
     crate::soc_alignment::phrases(&pool, kb).await?;
     utopia_store::materialize::materialize(&pool, kb).await?;
     soc_ingestion::process(&state, id).await?;
+    let enrichment: utopia_store::jobs::Job = sqlx::query_as(
+        "SELECT id,kind,payload,attempts,max_attempts,now() AS locked_at FROM jobs WHERE kind='soc_reembed_document' AND payload->>'document_id'=$1",
+    ).bind(doc.to_string()).fetch_one(&pool).await?;
+    let unavailable = crate::dispatch(&state, &enrichment).await.unwrap_err();
+    assert_eq!(
+        utopia_llm::rate_limited(&unavailable).unwrap().retry_after,
+        Some(std::time::Duration::from_secs(2))
+    );
+    let search_path = format!("/api/v1/kbs/{kb}/search");
+    let (code, fallback) = call(
+        app.clone(),
+        search_path.clone(),
+        &session,
+        json!({"q":"A1"}),
+    )
+    .await?;
+    assert_eq!(code, 200);
+    assert_eq!(fallback["retrieval"]["dense_executed"], false);
+    assert_eq!(fallback["retrieval"]["lexical_method"], "tantivy_bm25");
+    crate::errata::schedule_if_ready(&state,kb).await?;
+    let errata_jobs:i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind='errata_review' AND payload->>'kb_id'=$1")
+        .bind(kb.to_string()).fetch_one(&pool).await?;
+    assert_eq!(errata_jobs,0);
+    crate::errata::review(&state,kb).await?;
+    provider.reset().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_json(json!({"data":[{"index":0,"embedding":[1.0,0.0]}]})),
+        )
+        .mount(&provider)
+        .await;
+    crate::dispatch(&state, &enrichment).await?;
+    let embedded: i64 = sqlx::query_scalar("SELECT count(*) FROM chunks WHERE document_id=$1 AND superseded_at IS NULL AND embedding IS NOT NULL")
+        .bind(doc).fetch_one(&pool).await?;
+    assert_eq!(embedded, 1);
+    let (code, recovered) = call(
+        app.clone(),
+        search_path.clone(),
+        &session,
+        json!({"q":"A1"}),
+    )
+    .await?;
+    assert_eq!(code, 200);
+    assert_eq!(recovered["retrieval"]["dense_executed"], true);
+    assert_eq!(recovered["retrieval"]["score_type"], "rank_fusion");
+    assert!(recovered["retrieval"]["returned"].as_u64().unwrap() > 0);
+    sqlx::query("DELETE FROM llm_settings WHERE workspace_id=$1")
+        .bind(ws)
+        .execute(&pool)
+        .await?;
     let (status,linked):(String,Option<Uuid>)=sqlx::query_as("SELECT r.status,i.utopia_entity_id FROM soorin_ingestion_receipts r JOIN soorin_canonical_identities i ON i.kb_id=r.kb_id WHERE r.id=$1").bind(id).fetch_one(&pool).await?;
     assert_eq!(status, "bound");
     assert!(linked.is_some());
@@ -292,7 +384,6 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     let (pat_view, pat) =
         utopia_store::tokens::issue(&pool, user, "SOC read test", "read", Some(&[kb]), None)
             .await?;
-    let search_path = format!("/api/v1/kbs/{kb}/search");
     assert_eq!(
         call(app.clone(), search_path.clone(), &pat, json!({"q":"A1"}))
             .await?

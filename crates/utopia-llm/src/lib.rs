@@ -479,6 +479,49 @@ pub struct LlmClient {
 }
 
 /// 建连多久算失败。
+#[derive(Default)]
+pub struct ModelRequestLimits {
+    batches: std::collections::HashMap<String, usize>,
+    read_seconds: std::collections::HashMap<String, usize>,
+}
+
+fn parse_limits(
+    name: &str,
+    value: &str,
+    max: usize,
+) -> Result<std::collections::HashMap<String, usize>, String> {
+    if value.trim().is_empty() {
+        return Ok(Default::default());
+    }
+    let limits: std::collections::HashMap<String, usize> = serde_json::from_str(value)
+        .map_err(|_| format!("{name} must be a JSON map of model names to integer limits"))?;
+    if limits
+        .iter()
+        .any(|(model, limit)| model.trim().is_empty() || !(1..=max).contains(limit))
+    {
+        return Err(format!(
+            "{name} requires nonempty model names and limits in 1..={max}"
+        ));
+    }
+    Ok(limits)
+}
+
+pub fn model_request_limits() -> anyhow::Result<&'static ModelRequestLimits> {
+    static LIMITS: std::sync::OnceLock<Result<ModelRequestLimits, String>> =
+        std::sync::OnceLock::new();
+    LIMITS
+        .get_or_init(|| {
+            let read =
+                |name, max| parse_limits(name, &std::env::var(name).unwrap_or_default(), max);
+            Ok(ModelRequestLimits {
+                batches: read("UTOPIA_EMBED_BATCH_LIMITS", 1024)?,
+                read_seconds: read("UTOPIA_MODEL_READ_SECONDS", 3600)?,
+            })
+        })
+        .as_ref()
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// **多久没有新字节算这个请求死了。**
@@ -608,7 +651,12 @@ impl LlmClient {
         Ok(response.json().await.map_err(Unreachable)?)
     }
     pub fn new(base_url: &str, api_key: Option<&str>, model: &str) -> Self {
-        Self::with_timeouts(base_url, api_key, model, CONNECT_TIMEOUT, READ_TIMEOUT)
+        let read = model_request_limits()
+            .ok()
+            .and_then(|limits| limits.read_seconds.get(model))
+            .map(|seconds| Duration::from_secs(*seconds as u64))
+            .unwrap_or(READ_TIMEOUT);
+        Self::with_timeouts(base_url, api_key, model, CONNECT_TIMEOUT, read)
     }
 
     /// 推理强度（`reasoning_effort`）。推理模型默认边想边答，抽取一次调用出的 token 九成是
@@ -1202,18 +1250,22 @@ impl LlmClient {
         // Generic providers keep their original request and vector semantics.
         // Window pooling is a local BGE representation policy, not a universal
         // OpenAI-compatible embedding operation.
+        let configured = model_request_limits()?.batches.get(&self.model).copied();
         if self.model != SOORIN_CPU_EMBED_MODEL {
-            let body = self
-                .json_response("/embeddings", &json!({"model":self.model,"input":texts}))
-                .await?;
-            let data = body["data"]
-                .as_array()
-                .ok_or_else(|| anyhow::anyhow!("Unexpected embedding response shape"))?;
+            let mut result = Vec::with_capacity(texts.len());
             let mut dimension = None;
-            return ordered_by_index(data, texts.len())?
-                .into_iter()
-                .map(|item| embedding_vector(item, &mut dimension))
-                .collect();
+            for batch in texts.chunks(configured.unwrap_or(texts.len().max(1))) {
+                let body = self
+                    .json_response("/embeddings", &json!({"model":self.model,"input":batch}))
+                    .await?;
+                let data = body["data"]
+                    .as_array()
+                    .ok_or_else(|| anyhow::anyhow!("Unexpected embedding response shape"))?;
+                for item in ordered_by_index(data, batch.len())? {
+                    result.push(embedding_vector(item, &mut dimension)?);
+                }
+            }
+            return Ok(result);
         }
         // All pinned CPU consumers share the wire limits. Stored source text
         // remains intact; multi-window centroids are a retrieval approximation.
@@ -1223,7 +1275,7 @@ impl LlmClient {
         let mut dimension = Some(1024);
         let mut offset = 0;
         while offset < windows.len() {
-            let mut end = (offset + 16).min(windows.len());
+            let mut end = (offset + configured.unwrap_or(16).min(16)).min(windows.len());
             let body = loop {
                 let inputs: Vec<_> = windows[offset..end].iter().map(|(_, text)| text).collect();
                 let body = json!({"model": self.model, "input": inputs});
@@ -1279,7 +1331,7 @@ impl LlmClient {
     }
 }
 
-const SOORIN_CPU_EMBED_MODEL: &str = "BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181";
+pub const SOORIN_CPU_EMBED_MODEL: &str = "BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181";
 
 // Unicode scalar boundaries match Python's character limit, not UTF-8 bytes.
 fn embedding_windows(texts: &[String]) -> anyhow::Result<Vec<(usize, String)>> {
@@ -1607,6 +1659,17 @@ fn number_with_separators(word: &str) -> Option<u32> {
 mod tests {
     /// 账目说 messages 装得下、超的是 completion：不是对话太长，按窗口剩下的余地重试；
     /// messages 本身装不下（或余地不到 1,024）才是上下文拒绝
+    #[test]
+    fn model_specific_limits_are_bounded() {
+        assert_eq!(
+            super::parse_limits("batch", r#"{"cpu":4}"#, 16).unwrap()["cpu"],
+            4
+        );
+        for invalid in [r#"{"cpu":0}"#, r#"{"cpu":17}"#, r#"{"":1}"#, "bad"] {
+            assert!(super::parse_limits("batch", invalid, 16).is_err());
+        }
+    }
+
     #[test]
     fn a_completion_overflow_is_a_ceiling_to_lower_and_not_a_context_refusal() {
         let fits = "This model's maximum context length is 8192 tokens. However, you requested 69536 tokens (4000 in the messages, 65536 in the completion). Please reduce the length of the messages or completion.";

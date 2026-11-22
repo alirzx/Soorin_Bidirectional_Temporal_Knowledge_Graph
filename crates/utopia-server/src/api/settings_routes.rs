@@ -189,6 +189,11 @@ pub async fn put(
     //
     // 在这里补一次，索引在用户还在想上传什么的时候就建起来了。抽取那边也各自
     // 兜底（见 extraction.rs），这里只是把它提前，不是唯一的保障。
+    if nonempty(&req.chat_model).is_some() || nonempty(&req.chat_base_url).is_some() {
+        for kb in utopia_store::kbs::list(&state.pool, workspace_id).await? {
+            crate::errata::schedule_if_ready(&state, kb.id).await?;
+        }
+    }
     if nonempty(&req.embed_model).is_some() {
         for kb in utopia_store::kbs::list(&state.pool, workspace_id).await? {
             let _ = utopia_store::jobs::enqueue_unless_queued(

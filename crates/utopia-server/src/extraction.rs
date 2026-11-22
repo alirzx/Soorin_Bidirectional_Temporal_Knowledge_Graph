@@ -117,6 +117,26 @@ pub(crate) fn span_in_quote(span: &str, quote: &str) -> bool {
     !s.is_empty() && q.contains(&s)
 }
 
+/// Statements chunks retain their JSON encoding. Compare decoded string
+/// values independently so an escape sequence or a field boundary cannot
+/// manufacture a name absent from the source.
+pub(crate) fn name_in_chunk(name: &str, chunk: &str) -> bool {
+    fn in_value(name: &str, value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::String(s) => span_in_quote(name, s),
+            serde_json::Value::Array(items) => items.iter().any(|v| in_value(name, v)),
+            serde_json::Value::Object(items) => items.values().any(|v| in_value(name, v)),
+            _ => false,
+        }
+    }
+    if chunk.trim_start().starts_with(['{', '[']) {
+        if let Ok(value) = serde_json::from_str(chunk) {
+            return in_value(name, &value);
+        }
+    }
+    span_in_quote(name, chunk)
+}
+
 /// 记一条丢弃信号。抽取器有七处 `continue`，每一处都是"事实抽出来了、被挡掉、
 /// 什么都不说"。信号写失败绝不能带垮整篇文档的抽取，所以这里吞掉错误。
 pub(crate) async fn drop_signal(
@@ -179,16 +199,23 @@ pub async fn extract_document(
     document_id: Uuid,
     proposer: Proposer,
 ) -> anyhow::Result<()> {
-    match run(state, document_id, proposer).await {
+    let epoch = utopia_store::documents::extract_epoch(&state.pool, document_id).await?;
+    match run(state, document_id, proposer, epoch).await {
         Ok(()) => Ok(()),
         Err(e) => {
             // 原因随状态落库：只进日志的错误等于没有错误
-            let _ = utopia_store::documents::set_graph_failed(
-                &state.pool,
-                document_id,
-                &format!("{e:#}"),
+            let written = sqlx::query(
+                "UPDATE documents SET graph_status='failed',graph_error=$3,updated_at=now()
+                WHERE id=$1 AND extract_epoch=$2 AND deleted_at IS NULL",
             )
-            .await;
+            .bind(document_id)
+            .bind(epoch)
+            .bind(format!("{e:#}"))
+            .execute(&state.pool)
+            .await?;
+            if written.rows_affected() == 0 {
+                return Ok(());
+            }
             if let Ok(doc) = utopia_store::documents::get(&state.pool, document_id).await {
                 state.emit_document(doc.kb_id, document_id);
             }
@@ -334,7 +361,12 @@ pub(crate) async fn resolve_handle(
 
 /// 每篇文档都走开放图谱（0044 决定 2）：只写文档自己的话，本体不进提示词。
 /// 记忆日志同样从这里进，只是它的陈述先进待确认表等人点头（0015），点头时才落成开放陈述
-async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow::Result<()> {
+async fn run(
+    state: &AppState,
+    document_id: Uuid,
+    proposer: Proposer,
+    my_epoch: i32,
+) -> anyhow::Result<()> {
     let doc = utopia_store::documents::get(&state.pool, document_id).await?;
     // 排队之后被删了（#268）：墓碑不抽——抽出来的事实会活在一个已删除的出处上
     if doc.deleted_at.is_some() {
@@ -362,8 +394,19 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
     };
 
     // 所有权凭证：重抽会自增 epoch，任务据此察觉自己已被接管（见 `run_open` 的分块循环）
-    let my_epoch = utopia_store::documents::extract_epoch(&state.pool, document_id).await?;
-    utopia_store::documents::set_graph_status(&state.pool, document_id, "extracting").await?;
+    if sqlx::query(
+        "UPDATE documents SET graph_status='extracting',graph_error=NULL,updated_at=now()
+        WHERE id=$1 AND extract_epoch=$2 AND deleted_at IS NULL",
+    )
+    .bind(document_id)
+    .bind(my_epoch)
+    .execute(&state.pool)
+    .await?
+    .rows_affected()
+        == 0
+    {
+        return Ok(());
+    }
     state.emit_document(doc.kb_id, document_id);
     let await_nod = utopia_store::memory::is_memory_document(&state.pool, document_id).await?;
     crate::extraction_open::run_open(
@@ -401,6 +444,32 @@ mod tests {
     use super::{incomplete_reason, resolve_handle, span_in_quote};
     use std::collections::HashMap;
     use uuid::Uuid;
+
+    #[test]
+    fn json_evidence_preserves_backslashes_and_value_boundaries() {
+        let chunk = serde_json::json!({
+            "path": r"C:\Windows\System32\agent.exe",
+            "user": r"DOMÄIN\Analyst",
+            "registry": r"HKLM\Software\Example"
+        })
+        .to_string();
+        for name in [
+            r"c:\windows\system32\agent.exe",
+            r"domäin\analyst",
+            r"HKLM\Software\Example",
+        ] {
+            assert!(super::name_in_chunk(name, &chunk));
+        }
+        for absent in [
+            r"C:\Config.Msi,",
+            r"1\AppData",
+            r"DOMÄIN\Admin",
+            r"agent.exeHKLM",
+            "registry",
+        ] {
+            assert!(!super::name_in_chunk(absent, &chunk));
+        }
+    }
 
     #[test]
     fn a_span_is_found_in_its_quote_regardless_of_case_and_spacing() {

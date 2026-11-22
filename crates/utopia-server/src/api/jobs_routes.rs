@@ -22,9 +22,11 @@ use crate::state::AppState;
 async fn requeue_failed(
     pool: &sqlx::PgPool,
     scope: RequeueScope<'_>,
+    include_terminal: bool,
 ) -> utopia_core::AppResult<u64> {
-    let generic = utopia_store::jobs::requeue_failed(pool, scope).await?;
-    let rss = utopia_store::rss_full_content::requeue_failed(pool, scope).await?;
+    let generic = utopia_store::jobs::requeue_with_policy(pool, scope, include_terminal).await?;
+    let rss =
+        utopia_store::rss_full_content::requeue_with_policy(pool, scope, include_terminal).await?;
     Ok(generic + rss)
 }
 
@@ -34,6 +36,8 @@ mod tests;
 
 #[derive(Deserialize, Default)]
 pub struct RequeueBody {
+    #[serde(default)]
+    pub include_terminal: bool,
     #[serde(default)]
     pub kind: Option<String>,
     /// 只排这个时刻之后失败的
@@ -60,9 +64,14 @@ pub async fn job_in_kb(
     Path((kb_id, job_id)): Path<(Uuid, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
-    let job = utopia_store::jobs::status_in_kb(&state.pool, kb_id, job_id)
+    let mut job = utopia_store::jobs::status_in_kb(&state.pool, kb_id, job_id)
         .await?
         .ok_or(utopia_core::AppError::NotFound)?;
+    // Provider and parser errors may include source content. Keep the full chain
+    // in the internal queue. Viewers receive a stable category in the same field.
+    if job.last_error.is_some() {
+        job.last_error = Some(job.failure_class.as_deref().unwrap_or("unknown").to_owned());
+    }
     Ok(Json(json!({ "job": job })))
 }
 
@@ -72,7 +81,24 @@ pub async fn requeue_in_kb(
     Path(kb_id): Path<Uuid>,
     Json(body): Json<RequeueBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let role = if body.include_terminal {
+        Role::Admin
+    } else {
+        Role::Editor
+    };
+    require_kb(&state, &user, kb_id, role).await?;
+    if body.include_terminal {
+        utopia_store::audit::record(
+            &state.pool,
+            Some(kb_id),
+            user.id,
+            "jobs.terminal_requeue_requested",
+            "kb",
+            Some(kb_id),
+            json!({"kind":body.kind,"failed_since":body.failed_since}),
+        )
+        .await?;
+    }
     let requeued = requeue_failed(
         &state.pool,
         RequeueScope {
@@ -80,18 +106,19 @@ pub async fn requeue_in_kb(
             kind: body.kind.as_deref(),
             failed_since: body.failed_since,
         },
+        body.include_terminal,
     )
     .await?;
-    let _ = utopia_store::audit::record(
+    utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
         user.id,
         "jobs.requeued",
         "kb",
         Some(kb_id),
-        json!({ "requeued": requeued, "kind": body.kind, "failed_since": body.failed_since }),
+        json!({ "include_terminal":body.include_terminal,"requeued": requeued, "kind": body.kind, "failed_since": body.failed_since }),
     )
-    .await;
+    .await?;
     Ok(Json(json!({ "requeued": requeued })))
 }
 
@@ -104,6 +131,18 @@ pub async fn requeue_all(
     if !user.is_admin {
         return Err(utopia_core::AppError::Forbidden.into());
     }
+    if body.include_terminal {
+        utopia_store::audit::record(
+            &state.pool,
+            None,
+            user.id,
+            "jobs.terminal_requeue_requested",
+            "system",
+            None,
+            json!({"kind":body.kind,"failed_since":body.failed_since}),
+        )
+        .await?;
+    }
     let requeued = requeue_failed(
         &state.pool,
         RequeueScope {
@@ -111,17 +150,18 @@ pub async fn requeue_all(
             kind: body.kind.as_deref(),
             failed_since: body.failed_since,
         },
+        body.include_terminal,
     )
     .await?;
-    let _ = utopia_store::audit::record(
+    utopia_store::audit::record(
         &state.pool,
         None,
         user.id,
         "jobs.requeued",
         "system",
         None,
-        json!({ "requeued": requeued, "kind": body.kind, "failed_since": body.failed_since }),
+        json!({ "include_terminal":body.include_terminal,"requeued": requeued, "kind": body.kind, "failed_since": body.failed_since }),
     )
-    .await;
+    .await?;
     Ok(Json(json!({ "requeued": requeued })))
 }

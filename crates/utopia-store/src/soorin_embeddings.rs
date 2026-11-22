@@ -54,7 +54,9 @@ pub async fn write(
                 "embedding dimension or value invalid".into(),
             ));
         }
-        sqlx::query("UPDATE chunks c SET embedding=$2,embedding_model=$3 FROM knowledge_bases k WHERE c.id=$1 AND k.id=c.kb_id AND k.workspace_id=$4 AND c.superseded_at IS NULL")
+        sqlx::query("UPDATE chunks c SET embedding=$2,embedding_model=$3 FROM knowledge_bases k WHERE c.id=$1 AND k.id=c.kb_id AND k.workspace_id=$4 AND c.superseded_at IS NULL
+          AND (c.embedding IS NULL OR c.embedding_model IS DISTINCT FROM $3)
+          AND EXISTS(SELECT 1 FROM documents d WHERE d.id=c.document_id AND d.deleted_at IS NULL FOR SHARE)")
             .bind(id).bind(pgvector::Vector::from(vector.clone())).bind(&model).bind(expected.workspace_id).execute(&mut *tx).await?;
     }
     tx.commit().await?;
