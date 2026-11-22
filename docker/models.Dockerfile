@@ -1,4 +1,6 @@
-# syntax=docker/dockerfile:1.6
+# Use the Docker engine's bundled BuildKit frontend to avoid fetching
+# docker/dockerfile:1.6 from Docker Hub (blocked by HTTP 403 in restricted networks).
+# RUN --mount=type=cache is supported by the bundled BuildKit frontend here.
 ARG PYTHON_BASE_IMAGE=docker.arvancloud.ir/python:3.12-slim-bookworm
 FROM ${PYTHON_BASE_IMAGE}
 ARG PIP_PRIMARY_INDEX_URL=https://package-mirror.liara.ir/repository/pypi/simple
