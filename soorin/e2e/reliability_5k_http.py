@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""Bounded, resumable 5k+ synthetic SOC HTTP acceptance for disposable TKG Compose.
+
+Place in soorin/e2e/reliability_5k_http.py and invoke as:
+  python3 -m soorin.e2e.reliability_5k_http --mode prepare --count 5500 --out /mnt/X/Soorin/tkg-acceptance-5k
+  python3 -m soorin.e2e.reliability_5k_http --mode send --out /mnt/X/Soorin/tkg-acceptance-5k --source-id "$SOURCE_ID" --kb-id "$KB_ID"
+  python3 -m soorin.e2e.reliability_5k_http --mode verify --out /mnt/X/Soorin/tkg-acceptance-5k --source-id "$SOURCE_ID" --kb-id "$KB_ID"
+
+This never creates users, modifies Docker, deletes volumes or exposes secrets in reports.
+It intentionally accepts only a Docker Compose project with a loopback-bound app/db
+and project-scoped named volumes. Use an entirely NEW KB/source for every run.
+"""
+from __future__ import annotations
+
+import argparse
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import threading
+import time
+from urllib import error, parse, request
+
+DEFAULT_PROJECT = "soorin-tkg-acceptance-5k"
+DEFAULT_BASE = "http://127.0.0.1:2626"
+RETRYABLE = {429, 502, 503, 504}
+
+
+def _json(url: str, token: str, *, payload: bytes | None = None, timeout: float = 30) -> dict:
+    headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    req = request.Request(url, data=payload, headers=headers,
+                          method="POST" if payload is not None else "GET")
+    with request.urlopen(req, timeout=timeout) as response:
+        result = json.loads(response.read(2_000_000))
+        if not isinstance(result, dict):
+            raise ValueError("non_object_response")
+        return result
+
+
+def _docker_inspect(project: str, service: str) -> dict:
+    p = subprocess.run(["docker", "ps", "-q", "--filter", f"label=com.docker.compose.project={project}",
+                        "--filter", f"label=com.docker.compose.service={service}"],
+                       check=True, capture_output=True, text=True, timeout=10)
+    ids = p.stdout.split()
+    if len(ids) != 1:
+        raise RuntimeError(f"expected one running {project}/{service} container; got {len(ids)}")
+    data = subprocess.run(["docker", "inspect", ids[0]], check=True,
+                          capture_output=True, text=True, timeout=10)
+    return json.loads(data.stdout)[0]
+
+
+def verify_disposable_target(base: str, project: str, db_port: int) -> None:
+    u = parse.urlsplit(base)
+    if (u.scheme != "http" or u.hostname != "127.0.0.1" or not u.port or
+            u.port in {1516, 2516} or u.username or u.password or u.path not in {"", "/"}
+            or u.query or u.fragment):
+        raise RuntimeError("refusing non-loopback, established-lab or malformed API target")
+    if not project.startswith("soorin-tkg-acceptance-"):
+        raise RuntimeError("project name must begin with soorin-tkg-acceptance-")
+    if db_port in {1517, 2517} or db_port == u.port:
+        raise RuntimeError("invalid disposable database port")
+    for service, target, container_port, expected_port in (
+        ("app", "/app/data", "1516/tcp", u.port),
+        ("db", "/var/lib/postgresql/data", "5432/tcp", db_port),
+    ):
+        obj = _docker_inspect(project, service)
+        labels = obj.get("Config", {}).get("Labels") or {}
+        if labels.get("com.docker.compose.project") != project or labels.get("com.docker.compose.service") != service:
+            raise RuntimeError(f"ownership mismatch: {service}")
+        if not obj.get("State", {}).get("Running"):
+            raise RuntimeError(f"not running: {service}")
+        mapping = obj.get("NetworkSettings", {}).get("Ports", {}).get(container_port) or []
+        if len(mapping) != 1 or mapping[0].get("HostIp") != "127.0.0.1" or int(mapping[0]["HostPort"]) != expected_port:
+            raise RuntimeError(f"port mapping mismatch: {service}")
+        mounts = [m for m in obj.get("Mounts", []) if m.get("Destination") == target]
+        suffix = "data" if service == "app" else "db"
+        required = f"{project}_soorin_sprint1_{suffix}"
+        if len(mounts) != 1 or mounts[0].get("Type") != "volume" or mounts[0].get("Name") != required:
+            raise RuntimeError(f"volume ownership mismatch: {service}")
+
+
+def prepare(out: Path, count: int, revisions: int) -> None:
+    from soorin.tests.mock_splunk.scripts.curated_qa_dataset import generate
+    if out.exists() and any(out.iterdir()):
+        raise RuntimeError("output directory is not empty; use a new directory or --mode send")
+    report = generate(out, count, revisions)
+    print(json.dumps({"phase": "prepared", "alerts": report["alerts"],
+                      "revisions": report["separate_revisions"], "path": str(out)}))
+
+
+def load_payloads(out: Path, include_revisions: bool) -> list[tuple[str, bytes]]:
+    expected = json.loads((out / "manifest.json").read_text())
+    names = ["alerts.jsonl"] + (["revisions.jsonl"] if include_revisions else [])
+    rows = []
+    for name in names:
+        data = (out / name).read_bytes()
+        if hashlib.sha256(data).hexdigest() != expected["files_sha256"][name]:
+            raise RuntimeError(f"fixture digest mismatch: {name}")
+        for number, line in enumerate(data.splitlines()):
+            if line.strip():
+                rows.append((f"{name}:{number}", line))
+    return rows
+
+
+def existing_acceptances(path: Path) -> dict[str, str]:
+    accepted = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            if line:
+                row = json.loads(line)
+                accepted[row["item"]] = row["receipt_id"]
+    return accepted
+
+
+class RateLimit:
+    def __init__(self, rps: float):
+        self.interval = 1.0 / rps if rps > 0 else 0
+        self.lock = threading.Lock()
+        self.next_allowed = 0.0
+
+    def wait(self) -> None:
+        if not self.interval:
+            return
+        with self.lock:
+            now = time.monotonic()
+            start = max(now, self.next_allowed)
+            self.next_allowed = start + self.interval
+        if start > now:
+            time.sleep(start - now)
+
+
+def send_one(item: str, payload: bytes, endpoint: str, token: str,
+             attempts: int, rate: RateLimit) -> dict:
+    for attempt in range(1, attempts + 1):
+        rate.wait()
+        started = time.monotonic()
+        try:
+            value = _json(endpoint, token, payload=payload, timeout=30)
+            rid = value.get("receipt_id")
+            if not isinstance(rid, str) or not rid:
+                return {"item": item, "outcome": "invalid_ack", "attempt": attempt}
+            return {"item": item, "outcome": "accepted", "receipt_id": rid,
+                    "status": value.get("status"), "attempt": attempt,
+                    "latency_seconds": round(time.monotonic() - started, 3)}
+        except error.HTTPError as exc:
+            code = exc.code
+            if code not in RETRYABLE or attempt == attempts:
+                return {"item": item, "outcome": "http_error", "code": code, "attempt": attempt}
+        except (error.URLError, TimeoutError, OSError):
+            if attempt == attempts:
+                return {"item": item, "outcome": "network_error", "attempt": attempt}
+        except (ValueError, json.JSONDecodeError):
+            return {"item": item, "outcome": "invalid_response", "attempt": attempt}
+        time.sleep(min(2 ** (attempt - 1), 10))
+    raise AssertionError("unreachable")
+
+
+def send(out: Path, base: str, source: str, token: str, workers: int,
+         attempts: int, rps: float, include_revisions: bool) -> None:
+    rows = load_payloads(out, include_revisions)
+    result_path = out / "accepted.jsonl"
+    old = existing_acceptances(result_path)
+    remaining = [(n, b) for n, b in rows if n not in old]
+    endpoint = f"{base}/api/v1/sources/{source}/soc/ingest"
+    started = time.monotonic()
+    errors = Counter()
+    newly_accepted = 0
+    limiter = RateLimit(rps)
+    print(json.dumps({"phase": "send", "total": len(rows), "previously_accepted": len(old),
+                      "remaining": len(remaining), "workers": workers, "rps": rps}), flush=True)
+    with result_path.open("a", encoding="utf8") as journal, \
+         (out / "failed.jsonl").open("a", encoding="utf8") as bad, \
+         ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(send_one, name, payload, endpoint, token, attempts, limiter)
+                   for name, payload in remaining]
+        for future in as_completed(futures):
+            result = future.result()
+            if result["outcome"] == "accepted":
+                journal.write(json.dumps(result, separators=(",", ":")) + "\n")
+                journal.flush()
+                newly_accepted += 1
+            else:
+                bad.write(json.dumps(result, separators=(",", ":")) + "\n")
+                bad.flush()
+                errors[str(result.get("code", result["outcome"]))] += 1
+            processed = newly_accepted + sum(errors.values())
+            if processed % 250 == 0 or processed == len(remaining):
+                print(json.dumps({"phase": "progress", "processed": processed,
+                                  "accepted_new": newly_accepted, "errors": dict(errors),
+                                  "seconds": round(time.monotonic() - started, 1)}), flush=True)
+    final = {"phase": "send_final", "accepted_total": len(existing_acceptances(result_path)),
+             "expected": len(rows), "errors": dict(errors),
+             "seconds": round(time.monotonic() - started, 1)}
+    (out / "send-report.json").write_text(json.dumps(final, indent=2) + "\n")
+    print(json.dumps(final), flush=True)
+    if final["accepted_total"] != len(rows):
+        raise RuntimeError("admission incomplete: inspect failed.jsonl and rerun --mode send")
+
+
+def status_groups(value: dict) -> dict[str, int]:
+    groups = value.get("groups")
+    if not isinstance(groups, list):
+        raise RuntimeError("receipt summary missing groups")
+    return dict(Counter({key: sum(int(x.get("count", 0)) for x in groups if x.get("status") == key)
+                         for key in {str(x.get("status")) for x in groups}}))
+
+
+def verify(out: Path, base: str, kb: str, session: str, include_revisions: bool,
+           deadline: int, interval: float, sample: int) -> None:
+    expected = len(load_payloads(out, include_revisions))
+    accepted = existing_acceptances(out / "accepted.jsonl")
+    if len(accepted) != expected:
+        raise RuntimeError(f"{len(accepted)} accepted vs {expected} expected; finish --mode send")
+    summary_url = f"{base}/api/v1/kbs/{kb}/knowledge/receipts/summary"
+    started = time.monotonic()
+    groups = {}
+    while True:
+        value = _json(summary_url, session, timeout=30)
+        groups = status_groups(value)
+        total = sum(groups.values())
+        print(json.dumps({"phase": "materialization", "groups": groups, "total": total,
+                          "expected": expected, "elapsed_seconds": round(time.monotonic()-started, 1)}), flush=True)
+        if total == expected and groups.get("bound", 0) == expected:
+            break
+        if time.monotonic() - started >= deadline:
+            break
+        time.sleep(interval)
+    graph_checks = []
+    if groups.get("bound", 0) == expected:
+        ids = list(dict.fromkeys(accepted.values()))
+        for rid in ids[:sample]:
+            detail = _json(f"{base}/api/v1/kbs/{kb}/knowledge/receipts/{rid}", session)
+            doc = detail.get("document") or {}
+            rels = detail.get("relations") or []
+            healthy = (detail.get("status") == "bound" and doc.get("status") == "ready"
+                       and doc.get("graph_status") == "done"
+                       and not detail.get("entities_truncated")
+                       and not detail.get("relations_truncated")
+                       and all((r.get("binding") or {}).get("evidence_link_status") is True
+                               for r in rels))
+            graph_checks.append(healthy)
+    result = {"schema_version": "soorin.local-5k-acceptance.v1", "synthetic": True,
+              "admitted": len(accepted), "expected": expected, "groups": groups,
+              "seconds_waited": round(time.monotonic() - started, 1),
+              "sampled_graph_checks": len(graph_checks),
+              "sampled_graph_checks_passed": sum(graph_checks),
+              "receipt_binding_pass": groups.get("bound", 0) == expected and sum(groups.values()) == expected,
+              "sampled_graph_pass": len(graph_checks) == sample and all(graph_checks)}
+    (out / "acceptance-report.json").write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps({"phase": "verify_final", **result}), flush=True)
+    if not result["receipt_binding_pass"] or not result["sampled_graph_pass"]:
+        raise RuntimeError("acceptance failed; report saved with observed evidence")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--mode", choices=["prepare", "send", "verify"], required=True)
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--count", type=int, default=5500)
+    p.add_argument("--revisions", type=int, default=0)
+    p.add_argument("--include-revisions", action="store_true")
+    p.add_argument("--base-url", default=DEFAULT_BASE)
+    p.add_argument("--project", default=DEFAULT_PROJECT)
+    p.add_argument("--db-port", type=int, default=2627)
+    p.add_argument("--source-id", default=os.environ.get("SOURCE_ID", ""))
+    p.add_argument("--kb-id", default=os.environ.get("KB_ID", ""))
+    p.add_argument("--workers", type=int, default=2)
+    p.add_argument("--rps", type=float, default=3.0)
+    p.add_argument("--attempts", type=int, default=4)
+    p.add_argument("--deadline", type=int, default=3600)
+    p.add_argument("--interval", type=float, default=15)
+    p.add_argument("--sample", type=int, default=20)
+    args = p.parse_args()
+    if not 1 <= args.workers <= 8 or not 1 <= args.attempts <= 8 or not 0 < args.rps <= 100:
+        p.error("workers 1..8, attempts 1..8, rps 0..100 required")
+    if args.mode == "prepare":
+        prepare(args.out, args.count, args.revisions)
+        return
+    verify_disposable_target(args.base_url, args.project, args.db_port)
+    if args.mode == "send":
+        if not args.source_id or not os.environ.get("INGEST_TOKEN"):
+            p.error("SOURCE_ID/--source-id and INGEST_TOKEN are required")
+        send(args.out, args.base_url, args.source_id, os.environ["INGEST_TOKEN"],
+             args.workers, args.attempts, args.rps, args.include_revisions)
+    else:
+        if not args.kb_id or not os.environ.get("SESSION_TOKEN"):
+            p.error("KB_ID/--kb-id and SESSION_TOKEN are required")
+        if not 1 <= args.sample <= 100:
+            p.error("sample must be 1..100")
+        verify(args.out, args.base_url, args.kb_id, os.environ["SESSION_TOKEN"],
+               args.include_revisions, args.deadline, args.interval, args.sample)
+
+
+if __name__ == "__main__":
+    main()
