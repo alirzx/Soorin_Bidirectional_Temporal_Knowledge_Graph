@@ -150,3 +150,70 @@ No broad `/jobs/requeue`, graph rebuild or deletion is part of this procedure.
 
 The new curated HTTP interface is documented in [Manual SOC input](MANUAL_SOC_INGESTION.md).
 The producer mapping is [versioned separately](PRODUCER_MAPPING_V1_20261115.md).
+
+## Connector REST contract and acceptance examples
+
+Base path `/api/v1`. Send `Authorization: Bearer <credential>` and `Content-Type: application/json` for JSON bodies. Each `{source}`, `{kb}`, `{receipt}` and graph entity ID in a URL is a UUID. The source-specific push secret, administrator session JWT and KB-scoped reader PAT have different grants. Source rotation requires updating the connector's secret store. Test the replacement token on preview, revoke the old credential, and verify denial. Read PAT revocation is covered by the Rust runtime test. Keep registration closed after bootstrap. The single-source tenant binding presently governs this connector.
+
+| Method and route | Input | Successful response |
+| --- | --- | --- |
+| POST `/sources/{source}/soc/preview` | Source bearer, exactly `profile` and `record`, bounded to 1 MiB. The binding supplies tenant/system/instance. | `schema_version=soorin.ingestion-preview.v1`, `canonical_event`, `warnings`, `ner_status`, `ner_proposals`, `persistent_writes=false`, `submission_status`, `supports_acceptance_run`. |
+| POST `/sources/{source}/soc/ingest` | Same bearer and bytes as preview. | `schema_version=soorin.ingestion-receipt.v1`, UUID `receipt_id`, nullable integer `job_id`, string `status`, boolean `replayed`. Persist the receipt before polling. |
+| GET `/kbs/{kb}/knowledge/receipts/{receipt}/status` | KB admin session. No body. | `receipt_id,status,job_id,failure_code,delivery_state,updated_at`. Use for routine polling. |
+| GET `/kbs/{kb}/knowledge/receipts/{receipt}` | KB admin session. No body. | `soorin.receipt-diagnostics.v1` with receipt, source/scope, status, delivery state, failure code, current document/version, entities, relations, unsupported count, evidence view, jobs, limits and truncation flags. Before submission the document may be null. |
+| POST `/kbs/{kb}/knowledge/receipts/{receipt}/retry` | KB admin session, no request body required. | `receipt_id,job_id`. A failed terminal child, failed terminal parent, bound or quarantined receipt gets 409. |
+| POST `/kbs/{kb}/search` | Reader session or scoped read PAT. `q` required, nonblank, up to 4,000 characters. `top_k` optional unsigned integer, default 10, capped at 50. Optional record-time `as_of` is YYYY-MM-DD or RFC3339. Body limit 32 KiB. | `results[]` with `id,document_id,seq,text,filename`, plus `retrieval` as below. |
+| POST `/kbs/{kb}/knowledge/resolve` | Reader. Required strings `tenant_id,source_system,source_instance,entity_type,authority_name,source_identifier`, optional string/null `scope`. Unknown fields rejected. | `soorin.identity-resolution.v1` with KB, tenant, status, automatic, candidates and limitations. Accept an unambiguous resolved entity ID only. |
+| POST `/kbs/{kb}/knowledge/context` | Reader. Required `tenant_id,entity`, optional `entity_type,at,as_of,limit`. Limit default 40, clamped to 1–100. Historical `as_of` requires a UUID and omits `entity_type`. | `soorin.knowledge-context.v2` with resolved entities, facts, evidence references, time axes, conflict and truncation metadata. Retain citations and partial/unavailable status. |
+
+Preview and ingest share this synthetic request. The contract test normalizes these bytes offline. The examples below use illustrative UUIDs. Values marked as projections list selected response fields.
+
+```json
+{"profile":"agentic-soc.splunk-curated.v1","record":{"alert_row_id":"A1","notable_id":"N1","event_time":"2026-10-20T12:00:00Z","source_updated_at":"2026-10-20T12:01:00Z","llm_payload":{"alert_id":"A1","event_time":"2026-10-20T12:00:00Z","alert_time":"2026-10-20T12:01:00Z","rule_name":"Multiple Failed Logons"}}}
+```
+
+Preview response projection and subsequent admission, status, diagnostics projection and successful retry examples, respectively. A retry example represents a recoverable dependency after repair.
+
+```json
+{"schema_version":"soorin.ingestion-preview.v1","canonical_event":{"source_record_id":"A1","event_type":"security_alert","observed_at":"2026-10-20T12:01:00.000000Z"},"persistent_writes":false}
+```
+```json
+{"schema_version":"soorin.ingestion-receipt.v1","receipt_id":"019a0000-0000-7000-8000-000000000001","job_id":71,"status":"pending","replayed":false}
+```
+```json
+{"receipt_id":"019a0000-0000-7000-8000-000000000001","job_id":71,"status":"submitted","failure_code":null,"delivery_state":"waiting_for_dependency","updated_at":"2026-11-23T10:00:00Z"}
+```
+```json
+{"schema_version":"soorin.receipt-diagnostics.v1","source_scope":{"tenant_id":"tenant-blue","source_system":"splunk","source_instance":"splunk-e2e"},"document":{"document_id":"019a0000-0000-7000-8000-000000000002","status":"ready","graph_status":"done","document_version":1},"evidence_view":"current_document_version"}
+```
+```json
+{"receipt_id":"019a0000-0000-7000-8000-000000000001","job_id":76}
+```
+
+Search request and a response projection from controlled degradation. Pre-dedup channel hits, distinct IDs and authorized reloaded chunks can differ.
+
+```json
+{"q":"A1","top_k":10,"as_of":"2026-11-23T10:01:00Z"}
+```
+```json
+{"results":[{"id":"019a0000-0000-7000-8000-000000000003","document_id":"019a0000-0000-7000-8000-000000000002","seq":0,"text":"Multiple Failed Logons","filename":"synthetic"}],"retrieval":{"schema_version":"soorin.retrieval-metadata.v1","dense_executed":true,"lexical_method":"postgres_versioned_lexical","lexical":"postgres_versioned_lexical","candidate_count":2,"unique_candidate_count":1,"authorized_candidate_count":1,"reranker_status":"fallback","score_type":"rank_fusion","final_order":"rank_fusion","returned":1}}
+```
+
+Resolve then use the returned UUID with context. Curated alert rows use the authority soc_alert_row_id. The legacy canonical Rust fixture uses alert_id for its own A1. The API/DB test exercises historical evidence and cross-KB refusal. Response projections follow each request.
+
+```json
+{"tenant_id":"tenant-blue","source_system":"splunk","source_instance":"splunk-e2e","entity_type":"SecurityAlert","authority_name":"soc_alert_row_id","source_identifier":"A1"}
+```
+```json
+{"schema_version":"soorin.identity-resolution.v1","status":"resolved","automatic":true,"candidates":[{"entity_id":"019a0000-0000-7000-8000-000000000004"}]}
+```
+```json
+{"tenant_id":"tenant-blue","entity":"019a0000-0000-7000-8000-000000000004","as_of":"2026-11-23T10:01:00Z","limit":10}
+```
+```json
+{"schema_version":"soorin.knowledge-context.v2","retrieval_status":"partial","knowledge_time":"2026-11-23T10:01:00Z","retrieval_methods":["entity_lookup","temporal_graph","fact_evidence"],"model_versions":{"usage":"none","reason":"deterministic_graph_lookup"}}
+```
+
+After a lost admission response, resend identical bytes and retain the returned receipt. Use bounded backoff for 429/503 and transport outages. For 409, only the named normalizer capacity or timeout conditions are transport-retry candidates. Poll administratively every 5–30 seconds with an overall deadline. On expiry retain the receipt and resume later. Use diagnostics for child failure classes and versioned evidence. Failed or quarantined dependencies require the documented repair/review process. Consumer code must surface lexical-only results and enabled-reranker fallback. Disabled fallback can return an HTTP error. Production source tokens never need the synthetic harness header.
+
+The executable wire handlers are in `crates/utopia-server/src/api/{soc_curated,soc_ingestion,search_routes,soc_knowledge}.rs`. The full graph context schema is in `soorin/contracts/schemas/knowledge_context_v2.schema.json`. The Server 55 runbook defines release and scale gates.

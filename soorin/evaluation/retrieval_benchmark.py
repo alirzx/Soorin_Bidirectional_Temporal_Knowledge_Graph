@@ -20,6 +20,22 @@ DOCUMENTS = (
     SearchDocument("d-privileged", "tenant-blue", "Privileged service account activity linked to change ticket CHG-4242", ("NOTABLE-PRIV-001",), ("splunk:NOTABLE-PRIV-001",)),
     SearchDocument("d-other-tenant", "tenant-red", "Password spray from private tenant data", ("SECRET-OTHER",), ()),
 )
+# Hard negatives share vocabulary with the judged incidents. Keep the corpus
+# larger than the largest cutoff so recall@10 can actually miss a relevant alert.
+DISTRACTORS = (
+    "Password rotation completed for a privileged service account",
+    "PowerShell system inventory started by a scheduled task",
+    "Multiple accounts completed authentication after a password reset",
+    "Change ticket linked to privileged account creation",
+    "Process inspection on ws01 completed successfully",
+    "Encoded attachment scanned by mail gateway",
+    "Failed authentication on one expired test account",
+    "Suspicious process activity on an unrelated workstation",
+    "Service account access reviewed at quarter end",
+    "PowerShell execution policy changed by administrator",
+)
+DOCUMENTS += tuple(SearchDocument(f"control-{i}", "tenant-blue", text)
+                   for i, text in enumerate(DISTRACTORS))
 CASES = (
     ("password spraying authentication failures", {"d-password-spray"}),
     ("PowerShell suspicious process", {"d-process"}),
@@ -45,7 +61,7 @@ def run_benchmark(k: int = 3) -> dict:
     report = {
         "schema_version": "soorin.soc.retrieval-benchmark.v1",
         "dataset": {
-            "name": "soorin-synthetic-retrieval", "version": "v1", "synthetic": True,
+            "name": "soorin-synthetic-retrieval", "version": "v2", "synthetic": True,
             "document_count": len(DOCUMENTS), "query_count": len(CASES),
         },
         "reproducibility": {
@@ -81,6 +97,22 @@ def run_benchmark(k: int = 3) -> dict:
             "latency_p50_ms": statistics.median(latencies), "latency_p95_ms": ordered[p95_index],
             "failure_rate": failures / len(CASES),
         }
+    return report
+
+
+def quality_at_cutoffs() -> dict:
+    """Binary document qrels, macro averages. CPU weights are never loaded."""
+    at5, at10 = run_benchmark(5)["modes"], run_benchmark(10)["modes"]
+    report = {name: {"recall5": at5[name]["recall_at_k"], "recall10": row["recall_at_k"],
+                     "mrr10": row["mrr"], "ndcg10": row["ndcg_at_k"]} for name, row in at10.items()}
+    dense = RetrievalFoundation(DOCUMENTS, DeterministicFakeEmbeddingClient(64))
+    eligible = [d for d in DOCUMENTS if d.tenant_id == "tenant-blue"]
+    scores = []
+    for text, relevant in CASES:
+        ranked = [doc.document_id for doc, _ in dense._dense(eligible, text, 10)]
+        scores.append((_metrics(ranked, relevant, 5)[0], *_metrics(ranked, relevant, 10)))
+    report["dense_only_mock"] = dict(zip(("recall5","recall10","mrr10","ndcg10"),
+                                         map(statistics.mean, zip(*scores))))
     return report
 
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import hashlib
 import ipaddress
 import json
@@ -31,13 +31,20 @@ DEFAULT_BASE = "http://127.0.0.1:2626"
 RETRYABLE = {429, 502, 503, 504}
 
 
-def _json(url: str, token: str, *, payload: bytes | None = None, timeout: float = 30) -> dict:
+class NoRedirect(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _json(url: str, token: str, *, payload: bytes | None = None, timeout: float = 30, run_id: str | None = None) -> dict:
     headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+    if run_id:
+        headers["X-Soorin-Acceptance-Run"] = run_id
     if payload is not None:
         headers["Content-Type"] = "application/json"
     req = request.Request(url, data=payload, headers=headers,
                           method="POST" if payload is not None else "GET")
-    with request.urlopen(req, timeout=timeout) as response:
+    with request.build_opener(request.ProxyHandler({}), NoRedirect()).open(req, timeout=timeout) as response:
         result = json.loads(response.read(2_000_000))
         if not isinstance(result, dict):
             raise ValueError("non_object_response")
@@ -185,33 +192,57 @@ class RateLimit:
 
 
 def send_one(item: str, payload: bytes, endpoint: str, token: str,
-             attempts: int, rate: RateLimit) -> dict:
+             attempts: int, rate: RateLimit, run_id: str | None = None) -> dict:
+    history = []
+    started = time.monotonic()
+    result = {"item": item, "history": history}
+    if run_id:
+        result["run_id"] = run_id
     for attempt in range(1, attempts + 1):
         rate.wait()
-        started = time.monotonic()
+        retry = False
         try:
-            value = _json(endpoint, token, payload=payload, timeout=30)
+            value = _json(endpoint, token, payload=payload, timeout=30, run_id=run_id)
             rid = value.get("receipt_id")
             if not isinstance(rid, str) or not rid:
-                return {"item": item, "outcome": "invalid_ack", "attempt": attempt}
-            return {"item": item, "outcome": "accepted", "receipt_id": rid,
-                    "status": value.get("status"), "attempt": attempt,
-                    "latency_seconds": round(time.monotonic() - started, 3)}
+                outcome = "invalid_ack"
+            else:
+                from uuid import UUID
+                rid = str(UUID(rid))
+                if value.get("schema_version") != "soorin.ingestion-receipt.v1" or (
+                    run_id and not isinstance(value.get("replayed"), bool)
+                ):
+                    raise ValueError("unexpected receipt contract")
+                outcome = "accepted"
+                result.update(receipt_id=rid, replayed=value.get("replayed"),
+                              status=value.get("status"), acknowledged_at=time.time())
         except error.HTTPError as exc:
-            code = exc.code
-            if code not in RETRYABLE or attempt == attempts:
-                return {"item": item, "outcome": "http_error", "code": code, "attempt": attempt}
-        except (error.URLError, TimeoutError, OSError):
-            if attempt == attempts:
-                return {"item": item, "outcome": "network_error", "attempt": attempt}
-        except (ValueError, json.JSONDecodeError):
-            return {"item": item, "outcome": "invalid_response", "attempt": attempt}
+            outcome = f"http_{exc.code}"
+            retry = exc.code in RETRYABLE
+            if exc.code == 409:
+                # Only normalizer capacity/timeouts can be retried as conflicts.
+                try:
+                    detail = json.loads(exc.read(4096)).get("error")
+                    retry = detail in ("soc_normalizer_busy", "soc_normalizer_timeout")
+                except (ValueError, AttributeError):
+                    pass
+            result["code"] = exc.code
+            exc.close()
+        except (TimeoutError, error.URLError, OSError) as exc:
+            outcome = "timeout" if isinstance(getattr(exc, "reason", exc), TimeoutError) else "network_error"
+            retry = True
+        except ValueError:
+            outcome = "invalid_response"
+        history.append(outcome)
+        if not retry or attempt == attempts:
+            return dict(result, outcome=outcome, attempt=attempt,
+                        latency_seconds=round(time.monotonic() - started, 3))
         time.sleep(min(2 ** (attempt - 1), 10))
     raise AssertionError("unreachable")
 
 
 def send(out: Path, base: str, source: str, token: str, workers: int,
-         attempts: int, rps: float, include_revisions: bool) -> None:
+         attempts: int, rps: float, include_revisions: bool, *, run_id: str | None = None, on_progress=None) -> None:
     rows = load_payloads(out, include_revisions)
     result_path = out / "accepted.jsonl"
     old = existing_acceptances(result_path)
@@ -226,10 +257,22 @@ def send(out: Path, base: str, source: str, token: str, workers: int,
     with result_path.open("a", encoding="utf8") as journal, \
          (out / "failed.jsonl").open("a", encoding="utf8") as bad, \
          ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(send_one, name, payload, endpoint, token, attempts, limiter)
-                   for name, payload in remaining]
-        for future in as_completed(futures):
-            result = future.result()
+        def completed():
+            pending = set()
+            todo = iter(remaining)
+            while True:
+                for name, payload in todo:
+                    pending.add(executor.submit(send_one, name, payload, endpoint, token,
+                                                attempts, limiter, run_id))
+                    if len(pending) >= workers:
+                        break
+                if not pending:
+                    return
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    yield future.result()
+
+        for result in completed():
             if result["outcome"] == "accepted":
                 journal.write(json.dumps(result, separators=(",", ":")) + "\n")
                 journal.flush()
@@ -239,16 +282,21 @@ def send(out: Path, base: str, source: str, token: str, workers: int,
                 bad.flush()
                 errors[str(result.get("code", result["outcome"]))] += 1
             processed = newly_accepted + sum(errors.values())
+            if on_progress:
+                on_progress(processed)
             if processed % 250 == 0 or processed == len(remaining):
                 print(json.dumps({"phase": "progress", "processed": processed,
                                   "accepted_new": newly_accepted, "errors": dict(errors),
                                   "seconds": round(time.monotonic() - started, 1)}), flush=True)
-    final = {"phase": "send_final", "accepted_total": len(existing_acceptances(result_path)),
+    receipts = existing_acceptances(result_path)
+    distinct = len(set(receipts.values()))
+    final = {"status": "PASS" if distinct == len(rows) == len(receipts) else "FAIL",
+             "distinct_receipts": distinct, "phase": "send_final", "accepted_total": len(existing_acceptances(result_path)),
              "expected": len(rows), "errors": dict(errors),
              "seconds": round(time.monotonic() - started, 1)}
     (out / "send-report.json").write_text(json.dumps(final, indent=2) + "\n")
     print(json.dumps(final), flush=True)
-    if final["accepted_total"] != len(rows):
+    if final["status"] != "PASS":
         raise RuntimeError("admission incomplete: inspect failed.jsonl and rerun --mode send")
 
 
@@ -262,7 +310,7 @@ def status_groups(value: dict) -> dict[str, int]:
 
 
 def journal_receipt_groups(base: str, kb: str, session: str,
-                           receipt_ids: set[str]) -> tuple[dict[str, int], int, dict[str, int]]:
+                           receipt_ids: set[str], *, observe=None, until=None, run_id=None) -> tuple[dict[str, int], int, dict[str, int]]:
     """Page KB receipt metadata and count only IDs acknowledged in THIS run.
 
     A shared KB can contain old receipts; never use its global summary as a run
@@ -273,9 +321,14 @@ def journal_receipt_groups(base: str, kb: str, session: str,
     cursors: set[str] = set()
     for _ in range(2000):
         suffix = "?limit=100"
+        if run_id:
+            suffix += "&acceptance_run=" + parse.quote(run_id, safe="")
         if cursor:
             suffix += "&before=" + parse.quote(cursor, safe="")
-        page = _json(f"{base}/api/v1/kbs/{kb}/knowledge/receipts{suffix}", session)
+        timeout = 30 if until is None else min(30, until - time.monotonic())
+        if timeout <= 0:
+            raise TimeoutError("receipt scan deadline")
+        page = _json(f"{base}/api/v1/kbs/{kb}/knowledge/receipts{suffix}", session, timeout=timeout)
         rows = page.get("receipts")
         if not isinstance(rows, list):
             raise RuntimeError("receipt listing missing receipts")
@@ -285,6 +338,8 @@ def journal_receipt_groups(base: str, kb: str, session: str,
             rid = row.get("receipt_id")
             if rid in receipt_ids:
                 found[rid] = row
+                if observe:
+                    observe(row)
         if len(found) == len(receipt_ids):
             break
         cursor = page.get("next_cursor")
