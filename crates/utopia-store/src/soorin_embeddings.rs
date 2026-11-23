@@ -22,8 +22,8 @@ pub async fn pending(
     document: Uuid,
     settings: &LlmSettings,
 ) -> AppResult<Vec<(Uuid, String)>> {
-    Ok(sqlx::query_as("SELECT id,text FROM chunks WHERE document_id=$1 AND superseded_at IS NULL AND (embedding IS NULL OR embedding_model IS DISTINCT FROM $2) ORDER BY seq")
-        .bind(document).bind(identity(settings)).fetch_all(pool).await?)
+    Ok(sqlx::query_as("SELECT id,text FROM chunks WHERE document_id=$1 AND superseded_at IS NULL AND (embedding IS NULL OR embedding_model IS DISTINCT FROM $2 OR vector_norm(embedding)=0 OR ($3::int IS NOT NULL AND vector_dims(embedding)<>$3)) ORDER BY seq")
+        .bind(document).bind(identity(settings)).bind(settings.embed_dim).fetch_all(pool).await?)
 }
 
 pub async fn write(
@@ -46,6 +46,7 @@ pub async fn write(
     for (id, vector) in items {
         if vector.is_empty()
             || vector.iter().any(|v| !v.is_finite())
+            || vector.iter().all(|v| *v == 0.0)
             || expected
                 .embed_dim
                 .is_some_and(|dim| vector.len() != dim as usize)
@@ -55,7 +56,7 @@ pub async fn write(
             ));
         }
         sqlx::query("UPDATE chunks c SET embedding=$2,embedding_model=$3 FROM knowledge_bases k WHERE c.id=$1 AND k.id=c.kb_id AND k.workspace_id=$4 AND c.superseded_at IS NULL
-          AND (c.embedding IS NULL OR c.embedding_model IS DISTINCT FROM $3)
+          AND (c.embedding IS NULL OR c.embedding_model IS DISTINCT FROM $3 OR vector_norm(c.embedding)=0 OR vector_dims(c.embedding)<>vector_dims($2))
           AND EXISTS(SELECT 1 FROM documents d WHERE d.id=c.document_id AND d.deleted_at IS NULL FOR SHARE)")
             .bind(id).bind(pgvector::Vector::from(vector.clone())).bind(&model).bind(expected.workspace_id).execute(&mut *tx).await?;
     }

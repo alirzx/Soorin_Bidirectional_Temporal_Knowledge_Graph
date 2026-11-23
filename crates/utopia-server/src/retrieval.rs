@@ -90,10 +90,11 @@ pub async fn hybrid_detailed(
     let ids: Vec<Uuid> = fused.iter().filter_map(|s| s.parse().ok()).collect();
     let mut chunks =
         utopia_store::documents::chunks_by_ids(&state.pool, kb_id, &ids, as_of).await?;
+    let authorized = chunks.len();
     let reranker = crate::reranker::apply(&state.pool, workspace_id, query, &mut chunks).await?;
     chunks.truncate(top_k);
     Ok(Retrieval {
-        metadata: serde_json::json!({"schema_version":"soorin.retrieval-metadata.v1","dense_executed":dense_executed,"lexical_method":if as_of.is_some(){"postgres_versioned_lexical"}else{"tantivy_bm25"},"lexical":if as_of.is_some(){"postgres_versioned_lexical"}else{"tantivy_bm25"},"reranker_status":reranker,"candidate_count":candidate_limit,"score_type":"rank_fusion","returned":chunks.len()}),
+        metadata: serde_json::json!({"schema_version":"soorin.retrieval-metadata.v1","dense_executed":dense_executed,"lexical_method":if as_of.is_some(){"postgres_versioned_lexical"}else{"tantivy_bm25"},"lexical":if as_of.is_some(){"postgres_versioned_lexical"}else{"tantivy_bm25"},"reranker_status":reranker,"candidate_count":candidate_limit,"unique_candidate_count":ids.len(),"authorized_candidate_count":authorized,"final_order":if reranker=="complete"{"cross_encoder"}else{"rank_fusion"},"score_type":"rank_fusion","returned":chunks.len()}),
         chunks,
     })
 }
@@ -126,10 +127,15 @@ async fn vector_channel(
             let Some(client) = llm_util::embed_client(&settings) else {
                 return Ok(None);
             };
-            let mut embeddings = match client.embed(&[query.to_string()]).await {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(error = %e, "查询 embedding 失败，降级为纯 BM25");
+            let mut embeddings = match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                client.embed(&[query.to_string()]),
+            )
+            .await
+            {
+                Ok(Ok(v)) => v,
+                _ => {
+                    tracing::warn!("查询 embedding 失败，降级为纯 BM25");
                     return Ok(None);
                 }
             };

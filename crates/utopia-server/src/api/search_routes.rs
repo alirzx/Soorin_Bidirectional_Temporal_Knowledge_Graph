@@ -32,14 +32,23 @@ pub async fn search(
     if q.is_empty() {
         return Err(AppError::invalid("empty_query", "Search query cannot be empty").into());
     }
+    if q.chars().count() > 4000 {
+        return Err(
+            AppError::invalid("query_too_long", "Search supports up to 4000 characters").into(),
+        );
+    }
     require_reader_kb(&state, &reader, kb_id).await?;
     let kb =
         utopia_store::access::require_kb(&state.pool, &reader.user, kb_id, Role::Viewer).await?;
 
     let top_k = req.top_k.unwrap_or(10).min(50);
     let as_of = super::graph_routes::parse_instant("as_of", req.as_of.as_deref())?;
-    let result =
-        retrieval::hybrid_detailed(&state, kb_id, kb.workspace_id, q, top_k, as_of, None).await?;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(240),
+        retrieval::hybrid_detailed(&state, kb_id, kb.workspace_id, q, top_k, as_of, None),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("search_deadline"))??;
     Ok(Json(
         json!({ "results": result.chunks, "retrieval":result.metadata }),
     ))

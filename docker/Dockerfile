@@ -96,6 +96,8 @@ COPY --from=build /src/target/release/utopia-server /usr/local/bin/utopia-server
 COPY --from=web /src/dist /app/web-dist
 RUN groupadd --gid 65532 soorin && useradd --uid 65532 --gid 65532 --no-create-home soorin \
     && mkdir -p /app/data && chown 65532:65532 /app/data
+ARG SOORIN_BUILD_REVISION=unknown
+LABEL org.opencontainers.image.revision=$SOORIN_BUILD_REVISION
 LABEL org.opencontainers.image.title="Soorin Bitemporal Knowledge Graph"
 ENV UTOPIA_WEB_DIST=/app/web-dist UTOPIA_DATA_DIR=/app/data \
     UTOPIA_SOC_PYTHON_ROOT=/app PYTHONDONTWRITEBYTECODE=1

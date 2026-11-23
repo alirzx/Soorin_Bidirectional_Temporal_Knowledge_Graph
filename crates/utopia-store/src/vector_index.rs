@@ -321,23 +321,23 @@ pub async fn drop(pool: &PgPool, target: Target, dims: usize) -> AppResult<()> {
 /// `hnsw.iterative_scan` 是 pgvector 0.8 才有的参数。旧版本第一次探一下、进程内
 /// 记住：探不到就不设——查询还是对的，只是共享表上的小库可能少回几行，
 /// 那正是 0.8 修的事
-async fn iterative_scan_available(pool: &PgPool) -> bool {
+async fn iterative_scan_available(conn: &mut PgConnection) -> AppResult<bool> {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     if let Some(v) = AVAILABLE.get() {
-        return *v;
+        return Ok(*v);
     }
-    let seen: Result<Option<String>, _> =
+    let seen: Option<String> =
         sqlx::query_scalar("SELECT current_setting('hnsw.iterative_scan', true)")
-            .fetch_one(pool)
-            .await;
-    let ok = matches!(seen, Ok(Some(_)));
+            .fetch_one(conn)
+            .await?;
+    let ok = seen.is_some();
     let _ = AVAILABLE.set(ok);
-    ok
+    Ok(ok)
 }
 
 /// 读路径的会话设置（规矩 3）。`SET LOCAL` 只在事务里生效，所以近邻查询都套一个事务
-pub async fn relaxed_order(pool: &PgPool, tx: &mut Transaction<'_, Postgres>) -> AppResult<()> {
-    if iterative_scan_available(pool).await {
+pub async fn relaxed_order(tx: &mut Transaction<'_, Postgres>) -> AppResult<()> {
+    if iterative_scan_available(&mut **tx).await? {
         (&mut **tx)
             .execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
             .await?;

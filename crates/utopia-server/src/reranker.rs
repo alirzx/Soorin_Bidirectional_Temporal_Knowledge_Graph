@@ -1,4 +1,6 @@
 //! Optional CPU reranking after authorized/temporal chunk reload and before top-k.
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use utopia_core::models::ChunkView;
 use uuid::Uuid;
@@ -24,28 +26,113 @@ pub async fn config(pool: &sqlx::PgPool, workspace: Uuid) -> anyhow::Result<Conf
         .unwrap_or_default())
 }
 
-pub fn ordered(rows: &serde_json::Value, size: usize) -> anyhow::Result<Vec<usize>> {
-    let rows = rows
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("rerank_invalid_shape"))?;
-    anyhow::ensure!(rows.len() == size, "rerank_missing_scores");
-    let mut seen = std::collections::HashSet::new();
-    let mut scores = Vec::new();
-    for row in rows {
-        let index = row["index"]
-            .as_u64()
-            .ok_or_else(|| anyhow::anyhow!("rerank_invalid_index"))? as usize;
-        let score = row["score"]
-            .as_f64()
-            .filter(|v| v.is_finite())
-            .ok_or_else(|| anyhow::anyhow!("rerank_invalid_score"))?;
-        anyhow::ensure!(index < size && seen.insert(index), "rerank_invalid_index");
-        scores.push((index, score));
-    }
-    scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    Ok(scores.into_iter().map(|(index, _)| index).collect())
+// One foreground reranker per app, leaving provider queue slots for embedding.
+static SEARCH_SLOT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+const MAX_BODY: usize = 300_000;
+const MAX_RESPONSE: usize = 16_384;
+
+#[derive(Deserialize)]
+struct Score {
+    index: usize,
+    score: f64,
 }
 
+async fn rank(
+    client: &reqwest::Client,
+    cfg: &Config,
+    query: &str,
+    texts: &[String],
+    batch_size: usize,
+) -> anyhow::Result<Vec<usize>> {
+    anyhow::ensure!(texts.len() <= 48, "candidate_bound");
+    let url = format!("{}/rerank", cfg.base_url.trim_end_matches('/'));
+    let mut scores = Vec::with_capacity(texts.len());
+    let mut start = 0;
+    let mut retry_available = true;
+    while start < texts.len() {
+        let mut end = texts.len().min(start + batch_size);
+        let body = loop {
+            let bytes = serde_json::to_vec(&serde_json::json!({
+                "model": cfg.model, "query": query, "texts": &texts[start..end],
+            }))?;
+            if bytes.len() <= MAX_BODY {
+                break bytes;
+            }
+            anyhow::ensure!(end > start + 1, "provider_request_size");
+            end = start + (end - start) / 2;
+        };
+        let mut response = loop {
+            let reply = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .body(body.clone())
+                .send()
+                .await
+                .map_err(|e| {
+                    if e.is_timeout() {
+                        anyhow::anyhow!("provider_timeout")
+                    } else if e.is_connect() {
+                        anyhow::anyhow!("provider_connect")
+                    } else {
+                        anyhow::anyhow!("provider_transport")
+                    }
+                })?;
+            let status = reply.status().as_u16();
+            if retry_available && matches!(status, 429 | 503) {
+                let delay = match reply.headers().get("retry-after") {
+                    None => Some(Duration::from_millis(250)),
+                    Some(header) => header
+                        .to_str()
+                        .ok()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .filter(|s| *s <= 5)
+                        .map(Duration::from_secs),
+                };
+                if let Some(delay) = delay {
+                    retry_available = false;
+                    drop(reply);
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+            }
+            anyhow::ensure!(reply.status().is_success(), "provider_http_{status}");
+            break reply;
+        };
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| anyhow::anyhow!("provider_read"))?
+        {
+            anyhow::ensure!(
+                bytes.len() + chunk.len() <= MAX_RESPONSE,
+                "provider_response_size"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        let rows: Vec<Score> = serde_json::from_slice(&bytes).map_err(|error| {
+            if error.is_data() {
+                anyhow::anyhow!("provider_invalid_scores")
+            } else {
+                anyhow::anyhow!("provider_invalid_json")
+            }
+        })?;
+        let size = end - start;
+        anyhow::ensure!(rows.len() == size, "provider_missing_scores");
+        let mut seen = vec![false; size];
+        for row in rows {
+            anyhow::ensure!(
+                row.index < size && !seen[row.index] && row.score.is_finite(),
+                "provider_invalid_scores"
+            );
+            seen[row.index] = true;
+            scores.push((start + row.index, row.score));
+        }
+        start = end;
+    }
+    scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
+    Ok(scores.into_iter().map(|(i, _)| i).collect())
+}
 
 /// CPU-first reranking limits are deployment-owned, not workspace-provided.
 /// Values outside the documented range fall back to safe defaults.
@@ -72,6 +159,16 @@ pub async fn apply(
     chunks: &mut Vec<ChunkView>,
 ) -> anyhow::Result<&'static str> {
     let cfg = config(pool, workspace).await?;
+    apply_config(&cfg, workspace, query, chunks, &SEARCH_SLOT).await
+}
+
+async fn apply_config(
+    cfg: &Config,
+    workspace: Uuid,
+    query: &str,
+    chunks: &mut Vec<ChunkView>,
+    slot: &tokio::sync::Semaphore,
+) -> anyhow::Result<&'static str> {
     if !cfg.enabled || chunks.is_empty() {
         return Ok("disabled");
     }
@@ -85,56 +182,23 @@ pub async fn apply(
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| anyhow::anyhow!("client_configuration"))?;
-        // Recall is bounded to 48. Never omit the tail or silently mix
-        // reranked and unreranked candidates; one failed batch falls back
-        // to the complete pre-rerank RRF order.
+        let _permit = slot
+            .try_acquire()
+            .map_err(|_| anyhow::anyhow!("search_capacity"))?;
         anyhow::ensure!(chunks.len() <= 48, "candidate_bound");
-        let mut scores = Vec::with_capacity(chunks.len());
-        for (batch, rows) in chunks.chunks(batch_size).enumerate() {
-            let texts: Vec<String> = rows
-                .iter()
-                .map(|row| row.text.chars().take(8000).collect())
-                .collect();
-            let response = http
-                .post(format!("{}/rerank", cfg.base_url.trim_end_matches('/')))
-                .json(&serde_json::json!({
-                    "query": query.chars().take(4000).collect::<String>(),
-                    "texts": texts,
-                    "model": cfg.model
-                }))
-                .send()
-                .await
-                .map_err(|error| {
-                    if error.is_timeout() {
-                        anyhow::anyhow!("provider_timeout")
-                    } else if error.is_connect() {
-                        anyhow::anyhow!("provider_connect")
-                    } else {
-                        anyhow::anyhow!("provider_transport")
-                    }
-                })?;
-            anyhow::ensure!(
-                response.status().is_success(),
-                "provider_http_{}",
-                response.status().as_u16()
-            );
-            let response: serde_json::Value = response
-                .json()
-                .await
-                .map_err(|_| anyhow::anyhow!("provider_invalid_json"))?;
-            ordered(&response, rows.len())
-                .map_err(|_| anyhow::anyhow!("provider_invalid_scores"))?;
-            // Index is batch-local in the model response.
-            for row in response.as_array().expect("validated by ordered") {
-                let local = row["index"].as_u64().expect("validated by ordered") as usize;
-                scores.push(serde_json::json!({
-                    "index": batch * batch_size + local,
-                    "score": row["score"]
-                }));
-            }
-        }
-        ordered(&serde_json::Value::Array(scores), chunks.len())
-            .map_err(|_| anyhow::anyhow!("aggregate_invalid_scores"))
+        let texts: Vec<String> = chunks
+            .iter()
+            .map(|c| c.text.trim().chars().take(8000).collect())
+            .collect();
+        let query: String = query.trim().chars().take(4000).collect();
+        let deadline = std::env::var("SOORIN_RERANK_DEADLINE_SECONDS").ok();
+        let seconds = bounded(deadline.as_deref(), 90, 5, 180);
+        tokio::time::timeout(
+            Duration::from_secs(seconds as u64),
+            rank(&http, cfg, &query, &texts, batch_size),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("rerank_deadline"))?
     }
     .await;
     match result {
@@ -187,21 +251,172 @@ mod tests {
         assert_eq!(bounded(Some("120"), 90, 5, 180), 120);
     }
 
-    #[test]
-    fn all_scores_are_checked_before_ranking() {
-        assert_eq!(
-            ordered(
-                &serde_json::json!([{"index":0,"score":0.2},{"index":1,"score":0.9}]),
-                2
+    #[tokio::test]
+    async fn local_scores_merge_across_wire_batches() {
+        use wiremock::{matchers::path, Mock, MockServer, Request, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(path("/rerank")).respond_with(|req: &Request| {
+            assert!(req.body.len() <= MAX_BODY);
+            let body: serde_json::Value = req.body_json().unwrap();
+            let rows: Vec<_> = body["texts"].as_array().unwrap().iter().enumerate()
+                .map(|(index, text)| serde_json::json!({"index":index, "score":text.as_str().unwrap().split(':').next().unwrap().parse::<usize>().unwrap()/2})).collect();
+            ResponseTemplate::new(200).set_body_json(rows)
+        }).mount(&server).await;
+        let cfg = Config {
+            base_url: server.uri(),
+            ..Default::default()
+        };
+        for n in [1, 2, 8, 16, 24, 48] {
+            let texts: Vec<_> = (0..n)
+                .map(|i| format!("{i}:{}", "🔥".repeat(7996)))
+                .collect();
+            let order = rank(&reqwest::Client::new(), &cfg, "id", &texts, 16)
+                .await
+                .unwrap();
+            let mut expected: Vec<_> = (0..n).collect();
+            expected.sort_by_key(|i| std::cmp::Reverse(i / 2));
+            assert_eq!(order, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_disconnect_and_duplicate_scores_are_errors() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let cfg = Config {
+            base_url: server.uri(),
+            ..Default::default()
+        };
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(200))
+            .build()
+            .unwrap();
+        let texts = ["one".into(), "two".into()];
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!([{"index":0,"score":1},{"index":0,"score":0}]),
+                ),
             )
-            .unwrap(),
-            vec![1, 0]
+            .mount(&server)
+            .await;
+        assert_eq!(
+            rank(&client, &cfg, "q", &texts, 2)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "provider_invalid_scores"
         );
-        assert!(ordered(
-            &serde_json::json!([{"index":0,"score":0.2},{"index":0,"score":0.9}]),
-            2
-        )
-        .is_err());
-        assert!(ordered(&serde_json::json!([{"index":0,"score":0.2}]), 2).is_err());
+        server.reset().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(1)))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            rank(&client, &cfg, "q", &texts, 2)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "provider_timeout"
+        );
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cfg = Config {
+            base_url: format!("http://{}", socket.local_addr().unwrap()),
+            ..Default::default()
+        };
+        drop(socket);
+        assert!(rank(&client, &cfg, "q", &texts, 2).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_search_and_saturated_model_recover() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"index":0,"score":1}])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cfg = Config {
+            enabled: true,
+            fallback: true,
+            base_url: server.uri(),
+            model: "test".into(),
+        };
+        let workspace = Uuid::now_v7();
+        let slot = tokio::sync::Semaphore::new(1);
+        let mut a = vec![ChunkView {
+            id: Uuid::now_v7(),
+            document_id: Uuid::now_v7(),
+            seq: 0,
+            filename: "fixture".into(),
+            text: "synthetic".into(),
+        }];
+        let mut b = a.clone();
+        let (left, right) = tokio::join!(
+            apply_config(&cfg, workspace, "query", &mut a, &slot),
+            apply_config(&cfg, workspace, "query", &mut b, &slot)
+        );
+        let mut statuses = [left.unwrap(), right.unwrap()];
+        statuses.sort();
+        assert_eq!(statuses, ["complete", "fallback"]);
+        assert_eq!(a[0].id, b[0].id);
+    }
+
+    #[tokio::test]
+    async fn failed_batches_never_publish_a_partial_order() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        for (status, body, calls) in [
+            (429, "", 2),
+            (503, "", 2),
+            (422, "", 1),
+            (200, "?", 1),
+            (200, "[]", 1),
+            (200, r#"[{"index":1,"score":1}]"#, 1),
+            (200, r#"[{"index":0,"score":null}]"#, 1),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!([{"index":0,"score":1}])),
+                )
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .set_body_string(body)
+                        .insert_header("retry-after", "0"),
+                )
+                .expect(calls)
+                .mount(&server)
+                .await;
+            let cfg = Config {
+                base_url: server.uri(),
+                ..Default::default()
+            };
+            assert!(rank(
+                &reqwest::Client::new(),
+                &cfg,
+                "id",
+                &["a".into(), "b".into()],
+                1
+            )
+            .await
+            .is_err());
+        }
     }
 }

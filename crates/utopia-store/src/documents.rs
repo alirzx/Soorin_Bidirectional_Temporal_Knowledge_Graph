@@ -1673,16 +1673,19 @@ pub async fn vector_search_model(
     model: Option<&str>,
 ) -> AppResult<Vec<Uuid>> {
     let dims = embedding.len();
-    if dims == 0 {
+    if dims == 0 || !embedding.iter().all(|v| v.is_finite()) || embedding.iter().all(|v| *v == 0.0)
+    {
         return Ok(Vec::new());
     }
     let query_vec = Vector::from(embedding.to_vec());
     let mut tx = pool.begin().await?;
-    crate::vector_index::relaxed_order(pool, &mut tx).await?;
+    crate::vector_index::relaxed_order(&mut tx).await?;
     let rows: Vec<(Uuid,)> = sqlx::query_as(&format!(
         "WITH nearest AS MATERIALIZED (
              SELECT id, {distance} AS distance FROM chunks c
              WHERE c.kb_id = $1 AND c.embedding IS NOT NULL AND {live}
+               AND vector_norm(c.embedding)>0
+               AND EXISTS(SELECT 1 FROM documents d WHERE d.id=c.document_id AND {doc_live})
                AND ($5::text IS NULL OR c.embedding_model=$5)
                AND {same_dims}
              ORDER BY {distance}
@@ -1690,6 +1693,7 @@ pub async fn vector_search_model(
          )
          SELECT id FROM nearest ORDER BY {resort}",
         live = crate::record_axis::chunk_live_at("c", as_of.map(|_| 4)),
+        doc_live = crate::record_axis::document_live_at("d", as_of.map(|_| 4)),
         same_dims = crate::vector_index::same_dims("c.embedding", dims),
         distance = crate::vector_index::distance("c.embedding", 2, dims),
         resort = crate::vector_index::RESORT,

@@ -25,8 +25,8 @@ pub async fn backfill(
         .await?
         .ok_or_else(|| utopia_core::AppError::Validation("embedding_not_configured".into()))?;
     let fingerprint = utopia_store::soorin_embeddings::identity(&settings);
-    let docs:Vec<(Uuid,Uuid)>=sqlx::query_as("SELECT DISTINCT c.document_id,c.kb_id FROM chunks c JOIN knowledge_bases k ON k.id=c.kb_id JOIN documents d ON d.id=c.document_id WHERE k.workspace_id=$1 AND d.deleted_at IS NULL AND c.superseded_at IS NULL AND (c.embedding IS NULL OR c.embedding_model IS DISTINCT FROM $2) ORDER BY c.document_id LIMIT 1000")
-        .bind(workspace).bind(fingerprint).fetch_all(&state.pool).await?;
+    let docs:Vec<(Uuid,Uuid)>=sqlx::query_as("SELECT DISTINCT c.document_id,c.kb_id FROM chunks c JOIN knowledge_bases k ON k.id=c.kb_id JOIN documents d ON d.id=c.document_id WHERE k.workspace_id=$1 AND d.deleted_at IS NULL AND c.superseded_at IS NULL AND (c.embedding IS NULL OR c.embedding_model IS DISTINCT FROM $2 OR vector_norm(c.embedding)=0 OR ($3::int IS NOT NULL AND vector_dims(c.embedding)<>$3)) ORDER BY c.document_id LIMIT 1000")
+        .bind(workspace).bind(fingerprint).bind(settings.embed_dim).fetch_all(&state.pool).await?;
     for (document, kb) in &docs {
         utopia_store::jobs::enqueue_unless_queued(
             &state.pool,

@@ -3029,7 +3029,7 @@ pub async fn nearest_typed_entities(
     };
     let dims = query_vec.as_slice().len();
     let mut tx = pool.begin().await?;
-    crate::vector_index::relaxed_order(pool, &mut tx).await?;
+    crate::vector_index::relaxed_order(&mut tx).await?;
     let rows = sqlx::query_as(&format!(
         "WITH my_docs AS (
              SELECT DISTINCT ev.document_id FROM fact_evidence ev

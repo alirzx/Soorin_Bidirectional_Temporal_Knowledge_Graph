@@ -91,6 +91,7 @@ impl EmbedCache {
     pub fn valid(settings: &LlmSettings, vector: &[f32]) -> bool {
         !vector.is_empty()
             && vector.iter().all(|v| v.is_finite())
+            && vector.iter().any(|v| *v != 0.0)
             && settings
                 .embed_dim
                 .is_none_or(|dim| dim > 0 && vector.len() == dim as usize)
