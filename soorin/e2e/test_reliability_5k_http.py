@@ -67,5 +67,89 @@ class Reliability5KTests(unittest.TestCase):
             self.assertTrue(result['sampled_graph_pass'])
 
 
+    def test_server_target_requires_exact_private_ports_and_volumes(self):
+        project = "soorin-tkg-server55"
+        app_volume = "soorin-tkg-server55_fresh_data_20261123"
+        db_volume = "soorin-tkg-server55_fresh_db_20261123"
+        def inspected(name, service):
+            self.assertEqual(name, project)
+            app = service == "app"
+            return {
+                "Config": {"Labels": {"com.docker.compose.project": name,
+                                      "com.docker.compose.service": service}},
+                "State": {"Running": True},
+                "NetworkSettings": {"Ports": {
+                    "1516/tcp" if app else "5432/tcp": [{
+                        "HostIp": "192.168.0.55" if app else "127.0.0.1",
+                        "HostPort": "2516" if app else "2517"}]}},
+                "Mounts": [{"Type": "volume", "Destination":
+                            "/app/data" if app else "/var/lib/postgresql/data",
+                            "Name": app_volume if app else db_volume}],
+            }
+        with patch.object(m, "_docker_inspect", side_effect=inspected):
+            m.verify_server_target("http://192.168.0.55:2516", project, 2517,
+                                   app_volume, db_volume)
+            with self.assertRaisesRegex(RuntimeError, "volume ownership mismatch"):
+                m.verify_server_target("http://192.168.0.55:2516", project, 2517,
+                                       "soorin-tkg-server55_wrong", db_volume)
+            with self.assertRaisesRegex(RuntimeError, "port mapping mismatch"):
+                m.verify_server_target("http://192.168.0.55:2518", project, 2517,
+                                       app_volume, db_volume)
+        for url in ("http://8.8.8.8:2516", "https://192.168.0.55:2516",
+                    "http://example.com:2516"):
+            with self.assertRaises(RuntimeError):
+                m.verify_server_target(url, project, 2517, app_volume, db_volume)
+
+    def test_server_receipt_verification_ignores_prior_kb_receipts(self):
+        with TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            data = b'{}\\n'
+            (out / "alerts.jsonl").write_bytes(data)
+            (out / "manifest.json").write_text(json.dumps({"files_sha256": {
+                "alerts.jsonl": m.hashlib.sha256(data).hexdigest()}}))
+            (out / "accepted.jsonl").write_text(json.dumps({
+                "item": "alerts.jsonl:0", "receipt_id": "receipt-new"}) + "\\n")
+            def remote(url, token, **kwargs):
+                if "/knowledge/receipts?limit=100" in url:
+                    return {"receipts": [
+                        {"receipt_id": "receipt-old", "status": "failed"},
+                        {"receipt_id": "receipt-new", "status": "bound", "delivery_state": "bound"}],
+                        "next_cursor": None}
+                if url.endswith("/receipt-new"):
+                    return {"status": "bound", "document": {
+                        "status": "ready", "graph_status": "done"},
+                        "relations": [{"binding": {"evidence_link_status": True}}]}
+                raise AssertionError(url)
+            with patch.object(m, "_json", side_effect=remote):
+                m.verify(out, "http://192.168.0.55:2516", "kb",
+                         "session", False, 1, .01, 1, run_scoped=True)
+            report = json.loads((out / "acceptance-report.json").read_text())
+            self.assertEqual(report["groups"], {"bound": 1})
+            self.assertTrue(report["receipt_binding_pass"])
+
+    def test_duplicate_receipt_ids_are_not_5500_distinct_admissions(self):
+        with TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            blob = b'{}\\n{}\\n'
+            (out / "alerts.jsonl").write_bytes(blob)
+            (out / "manifest.json").write_text(json.dumps({"files_sha256": {
+                "alerts.jsonl": m.hashlib.sha256(blob).hexdigest()}}))
+            (out / "accepted.jsonl").write_text(
+                json.dumps({"item": "alerts.jsonl:0", "receipt_id": "replayed"}) + "\\n" +
+                json.dumps({"item": "alerts.jsonl:1", "receipt_id": "replayed"}) + "\\n")
+            with self.assertRaisesRegex(RuntimeError, "same receipt"):
+                m.verify(out, m.DEFAULT_BASE, "kb", "session", False, 1, .01, 1, run_scoped=True)
+
+    def test_fixture_generation_start_index_avoids_smoke_record(self):
+        with TemporaryDirectory() as tmp:
+            from soorin.tests.mock_splunk.scripts.curated_qa_dataset import generate
+            out = Path(tmp) / "test-fixtures"
+            report = generate(out, 2, 1, start_index=1)
+            alert = json.loads((out / "alerts.jsonl").read_text().splitlines()[0])
+            revision = json.loads((out / "revisions.jsonl").read_text().splitlines()[0])
+            self.assertEqual(report["start_index"], 1)
+            self.assertEqual(alert["record"]["alert_row_id"], "soc-alert-synthetic-00001")
+            self.assertEqual(revision["record"]["source_revision_id"], "rev-2-00001")
+
 if __name__ == '__main__':
     unittest.main()
