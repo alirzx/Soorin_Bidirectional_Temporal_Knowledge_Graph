@@ -103,12 +103,12 @@ class Reliability5KTests(unittest.TestCase):
     def test_server_receipt_verification_ignores_prior_kb_receipts(self):
         with TemporaryDirectory() as tmp:
             out = Path(tmp)
-            data = b'{}\\n'
+            data = b'{}\n'
             (out / "alerts.jsonl").write_bytes(data)
             (out / "manifest.json").write_text(json.dumps({"files_sha256": {
                 "alerts.jsonl": m.hashlib.sha256(data).hexdigest()}}))
             (out / "accepted.jsonl").write_text(json.dumps({
-                "item": "alerts.jsonl:0", "receipt_id": "receipt-new"}) + "\\n")
+                "item": "alerts.jsonl:0", "receipt_id": "receipt-new"}) + "\n")
             def remote(url, token, **kwargs):
                 if "/knowledge/receipts?limit=100" in url:
                     return {"receipts": [
@@ -130,13 +130,13 @@ class Reliability5KTests(unittest.TestCase):
     def test_duplicate_receipt_ids_are_not_5500_distinct_admissions(self):
         with TemporaryDirectory() as tmp:
             out = Path(tmp)
-            blob = b'{}\\n{}\\n'
+            blob = b'{}\n{}\n'
             (out / "alerts.jsonl").write_bytes(blob)
             (out / "manifest.json").write_text(json.dumps({"files_sha256": {
                 "alerts.jsonl": m.hashlib.sha256(blob).hexdigest()}}))
             (out / "accepted.jsonl").write_text(
-                json.dumps({"item": "alerts.jsonl:0", "receipt_id": "replayed"}) + "\\n" +
-                json.dumps({"item": "alerts.jsonl:1", "receipt_id": "replayed"}) + "\\n")
+                json.dumps({"item": "alerts.jsonl:0", "receipt_id": "replayed"}) + "\n" +
+                json.dumps({"item": "alerts.jsonl:1", "receipt_id": "replayed"}) + "\n")
             with self.assertRaisesRegex(RuntimeError, "same receipt"):
                 m.verify(out, m.DEFAULT_BASE, "kb", "session", False, 1, .01, 1, run_scoped=True)
 
