@@ -279,7 +279,9 @@ pub async fn cleanup_missing(
     let ids = utopia_store::documents::list_missing(&state.pool, source_id).await?;
     for id in &ids {
         utopia_store::documents::delete(&state.pool, kb_id, *id, Some(user.id)).await?;
-        crate::pipeline::index_current(&state,*id,None).await.map_err(utopia_core::AppError::Other)?;
+        crate::pipeline::index_current(&state, *id, None)
+            .await
+            .map_err(utopia_core::AppError::Other)?;
     }
     // 与单篇删除同一个收尾：前提没了，派生当场跟上，而不是挂到下一轮定时推导（#875）。
     // 一批只推一遍

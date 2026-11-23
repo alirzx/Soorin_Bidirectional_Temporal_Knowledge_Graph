@@ -449,7 +449,9 @@ pub async fn delete(
 
     // 墓碑，不是减法（#268）：文档、分块、证据、原始文件都留着；只作废没有别的出处的事实
     let report = utopia_store::documents::delete(&state.pool, doc.kb_id, id, Some(user.id)).await?;
-    crate::pipeline::index_current(&state,id,None).await.map_err(AppError::Other)?;
+    crate::pipeline::index_current(&state, id, None)
+        .await
+        .map_err(AppError::Other)?;
     // 前提作废了，靠它推出来的派生随之失效——不等下一次定时重推
     settle_derivations(&state, doc.kb_id).await?;
     let _ = utopia_store::audit::record(

@@ -359,11 +359,15 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     assert_eq!(code, 200);
     assert_eq!(fallback["retrieval"]["dense_executed"], false);
     assert_eq!(fallback["retrieval"]["lexical_method"], "tantivy_bm25");
-    crate::errata::schedule_if_ready(&state,kb).await?;
-    let errata_jobs:i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind='errata_review' AND payload->>'kb_id'=$1")
-        .bind(kb.to_string()).fetch_one(&pool).await?;
-    assert_eq!(errata_jobs,0);
-    crate::errata::review(&state,kb).await?;
+    crate::errata::schedule_if_ready(&state, kb).await?;
+    let errata_jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE kind='errata_review' AND payload->>'kb_id'=$1",
+    )
+    .bind(kb.to_string())
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(errata_jobs, 0);
+    crate::errata::review(&state, kb).await?;
     provider.reset().await;
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .respond_with(
