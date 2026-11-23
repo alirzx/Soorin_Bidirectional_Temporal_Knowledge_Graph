@@ -46,6 +46,25 @@ pub fn ordered(rows: &serde_json::Value, size: usize) -> anyhow::Result<Vec<usiz
     Ok(scores.into_iter().map(|(index, _)| index).collect())
 }
 
+
+/// CPU-first reranking limits are deployment-owned, not workspace-provided.
+/// Values outside the documented range fall back to safe defaults.
+fn bounded(value: Option<&str>, default: usize, min: usize, max: usize) -> usize {
+    value
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| (min..=max).contains(n))
+        .unwrap_or(default)
+}
+
+fn tuning() -> (usize, u64) {
+    let batch = std::env::var("SOORIN_RERANK_BATCH_SIZE").ok();
+    let timeout = std::env::var("SOORIN_RERANK_TIMEOUT_SECONDS").ok();
+    (
+        bounded(batch.as_deref(), 8, 1, 16),
+        bounded(timeout.as_deref(), 90, 5, 180) as u64,
+    )
+}
+
 pub async fn apply(
     pool: &sqlx::PgPool,
     workspace: Uuid,
@@ -56,25 +75,68 @@ pub async fn apply(
     if !cfg.enabled || chunks.is_empty() {
         return Ok("disabled");
     }
-    let result = async {
-        utopia_llm::egress::require(&cfg.base_url)?;
-        let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::none()).build()?;
-        // The native recall bound is 48. Score in service-sized batches without
-        // dropping tail candidates; compare the same raw cross-encoder score.
-        anyhow::ensure!(chunks.len()<=48,"rerank_candidate_bound_exceeded");
-        let mut scores=Vec::new();
-        for (batch, rows) in chunks.chunks(16).enumerate() {
-            let texts:Vec<String>=rows.iter().map(|row|row.text.chars().take(8000).collect()).collect();
-            let response=http.post(format!("{}/rerank",cfg.base_url.trim_end_matches('/')))
-                .json(&serde_json::json!({"query":query.chars().take(4000).collect::<String>(),"texts":texts,"model":cfg.model})).send().await?;
-            anyhow::ensure!(response.status().is_success(),"rerank_provider_rejected");
-            let response:serde_json::Value=response.json().await?;
-            ordered(&response,rows.len())?;
-            for row in response.as_array().unwrap() { scores.push(serde_json::json!({"index":batch*16+row["index"].as_u64().unwrap() as usize,"score":row["score"]})); }
+    let (batch_size, timeout_seconds) = tuning();
+    let started = std::time::Instant::now();
+    let result: anyhow::Result<Vec<usize>> = async {
+        utopia_llm::egress::require(&cfg.base_url)
+            .map_err(|_| anyhow::anyhow!("egress_blocked"))?;
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout_seconds))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| anyhow::anyhow!("client_configuration"))?;
+        // Recall is bounded to 48. Never omit the tail or silently mix
+        // reranked and unreranked candidates; one failed batch falls back
+        // to the complete pre-rerank RRF order.
+        anyhow::ensure!(chunks.len() <= 48, "candidate_bound");
+        let mut scores = Vec::with_capacity(chunks.len());
+        for (batch, rows) in chunks.chunks(batch_size).enumerate() {
+            let texts: Vec<String> = rows
+                .iter()
+                .map(|row| row.text.chars().take(8000).collect())
+                .collect();
+            let response = http
+                .post(format!("{}/rerank", cfg.base_url.trim_end_matches('/')))
+                .json(&serde_json::json!({
+                    "query": query.chars().take(4000).collect::<String>(),
+                    "texts": texts,
+                    "model": cfg.model
+                }))
+                .send()
+                .await
+                .map_err(|error| {
+                    if error.is_timeout() {
+                        anyhow::anyhow!("provider_timeout")
+                    } else if error.is_connect() {
+                        anyhow::anyhow!("provider_connect")
+                    } else {
+                        anyhow::anyhow!("provider_transport")
+                    }
+                })?;
+            anyhow::ensure!(
+                response.status().is_success(),
+                "provider_http_{}",
+                response.status().as_u16()
+            );
+            let response: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|_| anyhow::anyhow!("provider_invalid_json"))?;
+            ordered(&response, rows.len())
+                .map_err(|_| anyhow::anyhow!("provider_invalid_scores"))?;
+            // Index is batch-local in the model response.
+            for row in response.as_array().expect("validated by ordered") {
+                let local = row["index"].as_u64().expect("validated by ordered") as usize;
+                scores.push(serde_json::json!({
+                    "index": batch * batch_size + local,
+                    "score": row["score"]
+                }));
+            }
         }
-        ordered(&serde_json::Value::Array(scores),chunks.len())
-    }.await;
+        ordered(&serde_json::Value::Array(scores), chunks.len())
+            .map_err(|_| anyhow::anyhow!("aggregate_invalid_scores"))
+    }
+    .await;
     match result {
         Ok(order) => {
             let original = chunks.clone();
@@ -82,19 +144,49 @@ pub async fn apply(
                 .into_iter()
                 .map(|index| original[index].clone())
                 .collect();
+            tracing::debug!(
+                %workspace,
+                candidate_count = chunks.len(),
+                batch_size,
+                elapsed_ms = started.elapsed().as_millis(),
+                "reranking complete"
+            );
             Ok("complete")
         }
-        Err(_) if cfg.fallback => {
-            tracing::warn!(%workspace, "reranker unavailable; preserving RRF ranking");
-            Ok("fallback")
+        Err(error) => {
+            // Log only controlled status/category, never request text, model
+            // payload, provider response bodies, URL or credentials.
+            tracing::warn!(
+                %workspace,
+                reason = %error,
+                candidate_count = chunks.len(),
+                batch_size,
+                timeout_seconds,
+                elapsed_ms = started.elapsed().as_millis(),
+                "reranker failed"
+            );
+            if cfg.fallback {
+                Ok("fallback")
+            } else {
+                anyhow::bail!("reranker_unavailable_and_fallback_disabled")
+            }
         }
-        Err(_) => anyhow::bail!("reranker_unavailable_and_fallback_disabled"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cpu_first_tuning_is_bounded() {
+        assert_eq!(bounded(None, 8, 1, 16), 8);
+        assert_eq!(bounded(Some("4"), 8, 1, 16), 4);
+        assert_eq!(bounded(Some("0"), 8, 1, 16), 8);
+        assert_eq!(bounded(Some("17"), 8, 1, 16), 8);
+        assert_eq!(bounded(Some("garbage"), 90, 5, 180), 90);
+        assert_eq!(bounded(Some("120"), 90, 5, 180), 120);
+    }
+
     #[test]
     fn all_scores_are_checked_before_ranking() {
         assert_eq!(
