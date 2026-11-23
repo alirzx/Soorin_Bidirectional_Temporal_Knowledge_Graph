@@ -110,7 +110,9 @@ pub async fn preview(
     headers: HeaderMap,
     raw: Bytes,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(normalize(&state, id, &headers, raw).await?))
+    let mut result = normalize(&state, id, &headers, raw).await?;
+    result["supports_acceptance_run"] = json!(true);
+    Ok(Json(result))
 }
 
 pub async fn ingest(

@@ -208,6 +208,7 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     let (preview_status, preview) =
         call(app.clone(), preview_path, "synthetic-only-token", curated).await?;
     assert_eq!(preview_status, 200);
+    assert_eq!(preview["supports_acceptance_run"], true);
     assert_eq!(preview["persistent_writes"], false);
     assert_eq!(preview["canonical_event"]["tenant_id"], "tenant-blue");
     let receipt_count: i64 =
@@ -236,6 +237,19 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     assert_eq!(status, 200);
     assert_eq!(receipt["receipt_id"], replay["receipt_id"]);
     assert_eq!(receipt["job_id"], replay["job_id"]);
+    assert_eq!(receipt["replayed"], false);
+    assert_eq!(replay["replayed"], true);
+    let collision = app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/sources/{source}/knowledge-events"))
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer synthetic-only-token")
+                .header("x-soorin-acceptance-run", Uuid::now_v7().to_string())
+                .body(Body::from(fixture().to_string()))?,
+        )
+        .await?;
+    assert_eq!(collision.status().as_u16(), 409);
     let calls = (0..8).map(|_| {
         call(
             app.clone(),
@@ -362,6 +376,33 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     let embedded: i64 = sqlx::query_scalar("SELECT count(*) FROM chunks WHERE document_id=$1 AND superseded_at IS NULL AND embedding IS NOT NULL")
         .bind(doc).fetch_one(&pool).await?;
     assert_eq!(embedded, 1);
+    sqlx::query("INSERT INTO memberships(workspace_id,user_id,role) VALUES($1,$2,'admin')")
+        .bind(ws)
+        .bind(user)
+        .execute(&pool)
+        .await?;
+    let backfill = format!("/api/v1/workspaces/{ws}/settings/embedding/backfill");
+    sqlx::query("UPDATE chunks SET embedding='[0,0]'::vector WHERE document_id=$1 AND superseded_at IS NULL")
+        .bind(doc)
+        .execute(&pool)
+        .await?;
+    for _ in 0..2 {
+        let (code, result) = call(app.clone(), backfill.clone(), &session, json!({})).await?;
+        assert_eq!(code, 200);
+        assert_eq!(result["queued"], 1);
+    }
+    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind='soc_reembed_document' AND status='queued' AND payload->>'document_id'=$1")
+        .bind(doc.to_string()).fetch_one(&pool).await?;
+    assert_eq!(queued, 1);
+    crate::dispatch(&state, &enrichment).await?;
+    let (code, result) = call(app.clone(), backfill, &session, json!({})).await?;
+    assert_eq!(code, 200);
+    assert_eq!(result["queued"], 0);
+    sqlx::query("DELETE FROM memberships WHERE workspace_id=$1 AND user_id=$2")
+        .bind(ws)
+        .bind(user)
+        .execute(&pool)
+        .await?;
     let (code, recovered) = call(
         app.clone(),
         search_path.clone(),
@@ -572,6 +613,23 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     assert_eq!(search["retrieval"]["reranker_status"], "complete");
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     server.abort();
+    let _ = server.await;
+    for (fallback, expected) in [(false, 500), (true, 200)] {
+        sqlx::query("UPDATE soorin_workspace_runtime SET reranker=jsonb_set(reranker,'{fallback}',$2) WHERE workspace_id=$1")
+            .bind(ws).bind(json!(fallback)).execute(&pool).await?;
+        let (status, response) = call(
+            router(state.clone(), &cfg),
+            format!("/api/v1/kbs/{kb}/search"),
+            &session,
+            json!({"q":"A1"}),
+        )
+        .await?;
+        assert_eq!(status, expected);
+        if fallback {
+            assert_eq!(response["retrieval"]["reranker_status"], "fallback");
+            assert!(!response["results"].as_array().unwrap().is_empty());
+        }
+    }
     sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
         .bind(kb.to_string())
         .execute(&pool)

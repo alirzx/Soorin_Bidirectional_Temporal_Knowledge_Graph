@@ -303,9 +303,32 @@ pub async fn ingest(
         event["event_type"]
     ]))
     .map_err(anyhow::Error::from)?;
+    let run = headers
+        .get("x-soorin-acceptance-run")
+        .map(|h| {
+            h.to_str()
+                .ok()
+                .and_then(|v| Uuid::parse_str(v).ok())
+                .ok_or_else(|| AppError::Validation("invalid acceptance run".into()))
+        })
+        .transpose()?;
     let mut tx = state.pool.begin().await?;
-    let (receipt,status):(Uuid,String)=sqlx::query_as("INSERT INTO soorin_ingestion_receipts(id,kb_id,source_id,source_key,checksum,payload) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(source_id,source_key,checksum) DO UPDATE SET updated_at=now() RETURNING id,status")
-        .bind(Uuid::now_v7()).bind(source.kb_id).bind(source_id).bind(key).bind(field(&event,"content_checksum")?).bind(&event).fetch_one(&mut *tx).await?;
+    // Serialize admission of revisions for this source record, including ordinary writers.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))")
+        .bind(source_id.to_string())
+        .bind(&key)
+        .execute(&mut *tx)
+        .await?;
+    if let Some(run_id) = run {
+        let occupied: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM soorin_ingestion_receipts WHERE source_id=$1 AND source_key=$2 AND acceptance_run IS DISTINCT FROM $3)")
+            .bind(source_id).bind(&key).bind(run_id).fetch_one(&mut *tx).await?;
+        if occupied {
+            return Err(AppError::Conflict("synthetic_record_range_occupied".into()).into());
+        }
+    }
+    let proposed = Uuid::now_v7();
+    let (receipt,status):(Uuid,String)=sqlx::query_as("INSERT INTO soorin_ingestion_receipts(id,kb_id,source_id,source_key,checksum,payload,acceptance_run) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(source_id,source_key,checksum) DO UPDATE SET updated_at=now() RETURNING id,status")
+        .bind(proposed).bind(source.kb_id).bind(source_id).bind(key).bind(field(&event,"content_checksum")?).bind(&event).bind(run).fetch_one(&mut *tx).await?;
     let existing:Option<(i64,String)>=sqlx::query_as("SELECT j.id,j.status FROM jobs j JOIN soorin_ingestion_receipts r ON r.job_id=j.id WHERE r.id=$1").bind(receipt).fetch_optional(&mut *tx).await?;
     let job = if matches!(status.as_str(), "bound" | "quarantined") || existing.is_some() {
         existing.map(|(id, _)| id)
@@ -327,7 +350,7 @@ pub async fn ingest(
         .await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"schema_version":"soorin.ingestion-receipt.v1","receipt_id":receipt,"job_id":job,"status":status}),
+        json!({"schema_version":"soorin.ingestion-receipt.v1","receipt_id":receipt,"job_id":job,"status":status,"replayed":receipt!=proposed}),
     ))
 }
 
@@ -803,6 +826,7 @@ async fn process_locked(
 
 #[derive(serde::Deserialize)]
 pub struct ReceiptPage {
+    acceptance_run: Option<Uuid>,
     before: Option<Uuid>,
     limit: Option<i64>,
 }
@@ -820,7 +844,7 @@ pub async fn receipts(
         return Err(AppError::Validation("limit must be 1..100".into()).into());
     }
     let mut rows:Vec<Value> = sqlx::query_scalar("WITH page AS MATERIALIZED (
-        SELECT id,created_at FROM soorin_ingestion_receipts WHERE kb_id=$1 AND
+        SELECT id,created_at FROM soorin_ingestion_receipts WHERE kb_id=$1 AND ($4::uuid IS NULL OR acceptance_run=$4) AND
         ($2::uuid IS NULL OR (created_at,id)<(SELECT created_at,id FROM soorin_ingestion_receipts WHERE kb_id=$1 AND id=$2))
         ORDER BY created_at DESC,id DESC LIMIT $3)
         SELECT jsonb_build_object('receipt_id',r.id,'source_id',r.source_id,'status',r.status,'failure_code',r.failure_code,
@@ -829,14 +853,14 @@ pub async fn receipts(
         'age_seconds',extract(epoch from now()-r.created_at))
         FROM page p JOIN soorin_ingestion_receipts r ON r.id=p.id JOIN soorin_receipt_delivery v ON v.id=p.id
         LEFT JOIN jobs j ON j.id=r.job_id ORDER BY p.created_at DESC,p.id DESC")
-        .bind(kb).bind(page.before).bind(limit+1).fetch_all(&state.pool).await?;
+        .bind(kb).bind(page.before).bind(limit+1).bind(page.acceptance_run).fetch_all(&state.pool).await?;
     let has_more = rows.len() > limit as usize;
     rows.truncate(limit as usize);
     let next = rows
         .last()
         .filter(|_| has_more)
         .map(|r| r["receipt_id"].clone());
-    let counts:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('status',status,'count',count(*)) FROM soorin_ingestion_receipts WHERE kb_id=$1 GROUP BY status ORDER BY status").bind(kb).fetch_all(&state.pool).await?;
+    let counts:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('status',status,'count',count(*)) FROM soorin_ingestion_receipts WHERE kb_id=$1 AND ($2::uuid IS NULL OR acceptance_run=$2) GROUP BY status ORDER BY status").bind(kb).bind(page.acceptance_run).fetch_all(&state.pool).await?;
     Ok(Json(
         json!({"schema_version":"soorin.ingestion-status.v1","counts":counts,"receipts":rows,"limit":limit,"next_cursor":next}),
     ))
