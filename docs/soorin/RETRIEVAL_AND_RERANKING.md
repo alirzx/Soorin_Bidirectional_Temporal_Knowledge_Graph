@@ -101,7 +101,8 @@ The reranking integration now defaults to **8 candidates per batch** and a
 environment variables on the **app** container only:
 
 - `SOORIN_RERANK_BATCH_SIZE`: integer 1..16, default 8; invalid values use 8.
-- `SOORIN_RERANK_TIMEOUT_SECONDS`: integer 5..180, default 90; invalid values use 90.
+- `SOORIN_RERANK_TIMEOUT_SECONDS` limits one POST to 5–180 seconds, default 90.
+- `SOORIN_RERANK_DEADLINE_SECONDS` limits the full batch sequence, including the shared transient retry, to 5–180 seconds, default 90.
 
 The values are read when a Search invokes the reranker; no change is made to
 the retrieval candidate ceiling (48), KB scope, temporal filters, result format,
@@ -116,7 +117,7 @@ Known categories include `egress_blocked`, `provider_timeout`,
 `provider_connect`, `provider_transport`, `provider_http_<status>`,
 `provider_invalid_json`, and `provider_invalid_scores`.
 No request content, model URL, provider response body, or credential is logged.
-Clients still receive the previous public `reranker_status` values.
+Clients still receive the previous public `reranker_status` values. `search_capacity` identifies concurrent foreground admission and `rerank_deadline` identifies the overall budget. For candidate counts, fixture metrics and the exact deployment gate see [Ingestion reliability](INGESTION_RELIABILITY_V1.md) and the [Server 55 release runbook](SERVER55_PRODUCTION_RELEASE.md).
 
 Before deployment, diagnose from the current running container:
 
