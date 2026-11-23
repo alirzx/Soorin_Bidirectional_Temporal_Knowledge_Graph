@@ -12,7 +12,7 @@ function inputs(node: ReactNode): Props[] {
 it("offers the full server worker backstop range and its fallback", () => {
   const worker = inputs(DeploymentAdmin())[0];
   expect(worker.max).toBe(256);
-  expect(worker.value).toBe(64);
+  expect(worker.value).toBe(8);
   worker.onChange!({ target: { value: "128" } } as ChangeEvent<HTMLInputElement>);
   expect(state.set).toHaveBeenCalledWith(128);
 });
