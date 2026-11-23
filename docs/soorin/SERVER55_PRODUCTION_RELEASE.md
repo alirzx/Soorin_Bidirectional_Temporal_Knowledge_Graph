@@ -176,7 +176,7 @@ install -m 600 "$override" "$save/${override##*/}"
 (cd "$save" && sha256sum db.dump globals.sql app-data.tar > SHA256SUMS && sha256sum -c SHA256SUMS)
 ```
 
-Require a verified restore of this backup set on an isolated restore target and confirm the encryption key can decrypt configuration. Archive listings alone do not validate restore. If the backup gate fails before recreation, the original app can be resumed with `"${dc[@]}" start app` while the existing database schema is intact.
+Require a verified restore of this backup set on an isolated restore target, confirm the encryption key can decrypt configuration and verify the selected recovery path before recreating the app. Archive listings alone do not validate restore. If the backup gate fails before recreation, the original app can be resumed with `"${dc[@]}" start app` while the existing database schema is intact.
 
 ```bash
 test "$(docker image inspect -f '{{.Id}}' "$tag")" = "$new"
@@ -214,7 +214,7 @@ For disposable validation omit server flags and use an existing dedicated accept
 
 ## Rollback and reclamation
 
-Compare `_sqlx_migrations` before and after deployment. Migration 10008 adds a nullable UUID and two partial indexes. It preserves all historical receipt values. Verify old-binary compatibility with **all** applied migrations and intervening writes in the isolated restore rehearsal. Stop for operator review if that evidence is missing. For a compatible schema, quiesce producers, check the recorded rollback tag still resolves to the recorded old ID and change only the app image.
+Compare `_sqlx_migrations` before and after deployment. Migration 10008 adds a nullable UUID and two partial indexes. It preserves all historical receipt values. The app runs SQLx migrations at startup. SQLx 0.8.6 rejects applied migrations absent from its embedded set. An image built from `3600a725` therefore cannot start against a database after migration 10008, even though the SQL change is additive. Confirm the actual rollback image against an isolated copy of the migrated database before deployment. If it predates an applied migration, plan either a compatible forward recovery image or an independently approved restore of the matched DB and app-data backup set. Stop for operator review if that recovery evidence is missing. Preserve the migration ledger. For a compatible schema, quiesce producers, check the recorded rollback tag still resolves to the recorded old ID and change only the app image.
 
 ```bash
 test "$(docker image inspect "$rollback" -f '{{.Id}}')" = "$old"
