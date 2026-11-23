@@ -97,15 +97,17 @@ def to_line(i, revision=1):
                       sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def generate(destination: Path, count: int, revision_count: int):
+def generate(destination: Path, count: int, revision_count: int, start_index: int = 0):
     if not 1 <= count <= 10000 or not 0 <= revision_count <= count:
         raise ValueError("requires 1..10000 alerts and revisions within alert count")
+    if start_index < 0 or start_index + count > 100000:
+        raise ValueError("requires nonnegative start_index and end index <=100000")
     if destination.exists() and any(destination.iterdir()):
         raise FileExistsError("output directory is not empty; refusing to replace QA fixtures")
     destination.mkdir(parents=True, exist_ok=True)
     rows = {
-        "alerts.jsonl": [to_line(i) for i in range(count)],
-        "revisions.jsonl": [to_line(i, 2) for i in range(revision_count)],
+        "alerts.jsonl": [to_line(i) for i in range(start_index, start_index + count)],
+        "revisions.jsonl": [to_line(i, 2) for i in range(start_index, start_index + revision_count)],
     }
     digests = {}
     for name, lines in rows.items():
@@ -118,7 +120,7 @@ def generate(destination: Path, count: int, revision_count: int):
         "profile": PROFILE,
         "source_system": "splunk", "source_instance": "splunk-e2e",
         "tenant_id": "tenant-blue", "alerts": count,
-        "separate_revisions": revision_count,
+        "separate_revisions": revision_count, "start_index": start_index,
         "scenarios": [s[0] for s in SCENARIOS],
         "files_sha256": digests,
         "notes": "No real SIEM records. Source clocks, identities and revised events are deterministic.",
@@ -132,8 +134,9 @@ def main(argv=None):
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--count", type=int, default=240)
     p.add_argument("--revisions", type=int, default=12)
+    p.add_argument("--start-index", type=int, default=0)
     args = p.parse_args(argv)
-    result = generate(args.out, args.count, args.revisions)
+    result = generate(args.out, args.count, args.revisions, start_index=args.start_index)
     print(json.dumps({"status": "GENERATED", "directory": str(args.out),
                       "alerts": result["alerts"],
                       "revisions": result["separate_revisions"]}))
