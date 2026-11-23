@@ -109,13 +109,29 @@ pub async fn enqueue_unless_queued_tx(
     kind: &str,
     payload: serde_json::Value,
 ) -> AppResult<Option<i64>> {
-    let payload = delivery_payload(payload);
+    let payload = if kind == "soc_reembed_document" {
+        let document = payload["document_id"]
+            .as_str()
+            .and_then(|id| Uuid::parse_str(id).ok())
+            .ok_or_else(|| {
+                utopia_core::AppError::Validation("document_id must be a UUID".into())
+            })?;
+        serde_json::json!({"document_id": document})
+    } else {
+        delivery_payload(payload)
+    };
     lock_delivery(tx, kind, &payload).await?;
+    // A running enrichment may already have read the old chunk set. Keep
+    // one queued successor and match both historical payload shapes by UUID.
     let row: Option<(i64,)> = sqlx::query_as(
         "INSERT INTO jobs (kind, payload)
          SELECT $1, $2
-          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND (payload = $2 OR
-                                   (payload ? 'deferred_since' AND payload - 'deferred_since' = $2)) AND status = 'queued')
+          WHERE NOT EXISTS (
+            SELECT 1 FROM jobs WHERE kind = $1 AND status = 'queued' AND
+              CASE WHEN kind = 'soc_reembed_document' THEN
+                payload->>'document_id' = ($2::jsonb)->>'document_id'
+              ELSE payload = $2 OR (payload ? 'deferred_since' AND payload - 'deferred_since' = $2)
+              END)
          RETURNING id",
     )
     .bind(kind)
@@ -399,7 +415,10 @@ async fn claim_one(owner: &mut sqlx::PgConnection, embed_slots: i64) -> AppResul
              SELECT id FROM jobs
              WHERE status = 'queued' AND run_at <= now()
                AND (kind <> 'soc_reembed_document' OR
-                 (SELECT count(*) FROM jobs WHERE kind='soc_reembed_document' AND status='running') < $1)
+                 ((SELECT count(*) FROM jobs WHERE kind='soc_reembed_document' AND status='running') < $1
+                  AND NOT EXISTS (SELECT 1 FROM jobs active
+                    WHERE active.kind='soc_reembed_document' AND active.status='running'
+                      AND active.payload->>'document_id'=jobs.payload->>'document_id')))
                AND (kind <> 'soc_ingest' OR (NOT EXISTS (
                  SELECT 1 FROM jobs active WHERE active.status='running' AND active.kind='soc_ingest'
                    AND active.payload->>'source_id'=jobs.payload->>'source_id'
@@ -742,15 +761,23 @@ mod tests {
         sqlx::query("CREATE TEMP TABLE jobs (LIKE public.jobs INCLUDING DEFAULTS) ON COMMIT DROP")
             .execute(&mut *tx)
             .await?;
-        sqlx::query("INSERT INTO jobs(id,kind,payload) VALUES (1,'soc_reembed_document','{}'),(2,'soc_reembed_document','{}'),(3,'materialize_typed','{}')")
+        sqlx::query("INSERT INTO jobs(id,kind,payload) VALUES (1,'soc_reembed_document',jsonb_build_object('document_id','one')),
+                     (2,'soc_reembed_document',jsonb_build_object('document_id','two')),
+                     (3,'materialize_typed','{}'),
+                     (4,'soc_reembed_document',jsonb_build_object('document_id','one'))")
             .execute(&mut *tx).await?;
         assert_eq!(claim_one(&mut tx, 1).await?.unwrap().id, 1);
         assert_eq!(claim_one(&mut tx, 1).await?.unwrap().id, 3);
         assert!(claim_one(&mut tx, 1).await?.is_none());
+        assert_eq!(claim_one(&mut tx, 2).await?.unwrap().id, 2);
+        sqlx::query("UPDATE jobs SET status='done' WHERE id=2")
+            .execute(&mut *tx)
+            .await?;
+        assert!(claim_one(&mut tx, 2).await?.is_none());
         sqlx::query("UPDATE jobs SET status='done' WHERE id=1")
             .execute(&mut *tx)
             .await?;
-        assert_eq!(claim_one(&mut tx, 1).await?.unwrap().id, 2);
+        assert_eq!(claim_one(&mut tx, 1).await?.unwrap().id, 4);
         tx.rollback().await?;
         Ok(())
     }

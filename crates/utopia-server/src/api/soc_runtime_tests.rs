@@ -386,10 +386,17 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
         .bind(doc)
         .execute(&pool)
         .await?;
-    for _ in 0..2 {
-        let (code, result) = call(app.clone(), backfill.clone(), &session, json!({})).await?;
+    let (first, second) = tokio::join!(
+        call(app.clone(), backfill.clone(), &session, json!({})),
+        call(app.clone(), backfill.clone(), &session, json!({})),
+    );
+    for response in [first?, second?] {
+        let (code, result) = response;
         assert_eq!(code, 200);
         assert_eq!(result["queued"], 1);
+        assert_eq!(result["eligible_documents"], 1);
+        assert_eq!(result["new_jobs"], 0);
+        assert_eq!(result["already_pending"], 1);
     }
     let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind='soc_reembed_document' AND status='queued' AND payload->>'document_id'=$1")
         .bind(doc.to_string()).fetch_one(&pool).await?;
@@ -398,6 +405,31 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     let (code, result) = call(app.clone(), backfill, &session, json!({})).await?;
     assert_eq!(code, 200);
     assert_eq!(result["queued"], 0);
+    // A previously completed delivery must be rescheduled after a fingerprint
+    // change. Concurrent backfills still insert exactly one new queued job.
+    sqlx::query("UPDATE jobs SET status='done' WHERE id=$1")
+        .bind(enrichment.id)
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "UPDATE chunks SET embedding_model='stale' WHERE document_id=$1 AND superseded_at IS NULL",
+    )
+    .bind(doc)
+    .execute(&pool)
+    .await?;
+    let backfill = format!("/api/v1/workspaces/{ws}/settings/embedding/backfill");
+    let (first, second) = tokio::join!(
+        call(app.clone(), backfill.clone(), &session, json!({})),
+        call(app.clone(), backfill.clone(), &session, json!({})),
+    );
+    let mut inserted = 0;
+    for (code, result) in [first?, second?] {
+        assert_eq!(code, 200);
+        assert_eq!(result["eligible_documents"], 1);
+        inserted += result["new_jobs"].as_u64().unwrap();
+    }
+    assert_eq!(inserted, 1);
+    crate::dispatch(&state, &enrichment).await?;
     sqlx::query("DELETE FROM memberships WHERE workspace_id=$1 AND user_id=$2")
         .bind(ws)
         .bind(user)
@@ -630,8 +662,9 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
             assert!(!response["results"].as_array().unwrap().is_empty());
         }
     }
-    sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
+    sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1 OR payload->>'document_id'=$2")
         .bind(kb.to_string())
+        .bind(doc.to_string())
         .execute(&pool)
         .await?;
     // A persisted receipt admitted by an older validator must not silently bind
@@ -651,6 +684,31 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
             .await?;
     assert_eq!(status.0, "quarantined");
     assert_eq!(status.1.as_deref(), Some("stored_event_requires_review"));
+    // Migration 10008 retains ordinary receipts and scopes synthetic pages.
+    let run_id = Uuid::now_v7();
+    let synthetic_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO soorin_ingestion_receipts(id,kb_id,source_id,source_key,checksum,payload,acceptance_run)
+        VALUES($1,$2,$3,'synthetic-page','synthetic',$4,$5)")
+        .bind(synthetic_id).bind(kb).bind(source).bind(&invalid).bind(run_id)
+        .execute(&pool).await?;
+    let receipt_path = format!("/api/v1/kbs/{kb}/knowledge/receipts");
+    for (suffix, expected) in [("".to_owned(), 3), (format!("?acceptance_run={run_id}"), 1)] {
+        let response = router(state.clone(), &cfg)
+            .oneshot(
+                Request::get(format!("{receipt_path}{suffix}"))
+                    .header("authorization", format!("Bearer {session}"))
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status().as_u16(), 200);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
+        let result: Value = serde_json::from_slice(&bytes)?;
+        let list = result["receipts"].as_array().unwrap();
+        assert_eq!(list.len(), expected);
+        assert!(list
+            .iter()
+            .any(|row| row["receipt_id"] == json!(synthetic_id)));
+    }
     let app = router(state.clone(), &cfg);
     // The curated ingest route creates the same native receipt and preserves
     // source authentication/checksum idempotency before any graph work.

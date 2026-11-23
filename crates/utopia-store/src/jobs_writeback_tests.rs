@@ -450,3 +450,51 @@ async fn a_panicking_handler_releases_its_slot_and_the_next_claim_finishes() -> 
     assert_eq!(state(&pool, id).await?.status, "done");
     remove(&pool, id).await
 }
+
+#[tokio::test]
+async fn enrichment_delivery_uses_document_identity_and_preserves_a_successor() -> anyhow::Result<()>
+{
+    let Some(url) = crate::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let kind = "soc_reembed_document";
+    let doc = Uuid::now_v7();
+    let payload = json!({"document_id":doc});
+    let legacy = json!({"document_id":doc,"kb_id":Uuid::now_v7(),"deferred_since":Utc::now()});
+
+    // A historical backfill row can already be queued, including retry metadata.
+    let existing = super::enqueue(&pool, kind, legacy.clone()).await?;
+    assert!(super::enqueue_unless_queued(&pool, kind, payload.clone())
+        .await?
+        .is_none());
+
+    // Simulate a running job that already read its snapshot, then schedule new work.
+    let claimed = claim_job(&pool, existing).await?;
+    let (first, second) = tokio::join!(
+        super::enqueue_unless_queued(&pool, kind, legacy),
+        super::enqueue_unless_queued(&pool, kind, payload.clone()),
+    );
+    let successors: Vec<_> = [first?, second?].into_iter().flatten().collect();
+    assert_eq!(successors.len(), 1);
+    let successor = successors[0];
+    assert_eq!(state(&pool, successor).await?.payload, payload);
+    assert!(super::enqueue_unless_queued(&pool, kind, payload.clone())
+        .await?
+        .is_none());
+
+    assert!(persist_outcome(&pool, &claimed, &JobOutcome::Done, Utc::now()).await?);
+    let claimed = claim_job(&pool, successor).await?;
+    assert!(persist_outcome(&pool, &claimed, &JobOutcome::Done, Utc::now()).await?);
+    let new_version = super::enqueue_unless_queued(&pool, kind, payload)
+        .await?
+        .unwrap();
+    let unrelated =
+        super::enqueue_unless_queued(&pool, kind, json!({"document_id":Uuid::now_v7()}))
+            .await?
+            .unwrap();
+    for id in [existing, successor, new_version, unrelated] {
+        remove(&pool, id).await?;
+    }
+    Ok(())
+}
