@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded, resumable 5k+ synthetic SOC HTTP acceptance for disposable TKG Compose.
+"""Bounded, resumable 5k+ synthetic SOC HTTP acceptance for isolated or explicitly approved TKG Compose.
 
 Place in soorin/e2e/reliability_5k_http.py and invoke as:
   python3 -m soorin.e2e.reliability_5k_http --mode prepare --count 5500 --out /mnt/X/Soorin/tkg-acceptance-5k
@@ -7,8 +7,9 @@ Place in soorin/e2e/reliability_5k_http.py and invoke as:
   python3 -m soorin.e2e.reliability_5k_http --mode verify --out /mnt/X/Soorin/tkg-acceptance-5k --source-id "$SOURCE_ID" --kb-id "$KB_ID"
 
 This never creates users, modifies Docker, deletes volumes or exposes secrets in reports.
-It intentionally accepts only a Docker Compose project with a loopback-bound app/db
-and project-scoped named volumes. Use an entirely NEW KB/source for every run.
+Default mode accepts only a disposable loopback Compose target. An opt-in server
+profile verifies the exact existing app/db ports and volumes, never changes Docker,
+and verifies only receipt IDs from the current journal. Use unique test records.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import argparse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -84,13 +86,61 @@ def verify_disposable_target(base: str, project: str, db_port: int) -> None:
             raise RuntimeError(f"volume ownership mismatch: {service}")
 
 
-def prepare(out: Path, count: int, revisions: int) -> None:
+def verify_server_target(base: str, project: str, db_port: int,
+                         app_volume: str, db_volume: str) -> None:
+    """Read-only ownership check for an explicitly selected existing TKG server."""
+    u = parse.urlsplit(base)
+    try:
+        host = ipaddress.ip_address(u.hostname or "")
+    except ValueError as exc:
+        raise RuntimeError("server API must use a literal private IP") from exc
+    if (u.scheme != "http" or host.version != 4 or not host.is_private or
+            host.is_unspecified or host.is_link_local or not u.port or
+            u.username or u.password or u.path not in {"", "/"} or u.query or u.fragment):
+        raise RuntimeError("refusing public or malformed server API target")
+    if not project.startswith("soorin-tkg-") or project.startswith("soorin-tkg-acceptance-"):
+        raise RuntimeError("server profile requires an established soorin-tkg project")
+    if not (1 <= db_port <= 65535) or db_port == u.port:
+        raise RuntimeError("invalid server DB port")
+    if (not app_volume.startswith(project + "_") or
+            not db_volume.startswith(project + "_") or app_volume == db_volume):
+        raise RuntimeError("server volumes must be distinct and owned by the selected project")
+    for service, target, container_port, expected_host, expected_port, volume in (
+        ("app", "/app/data", "1516/tcp", str(host), u.port, app_volume),
+        ("db", "/var/lib/postgresql/data", "5432/tcp", "127.0.0.1", db_port, db_volume),
+    ):
+        obj = _docker_inspect(project, service)
+        labels = obj.get("Config", {}).get("Labels") or {}
+        if labels.get("com.docker.compose.project") != project or labels.get("com.docker.compose.service") != service:
+            raise RuntimeError(f"ownership mismatch: {service}")
+        if not obj.get("State", {}).get("Running"):
+            raise RuntimeError(f"not running: {service}")
+        ports = obj.get("NetworkSettings", {}).get("Ports", {}).get(container_port) or []
+        if len(ports) != 1 or ports[0].get("HostIp") != expected_host or int(ports[0]["HostPort"]) != expected_port:
+            raise RuntimeError(f"port mapping mismatch: {service}")
+        mounts = [m for m in obj.get("Mounts", []) if m.get("Destination") == target]
+        if len(mounts) != 1 or mounts[0].get("Type") != "volume" or mounts[0].get("Name") != volume:
+            raise RuntimeError(f"volume ownership mismatch: {service}")
+
+
+def verify_source_in_kb(base: str, kb: str, source: str, session: str) -> None:
+    """Fail closed if the supplied push token would target an unrelated KB."""
+    response = _json(f"{base}/api/v1/kbs/{kb}/sources", session)
+    sources = response.get("sources")
+    if not isinstance(sources, list) or not any(
+        row.get("id") == source and row.get("kind") == "statements"
+        for row in sources if isinstance(row, dict)
+    ):
+        raise RuntimeError("source is not a Statements source in the selected KB")
+
+
+def prepare(out: Path, count: int, revisions: int, start_index: int = 0) -> None:
     from soorin.tests.mock_splunk.scripts.curated_qa_dataset import generate
     if out.exists() and any(out.iterdir()):
         raise RuntimeError("output directory is not empty; use a new directory or --mode send")
-    report = generate(out, count, revisions)
+    report = generate(out, count, revisions, start_index=start_index)
     print(json.dumps({"phase": "prepared", "alerts": report["alerts"],
-                      "revisions": report["separate_revisions"], "path": str(out)}))
+                      "revisions": report["separate_revisions"], "start_index": start_index, "path": str(out)}))
 
 
 def load_payloads(out: Path, include_revisions: bool) -> list[tuple[str, bytes]]:
@@ -210,28 +260,78 @@ def status_groups(value: dict) -> dict[str, int]:
                          for key in {str(x.get("status")) for x in groups}}))
 
 
+
+def journal_receipt_groups(base: str, kb: str, session: str,
+                           receipt_ids: set[str]) -> tuple[dict[str, int], int, dict[str, int]]:
+    """Page KB receipt metadata and count only IDs acknowledged in THIS run.
+
+    A shared KB can contain old receipts; never use its global summary as a run
+    acceptance oracle. This API is payload-free and paginated (100 per page).
+    """
+    found: dict[str, dict] = {}
+    cursor = None
+    cursors: set[str] = set()
+    for _ in range(2000):
+        suffix = "?limit=100"
+        if cursor:
+            suffix += "&before=" + parse.quote(cursor, safe="")
+        page = _json(f"{base}/api/v1/kbs/{kb}/knowledge/receipts{suffix}", session)
+        rows = page.get("receipts")
+        if not isinstance(rows, list):
+            raise RuntimeError("receipt listing missing receipts")
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError("malformed receipt listing")
+            rid = row.get("receipt_id")
+            if rid in receipt_ids:
+                found[rid] = row
+        if len(found) == len(receipt_ids):
+            break
+        cursor = page.get("next_cursor")
+        if not cursor:
+            break
+        if not isinstance(cursor, str) or cursor in cursors:
+            raise RuntimeError("invalid/repeated receipt page cursor")
+        cursors.add(cursor)
+    else:
+        raise RuntimeError("receipt pagination safety limit exceeded")
+    statuses = dict(Counter(str(row.get("status", "unknown")) for row in found.values()))
+    deliveries = dict(Counter(str(row.get("delivery_state", "unknown")) for row in found.values()))
+    return statuses, len(receipt_ids) - len(found), deliveries
+
+
+
 def verify(out: Path, base: str, kb: str, session: str, include_revisions: bool,
-           deadline: int, interval: float, sample: int) -> None:
+           deadline: int, interval: float, sample: int, *, run_scoped: bool = False) -> None:
     expected = len(load_payloads(out, include_revisions))
     accepted = existing_acceptances(out / "accepted.jsonl")
     if len(accepted) != expected:
         raise RuntimeError(f"{len(accepted)} accepted vs {expected} expected; finish --mode send")
+    receipt_ids = set(accepted.values())
+    if len(receipt_ids) != expected:
+        raise RuntimeError("multiple fixture records resolved to the same receipt; check replay/overlap")
     summary_url = f"{base}/api/v1/kbs/{kb}/knowledge/receipts/summary"
     started = time.monotonic()
     groups = {}
+    missing = 0
+    deliveries = {}
     while True:
-        value = _json(summary_url, session, timeout=30)
-        groups = status_groups(value)
+        if run_scoped:
+            groups, missing, deliveries = journal_receipt_groups(base, kb, session, receipt_ids)
+        else:
+            value = _json(summary_url, session, timeout=30)
+            groups = status_groups(value)
         total = sum(groups.values())
         print(json.dumps({"phase": "materialization", "groups": groups, "total": total,
-                          "expected": expected, "elapsed_seconds": round(time.monotonic()-started, 1)}), flush=True)
-        if total == expected and groups.get("bound", 0) == expected:
+                          "missing": missing, "expected": expected,
+                          "elapsed_seconds": round(time.monotonic()-started, 1)}), flush=True)
+        if missing == 0 and total == expected and groups.get("bound", 0) == expected:
             break
         if time.monotonic() - started >= deadline:
             break
         time.sleep(interval)
     graph_checks = []
-    if groups.get("bound", 0) == expected:
+    if missing == 0 and groups.get("bound", 0) == expected:
         ids = list(dict.fromkeys(accepted.values()))
         for rid in ids[:sample]:
             detail = _json(f"{base}/api/v1/kbs/{kb}/knowledge/receipts/{rid}", session)
@@ -246,10 +346,12 @@ def verify(out: Path, base: str, kb: str, session: str, include_revisions: bool,
             graph_checks.append(healthy)
     result = {"schema_version": "soorin.local-5k-acceptance.v1", "synthetic": True,
               "admitted": len(accepted), "expected": expected, "groups": groups,
+              "run_scoped": run_scoped, "missing_run_receipts": missing,
+              "run_delivery_states": deliveries,
               "seconds_waited": round(time.monotonic() - started, 1),
               "sampled_graph_checks": len(graph_checks),
               "sampled_graph_checks_passed": sum(graph_checks),
-              "receipt_binding_pass": groups.get("bound", 0) == expected and sum(groups.values()) == expected,
+              "receipt_binding_pass": missing == 0 and groups.get("bound", 0) == expected and sum(groups.values()) == expected,
               "sampled_graph_pass": len(graph_checks) == sample and all(graph_checks)}
     (out / "acceptance-report.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({"phase": "verify_final", **result}), flush=True)
@@ -263,10 +365,15 @@ def main() -> None:
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--count", type=int, default=5500)
     p.add_argument("--revisions", type=int, default=0)
+    p.add_argument("--start-index", type=int, default=0, help="first synthetic alert index; use 1 on Server 55 after smoke alert zero")
     p.add_argument("--include-revisions", action="store_true")
     p.add_argument("--base-url", default=DEFAULT_BASE)
     p.add_argument("--project", default=DEFAULT_PROJECT)
     p.add_argument("--db-port", type=int, default=2627)
+    p.add_argument("--target-profile", choices=["disposable", "server"], default="disposable")
+    p.add_argument("--allow-existing-server", action="store_true", help="explicit opt-in to the live TKG server lab")
+    p.add_argument("--expected-app-volume", default="")
+    p.add_argument("--expected-db-volume", default="")
     p.add_argument("--source-id", default=os.environ.get("SOURCE_ID", ""))
     p.add_argument("--kb-id", default=os.environ.get("KB_ID", ""))
     p.add_argument("--workers", type=int, default=2)
@@ -279,9 +386,22 @@ def main() -> None:
     if not 1 <= args.workers <= 8 or not 1 <= args.attempts <= 8 or not 0 < args.rps <= 100:
         p.error("workers 1..8, attempts 1..8, rps 0..100 required")
     if args.mode == "prepare":
-        prepare(args.out, args.count, args.revisions)
+        if args.start_index < 0 or args.start_index + args.count > 100000:
+            p.error("start-index must be >=0 and end index <=100000")
+        prepare(args.out, args.count, args.revisions, args.start_index)
         return
-    verify_disposable_target(args.base_url, args.project, args.db_port)
+    if args.target_profile == "server":
+        if not args.allow_existing_server:
+            p.error("server profile requires --allow-existing-server")
+        if not (args.expected_app_volume and args.expected_db_volume):
+            p.error("server profile requires both expected volume names")
+        verify_server_target(args.base_url, args.project, args.db_port,
+                             args.expected_app_volume, args.expected_db_volume)
+        if not args.kb_id or not args.source_id or not os.environ.get("SESSION_TOKEN"):
+            p.error("server profile requires KB_ID, SOURCE_ID and SESSION_TOKEN for scoped verification")
+        verify_source_in_kb(args.base_url, args.kb_id, args.source_id, os.environ["SESSION_TOKEN"])
+    else:
+        verify_disposable_target(args.base_url, args.project, args.db_port)
     if args.mode == "send":
         if not args.source_id or not os.environ.get("INGEST_TOKEN"):
             p.error("SOURCE_ID/--source-id and INGEST_TOKEN are required")
@@ -293,7 +413,8 @@ def main() -> None:
         if not 1 <= args.sample <= 100:
             p.error("sample must be 1..100")
         verify(args.out, args.base_url, args.kb_id, os.environ["SESSION_TOKEN"],
-               args.include_revisions, args.deadline, args.interval, args.sample)
+               args.include_revisions, args.deadline, args.interval, args.sample,
+               run_scoped=args.target_profile == "server")
 
 
 if __name__ == "__main__":
