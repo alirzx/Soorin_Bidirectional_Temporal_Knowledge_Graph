@@ -137,12 +137,22 @@ class ProductionAcceptance(unittest.TestCase):
                                  "dense_executed":True,"reranker_status":"complete"}}
         coverage = [{"status":"FAIL","missing":1},{"status":"PASS","missing":0}]
         with patch.object(http,"_json",side_effect=remote), patch.object(suite,"profile"), \
-             patch.object(http,"_docker_inspect",return_value={"Id":"container"}), \
-             patch.object(suite,"db",return_value=0), patch.object(suite,"snapshot",return_value={"deployment":{}}), \
+             patch.object(http,"_docker_inspect",return_value={"Id":"container","Image":"image","Config":{}}), \
+             patch.object(suite,"db",return_value=0), patch.object(suite,"snapshot",return_value={"deployment":{},"image_id":"image","revision":None}), \
              patch.object(suite,"coverage",side_effect=coverage), patch.object(suite.time,"sleep"):
             for mode in ("preflight", "send", "verify"):
                 suite.main([mode, *self.args])
             self.assertEqual(suite.report(self.out), "PASS")
+            manifest_path = self.out / "manifest.json"
+            original = manifest_path.read_text()
+            manifest_path.write_text(original + "\n")
+            self.assertEqual(suite.report(self.out), "INCONCLUSIVE")
+            manifest_path.write_text(original)
+            self.assertEqual(suite.report(self.out), "PASS")
+            with patch.object(http, "_docker_inspect", return_value={"Id":"replacement","Image":"new","Config":{}}):
+                with self.assertRaisesRegex(ValueError, "deployed target changed"):
+                    suite.main(["send", *self.args])
+            self.assertEqual(suite.report(self.out), "INCONCLUSIVE")
             with patch.object(suite,"db",return_value=1), self.assertRaisesRegex(ValueError,"occupied"):
                 suite.main(["preflight",*self.args])
         self.assertEqual(suite.read(self.out,"job-metrics")["bound_latency_seconds"]["p95"], 2)

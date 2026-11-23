@@ -40,6 +40,17 @@ def save(out, name, obj):
     tmp.replace(out / (name + ".json"))
 
 
+def file_digest(path):
+    with path.open("rb") as file:
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def evidence_inputs(out):
+    return {name: file_digest(out / name)
+            for name in ("manifest.json", "alerts.jsonl", "accepted.jsonl", "failed.jsonl", "run-target.json",
+                         *(name + ".json" for name in REPORTS))}
+
+
 def distribution(values):
     if not values:
         return None
@@ -125,6 +136,17 @@ def preflight(a, m):
             any(event[k] != m["scope"][k] for k in ("tenant_id", "source_instance", "source_system"))):
         raise ValueError("source scope or guarded-admission capability mismatch")
     database = http._docker_inspect(a.project, "db")["Id"]
+    app = http._docker_inspect(a.project, "app")
+    target = {"database_id": database, "app_container_id": app["Id"], "image_id": app["Image"],
+              "revision": (app["Config"].get("Labels") or {}).get("org.opencontainers.image.revision")}
+    bound = a.out / "run-target.json"
+    identity = {"target": target, "manifest_digest": file_digest(a.out / "manifest.json")}
+    if bound.exists() and read(a.out, "run-target") != identity:
+        save(a.out, "verified-inputs", {})
+        report(a.out)
+        raise ValueError("run inputs or deployed target changed; use a new run directory")
+    if a.mode == "verify" and not bound.exists():
+        raise ValueError("send the dataset on this target before verifying")
     first, last = (json.loads(rows[i][1])["record"]["alert_row_id"] for i in (0, -1))
     occupied = db(database, """
         SELECT count(*) FROM soorin_ingestion_receipts WHERE source_id=:'source'::uuid
@@ -133,6 +155,10 @@ def preflight(a, m):
     """, source=source, run=str(UUID(m["run_id"])), first=first, last=last)
     if occupied:
         raise ValueError("synthetic record range occupied by another run")
+    if a.mode == "send" and not bound.exists():
+        if any((a.out / name).stat().st_size for name in ("accepted.jsonl", "failed.jsonl")):
+            raise ValueError("existing journals lack target provenance; use a new run directory")
+        save(a.out, "run-target", identity)
     return database
 
 
@@ -437,6 +463,14 @@ def verify(a, m, database):
                        for k in ("recall5", "recall10", "mrr10", "ndcg10")}})
     resource = read(out, "resource-summary")
     resource.update(after=snapshot(a, database), status="PASS" if "before" in resource else "INCONCLUSIVE")
+    target = read(out, "run-target")["target"]
+    final_app = http._docker_inspect(a.project, "app")
+    final_db = http._docker_inspect(a.project, "db")
+    if (final_app["Id"] != target["app_container_id"] or final_db["Id"] != target["database_id"] or
+            any(sample["image_id"] != target["image_id"] or sample["revision"] != target["revision"]
+                for sample in [resource.get("before", {}), resource["after"], *resource.get("during", [])]
+                if sample)):
+        resource["status"] = "FAIL"
     if a.target_profile == "server" and "before" in resource:
         before, after = resource["before"], resource["after"]
         resource["root_space_used_delta_bytes"] = before["root_free_bytes"] - after["root_free_bytes"]
@@ -452,6 +486,7 @@ def verify(a, m, database):
             else:
                 resource["model_busy_fraction"][role] = (end["inference_seconds"] - start["inference_seconds"]) / duration
     save(out, "resource-summary", resource)
+    save(out, "verified-inputs", evidence_inputs(out))
 
 
 def report(out):
@@ -459,6 +494,11 @@ def report(out):
     values = set(states.values())
     status = ("PASS" if values == {"PASS"} else "FAIL" if "FAIL" in values else
               "NOT_TESTED" if values == {"NOT_TESTED"} else "INCONCLUSIVE")
+    if status == "PASS":
+        proof = out / "verified-inputs.json"
+        if not proof.exists() or read(out, "verified-inputs") != evidence_inputs(out):
+            status = "INCONCLUSIVE"
+            states["verified_inputs"] = "INCONCLUSIVE"
     manifest = read(out, "manifest")
     before = read(out, "resource-summary").get("before", {})
     result = {"status": status, "gates": states, "run_id": manifest["run_id"], "count": manifest["alerts"],
