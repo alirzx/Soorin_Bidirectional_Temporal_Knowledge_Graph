@@ -93,7 +93,7 @@ async fn the_two_defaults_say_the_same_number(pool: &PgPool) -> anyhow::Result<(
     tx.rollback().await?; // **一定回滚**：deployment_settings 是单例，删了服务就没设置了
 
     // access.rs 的 unwrap_or 里那个数
-    let rust_fallback = 64;
+    let rust_fallback = utopia_store::access::DEFAULT_WORKER_CONCURRENCY;
     assert_eq!(
         column_default, rust_fallback,
         "列缺省是 {column_default}，Rust 兜底是 {rust_fallback}——两处漂开了"

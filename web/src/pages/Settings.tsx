@@ -193,7 +193,7 @@ export function DeploymentAdmin() {
     queryFn: api.adminDeployment,
   });
   const [workers, setWorkers] = useState<number | null>(null);
-  const shown = workers ?? dep.data?.worker_concurrency ?? 64;
+  const shown = workers ?? dep.data?.worker_concurrency ?? 8;
   // 按模型的并发：缺省值 + 每个在用模型的覆盖
   const [modelDefault, setModelDefault] = useState<number | null>(null);
   const shownDefault =

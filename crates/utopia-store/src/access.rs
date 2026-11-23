@@ -219,16 +219,20 @@ pub async fn set_default_ontology_lang(pool: &PgPool, value: &str) -> AppResult<
     Ok(())
 }
 
+/// Conservative single-node CPU-first worker default. Operator overrides in the
+/// deployment_settings singleton remain authoritative; tune with queue/pool metrics.
+pub const DEFAULT_WORKER_CONCURRENCY: i32 = 8;
+
 /// 任务 worker 并发数（系统设置可改，改动即时生效——见 jobs::run_worker）。
 pub async fn worker_concurrency(pool: &PgPool) -> AppResult<i32> {
     let row: Option<(i32,)> =
         sqlx::query_as("SELECT worker_concurrency FROM deployment_settings LIMIT 1")
             .fetch_optional(pool)
             .await?;
-    // 与 `deployment_settings.worker_concurrency` 的列缺省保持一致（迁移 0011）。
+    // 与 `deployment_settings.worker_concurrency` 的列缺省保持一致（迁移 10007）。
     // 两处分开写是因为一处在 SQL、一处在 Rust，改一处不会带上另一处——
     // `the_backstop_can_be_raised` 那条测试盯着这件事
-    Ok(row.map(|(v,)| v).unwrap_or(64))
+    Ok(row.map(|(v,)| v).unwrap_or(DEFAULT_WORKER_CONCURRENCY))
 }
 
 pub async fn set_worker_concurrency(pool: &PgPool, value: i32) -> AppResult<()> {
