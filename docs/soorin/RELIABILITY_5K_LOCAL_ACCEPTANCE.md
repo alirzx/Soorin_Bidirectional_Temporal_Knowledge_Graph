@@ -11,6 +11,114 @@
 - Do not use real customer alerts. The 5,500 dataset is generated from `soorin.tests.mock_splunk.scripts.curated_qa_dataset`.
 - This tool does not create or delete Docker resources and will refuse non-disposable targets.
 
+
+## Existing Server 55 acceptance (opt-in, same images)
+
+The previous disposable-only test mode remains unchanged. This is a separate,
+explicitly authorized profile for an already-running TKG QA server. The runner
+**never** rebuilds Docker images, recreates containers, modifies Compose,
+removes volumes, or deploys code. It only reads container metadata and sends
+synthetic HTTP traffic to the **selected** KB/Statements source.
+
+Server 55 configuration, as verified on 2026-11-23:
+
+- Repository checkout: `/home/api/Soorin_TKG`, commit `90b0ee6`.
+- Docker Compose project: `soorin-tkg-server55`.
+- App: `http://192.168.0.55:2516` (private LAN).
+- PostgreSQL: `127.0.0.1:2517` (loopback).
+- Current app data volume: `soorin-tkg-server55_fresh_data_20261123`.
+- Current database volume: `soorin-tkg-server55_fresh_db_20261123`.
+- Model artifact/cache volumes are **not changed**.
+
+### Preconditions and scope
+
+1. Use the shell on Server 55 with access to Docker and the Git checkout.
+   Confirm `git rev-parse HEAD` and image/DB health independently. Running
+   this Python script does not require an application/container rebuild.
+2. The `Default Workspace` and KB `SoorinSOC_Knowledge_Base` contain the
+   SOC ontology (17 entity types, 15 relation types), tenant/source binding
+   `tenant-blue/splunk/splunk-e2e`, and a `statements` source.
+3. Source ID must be from that KB. `SESSION_TOKEN` is a KB administrator
+   session; `INGEST_TOKEN` is the **source-specific** write credential.
+   Never paste credentials into logs, command flags, reports or Git.
+4. This KB contains the already-ingested smoke record
+   `soc-alert-synthetic-00000`. Use `--start-index 1` to avoid it. For
+   another 5,500-alert attempt against the **same source**, use a different,
+   nonoverlapping start index or a new dedicated KB/source.
+5. Explicit `--target-profile server --allow-existing-server` plus exact
+   Compose project, DB port, expected app and DB Volume names are mandatory.
+   The runner checks Docker ownership, mounts, and actual published ports,
+   including LAN/loopback. The default disposable mode still rejects this
+   existing deployment.
+6. The server verification uses **only the unique receipt IDs acknowledged
+   in the run journal**, not the entire pre-existing KB receipt totals.
+   It pages the existing payload-free KB receipt endpoint, then samples graph
+   diagnostics for materialized evidence. Missing or duplicate IDs fail.
+7. Run bounded tests of 10 or 100 alerts first, inspect service pressure,
+   and only then attempt 5,500. This is an operational load test on a server
+   also hosting Agentic_SOC and DLP; choose an appropriate maintenance window.
+
+### Commands (same Bash shell)
+
+```bash
+cd /home/api/Soorin_TKG
+python3 -m unittest soorin.e2e.test_reliability_5k_http -v
+
+export PROJECT=soorin-tkg-server55
+export KB_ID=01a2077c-4257-7b10-ac10-baa234ebe307
+export SOURCE_ID=01a20782-9d6c-7931-82d3-0a55df6bed66
+export BASE_URL=http://192.168.0.55:2516
+# Existing authenticated shell must export SESSION_TOKEN and INGEST_TOKEN.
+test -n "${SESSION_TOKEN:-}" && test -n "${INGEST_TOKEN:-}" || exit 1
+
+# Read-only container and volume check, without exposing tokens.
+docker ps --filter "label=com.docker.compose.project=$PROJECT"
+docker inspect soorin-tkg-server55-app-1 \
+  --format '{{range .Mounts}}{{println .Name .Destination}}{{end}}'
+docker inspect soorin-tkg-server55-db-1 \
+  --format '{{range .Mounts}}{{println .Name .Destination}}{{end}}'
+
+RUN_DIR="$HOME/tkg-test-runs/server55-5k-$(date -u +%Y%m%dT%H%M%SZ)"
+COMMON=(
+  --target-profile server --allow-existing-server
+  --project "$PROJECT" --base-url "$BASE_URL"
+  --db-port 2517
+  --expected-app-volume soorin-tkg-server55_fresh_data_20261123
+  --expected-db-volume soorin-tkg-server55_fresh_db_20261123
+  --source-id "$SOURCE_ID" --kb-id "$KB_ID"
+)
+python3 -m soorin.e2e.reliability_5k_http \
+  --mode prepare --out "$RUN_DIR" --count 10 --revisions 0 --start-index 1
+python3 -m soorin.e2e.reliability_5k_http \
+  --mode send --out "$RUN_DIR" "${COMMON[@]}" --workers 1 --rps 1
+python3 -m soorin.e2e.reliability_5k_http \
+  --mode verify --out "$RUN_DIR" "${COMMON[@]}" --deadline 1200 --sample 10
+```
+
+For the later **5,500-alert run**, choose a new `RUN_DIR`, use
+`--count 5500 --start-index 11`, then repeat send/verify. Increase the
+sampling and deadline deliberately after the 10/100 test. The sender defaults
+to bounded retries; rerunning send resumes from `accepted.jsonl`.
+Do not delete a partially successful run directory or reuse its indices in a
+different run against the same source.
+
+### Important limits and follow-up
+
+- A successful `bound` receipt proves durable identity/graph binding, not
+  execution of dense embeddings or reranking. Inspect search metadata:
+  `dense_executed`, `lexical_method`, and `reranker_status`.
+- This verifies source-scoped admissions, eventual binding, and sampled graph
+  evidence; it is **not** a production benchmark without memory/CPU/IO,
+  queue pressure, latency percentiles, and independent SQL verification.
+- The current worker default (64) may overwhelm the shared Server 55 CPU
+  during high-volume tests. Measure and adjust deployment settings through
+  documented administrative endpoints, **not** by changing Agentic_SOC/DLP.
+- A failed receipt must be inspected through KB-scoped receipt diagnostics
+  before any manual retry. Do not mass requeue unrelated jobs.
+- Since the runner is outside the Docker image, editing/syncing its Python
+  files requires **no** rebuilt images or container restart.
+
+
 ## Generate, send, verify
 
 ```bash
