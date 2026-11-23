@@ -411,3 +411,42 @@ async fn a_second_worker_cannot_recover_live_claims() -> anyhow::Result<()> {
     sqlx::Connection::close(super::worker_owner(&pool).await?).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn a_panicking_handler_releases_its_slot_and_the_next_claim_finishes() -> anyhow::Result<()> {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let Some(url) = crate::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let job = running_job(&pool, 1).await?;
+    let id = job.id;
+    let running = Arc::new(AtomicUsize::new(1));
+    let finished = Arc::new(tokio::sync::Notify::new());
+    super::execute_claim(
+        pool.clone(),
+        job,
+        |_| async { panic!("synthetic panic") },
+        running.clone(),
+        finished.clone(),
+    )
+    .await;
+    assert_eq!(running.load(Ordering::Relaxed), 0);
+    assert_eq!(state(&pool, id).await?.status, "queued");
+    let claimed = claim_job(&pool, id).await?;
+    running.store(1, Ordering::Relaxed);
+    super::execute_claim(
+        pool.clone(),
+        claimed,
+        |_| async { Ok(()) },
+        running.clone(),
+        finished,
+    )
+    .await;
+    assert_eq!(running.load(Ordering::Relaxed), 0);
+    assert_eq!(state(&pool, id).await?.status, "done");
+    remove(&pool, id).await
+}

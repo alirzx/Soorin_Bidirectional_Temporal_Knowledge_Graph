@@ -387,7 +387,7 @@ pub async fn status_in_kb(pool: &PgPool, kb_id: Uuid, id: i64) -> AppResult<Opti
 }
 
 /// 认领一个到期任务；没有则返回 None。
-async fn claim_one(owner: &mut sqlx::PgConnection) -> AppResult<Option<Job>> {
+async fn claim_one(owner: &mut sqlx::PgConnection, embed_slots: i64) -> AppResult<Option<Job>> {
     let job = sqlx::query_as(
         "UPDATE jobs SET status = 'running', locked_at = now(),
                 document_version = CASE WHEN kind IN ('process_document','extract_document') AND
@@ -398,6 +398,8 @@ async fn claim_one(owner: &mut sqlx::PgConnection) -> AppResult<Option<Job>> {
          WHERE id = (
              SELECT id FROM jobs
              WHERE status = 'queued' AND run_at <= now()
+               AND (kind <> 'soc_reembed_document' OR
+                 (SELECT count(*) FROM jobs WHERE kind='soc_reembed_document' AND status='running') < $1)
                AND (kind <> 'soc_ingest' OR (NOT EXISTS (
                  SELECT 1 FROM jobs active WHERE active.status='running' AND active.kind='soc_ingest'
                    AND active.payload->>'source_id'=jobs.payload->>'source_id'
@@ -410,6 +412,7 @@ async fn claim_one(owner: &mut sqlx::PgConnection) -> AppResult<Option<Job>> {
          )
          RETURNING id, kind, payload, attempts, max_attempts, locked_at",
     )
+    .bind(embed_slots)
     .fetch_optional(owner)
     .await?;
     Ok(job)
@@ -676,42 +679,16 @@ where
             tokio::select! { _ = finished.notified() => {}, _ = tokio::time::sleep(IDLE_POLL) => { sqlx::query("SELECT 1").execute(&mut owner).await?; } }
             continue;
         }
-        match claim_one(&mut owner).await? {
+        match claim_one(&mut owner, cap.saturating_sub(1).clamp(1, 2) as i64).await? {
             Some(job) => {
-                let finished = finished.clone();
                 running.fetch_add(1, Ordering::Relaxed);
-                let pool = pool.clone();
-                let handler = handler.clone();
-                let running = running.clone();
-                tokio::spawn(async move {
-                    // **处理器 panic 也要收尸。** 直接 `handler(job).await` 的话，
-                    // panic 会把这个 spawn 出来的 future 一起掀掉：`mark_failed`
-                    // 不会跑（任务行永远停在 running，无错误无重试），`running`
-                    // 也不会减（每 panic 一次就永久少一个并发名额，攒够 cap 之后
-                    // 整个队列不再认领任何任务）。套一层 spawn，panic 变成
-                    // JoinError 拿回来，两件事就都还在。
-                    let inner = {
-                        let (handler, job) = (handler.clone(), job.clone());
-                        tokio::spawn(async move { handler(job).await })
-                    };
-                    let result = match inner.await {
-                        Ok(r) => r,
-                        Err(join) => {
-                            Err(anyhow::anyhow!("任务处理器 panic（详情见 stderr）：{join}"))
-                        }
-                    };
-                    let completed_at = Utc::now();
-                    let outcome = match result {
-                        Ok(()) => JobOutcome::Done,
-                        Err(e) => {
-                            tracing::warn!(job_id = job.id, kind = %job.kind, error = %e, "任务执行失败");
-                            JobOutcome::failed(&job, &e)
-                        }
-                    };
-                    persist_with_retry(&pool, &job, &outcome, completed_at).await;
-                    running.fetch_sub(1, Ordering::Relaxed);
-                    finished.notify_one();
-                });
+                tokio::spawn(execute_claim(
+                    pool.clone(),
+                    job,
+                    handler.clone(),
+                    running.clone(),
+                    finished.clone(),
+                ));
             }
             None => {
                 tokio::select! { _ = finished.notified() => {}, _ = wait_for_work(listener.as_mut(), IDLE_POLL) => {} }
@@ -720,16 +697,64 @@ where
     }
 }
 
+// Keep the handler in its own task so unwinding still reaches fenced writeback
+// and releases the worker slot. Logs contain the bounded outcome class only.
+async fn execute_claim<F, Fut>(
+    pool: PgPool,
+    job: Job,
+    handler: F,
+    running: Arc<AtomicUsize>,
+    finished: Arc<tokio::sync::Notify>,
+) where
+    F: FnOnce(Job) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    let claimed = job.clone();
+    let outcome = match tokio::spawn(async move { handler(claimed).await }).await {
+        Ok(Ok(())) => JobOutcome::Done,
+        Ok(Err(error)) => JobOutcome::failed(&job, &error),
+        Err(_) => JobOutcome::failed(&job, &anyhow::anyhow!("worker_handler_interrupted")),
+    };
+    if let JobOutcome::Failed { class, .. } = &outcome {
+        tracing::warn!(job_id=job.id, kind=%job.kind, failure_class=class, "job handler failed");
+    }
+    persist_with_retry(&pool, &job, &outcome, Utc::now()).await;
+    running.fetch_sub(1, Ordering::Relaxed);
+    finished.notify_one();
+}
+
 #[cfg(test)]
 #[path = "jobs_writeback_tests.rs"]
 mod writeback_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{deferred_retry_secs, retry_delay};
+    use super::{claim_one, deferred_retry_secs, retry_delay, PgPool};
     use std::time::Duration;
 
-    /// 退避照旧：30s、120s、270s，第三次之后放弃。
+    #[tokio::test]
+    async fn enrichment_backlog_leaves_room_for_graph_work() -> anyhow::Result<()> {
+        let Some(url) = crate::test_db::url() else {
+            return Ok(());
+        };
+        let pool = PgPool::connect(&url).await?;
+        let mut tx = pool.begin().await?;
+        sqlx::query("CREATE TEMP TABLE jobs (LIKE public.jobs INCLUDING DEFAULTS) ON COMMIT DROP")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO jobs(id,kind,payload) VALUES (1,'soc_reembed_document','{}'),(2,'soc_reembed_document','{}'),(3,'materialize_typed','{}')")
+            .execute(&mut *tx).await?;
+        assert_eq!(claim_one(&mut tx, 1).await?.unwrap().id, 1);
+        assert_eq!(claim_one(&mut tx, 1).await?.unwrap().id, 3);
+        assert!(claim_one(&mut tx, 1).await?.is_none());
+        sqlx::query("UPDATE jobs SET status='done' WHERE id=1")
+            .execute(&mut *tx)
+            .await?;
+        assert_eq!(claim_one(&mut tx, 1).await?.unwrap().id, 2);
+        tx.rollback().await?;
+        Ok(())
+    }
+
     #[test]
     fn an_ordinary_failure_backs_off_and_then_gives_up() {
         assert_eq!(retry_delay(1, 3, false), Some(30));
