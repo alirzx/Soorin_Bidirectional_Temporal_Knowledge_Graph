@@ -87,3 +87,53 @@ remains a separate native retrieval concern.
 ## V1 baseline update
 
 V1 baseline exposes `lexical_method` additively (retaining `lexical`) and includes retrieval diagnostics in MCP search_chunks structuredContent. Invalid MCP as_of errors instead of searching today. REST search accepts KB-scoped read PATs. UI displays reranker_status=complete as executed. Exact authority lookup is `/knowledge/resolve`; BM25/name similarity is never exact resolution. See [agent contracts](AGENT_TOOL_CONTRACTS.md).
+
+
+## CPU-only reranker diagnostics and safe tuning
+
+The consolidated three-model CPU service shares **one** inference slot (with at
+most four queued callers). The initial Rust reranker requested up to 16
+candidate pairs per call with a 30-second HTTP timeout. This can be insufficient
+on a busy CPU host even if a separate two-candidate model smoke test passed.
+
+The reranking integration now defaults to **8 candidates per batch** and a
+**90-second per-request timeout**. Operators can tune these deployment-owned
+environment variables on the **app** container only:
+
+- `SOORIN_RERANK_BATCH_SIZE`: integer 1..16, default 8; invalid values use 8.
+- `SOORIN_RERANK_TIMEOUT_SECONDS`: integer 5..180, default 90; invalid values use 90.
+
+The values are read when a Search invokes the reranker; no change is made to
+the retrieval candidate ceiling (48), KB scope, temporal filters, result format,
+or RRF fallback policy. These changes require **building/deploying the new Rust
+app image**; merely checking out source does not change a running container.
+An application recreation without a rebuilt image cannot apply these Rust
+changes. Keep the existing database and cache volumes intact.
+
+A fallback now emits a structured, **sanitized** warning: `reason`,
+`candidate_count`, `batch_size`, `timeout_seconds`, `elapsed_ms`.
+Known categories include `egress_blocked`, `provider_timeout`,
+`provider_connect`, `provider_transport`, `provider_http_<status>`,
+`provider_invalid_json`, and `provider_invalid_scores`.
+No request content, model URL, provider response body, or credential is logged.
+Clients still receive the previous public `reranker_status` values.
+
+Before deployment, diagnose from the current running container:
+
+1. Check app `UTOPIA_MODEL_TRUSTED_ORIGINS` contains the exact model origin
+   `http://models:8081`. Do not add external or unapproved destinations.
+2. Use the pinned model's `/rerank` contract and time two synthetic batches
+   of 2 and 8 candidates directly from inside the app network.
+3. Check model `/ready` call counters before and after Search. A static
+   reranker counter with fallback often indicates egress/configuration/transport
+   failure; an increment suggests the service received at least a request.
+4. Finish background embedding/backfill before benchmarking. The shared CPU
+   inference gate serializes heavy work and can return 429 under saturation.
+5. Verify `reranker_status=complete`, no unauthorized cross-KB results,
+   latency and answer relevance on a controlled SOC query set. `fallback`
+   remains a degraded but usable RRF result, not a passing reranker test.
+
+Do not start the 5,500-alert acceptance while a model saturation incident is
+unresolved. Even after retrieval succeeds, separately verify run-scoped
+receipt binding, active vector coverage, identity resolution, temporal
+evidence context, tenant isolation, and recovery behavior.
