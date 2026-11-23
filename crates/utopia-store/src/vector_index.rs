@@ -337,7 +337,7 @@ async fn iterative_scan_available(conn: &mut PgConnection) -> AppResult<bool> {
 
 /// 读路径的会话设置（规矩 3）。`SET LOCAL` 只在事务里生效，所以近邻查询都套一个事务
 pub async fn relaxed_order(tx: &mut Transaction<'_, Postgres>) -> AppResult<()> {
-    if iterative_scan_available(&mut **tx).await? {
+    if iterative_scan_available(tx).await? {
         (&mut **tx)
             .execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
             .await?;
