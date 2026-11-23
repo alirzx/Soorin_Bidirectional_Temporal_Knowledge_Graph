@@ -110,7 +110,7 @@ different run against the same source.
 - This verifies source-scoped admissions, eventual binding, and sampled graph
   evidence; it is **not** a production benchmark without memory/CPU/IO,
   queue pressure, latency percentiles, and independent SQL verification.
-- The current worker default (64) may overwhelm the shared Server 55 CPU
+- The previous worker default (64) may overwhelm the shared Server 55 CPU
   during high-volume tests. Measure and adjust deployment settings through
   documented administrative endpoints, **not** by changing Agentic_SOC/DLP.
 - A failed receipt must be inspected through KB-scoped receipt diagnostics
