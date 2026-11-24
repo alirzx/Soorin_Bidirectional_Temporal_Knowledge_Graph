@@ -256,6 +256,7 @@ async fn run(state: &AppState, doc: &utopia_core::models::Document) -> anyhow::R
         .bind(chunk_count)
         .execute(&mut *tx)
         .await?;
+        let mut enrichment = None;
         if updated.rows_affected() == 1 {
             let payload = serde_json::json!({"document_id":document_id});
             if extracts {
@@ -267,7 +268,7 @@ async fn run(state: &AppState, doc: &utopia_core::models::Document) -> anyhow::R
                 .await?;
             }
             if settings.as_ref().is_some_and(|s| s.embed_ready()) {
-                utopia_store::jobs::enqueue_unless_queued_tx(
+                enrichment = utopia_store::jobs::enqueue_unless_queued_tx(
                     &mut tx,
                     "soc_reembed_document",
                     payload,
@@ -276,6 +277,9 @@ async fn run(state: &AppState, doc: &utopia_core::models::Document) -> anyhow::R
             }
         }
         tx.commit().await?;
+        if let Some(job_id) = enrichment {
+            tracing::debug!(%document_id, kb_id=%doc.kb_id, job_id, "soc.embedding_scheduled");
+        }
         state.emit_document(doc.kb_id, document_id);
         return Ok(());
     }

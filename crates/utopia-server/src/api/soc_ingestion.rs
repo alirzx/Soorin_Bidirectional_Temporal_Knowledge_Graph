@@ -272,6 +272,8 @@ pub async fn ingest(
     {
         return Err(AppError::Unauthorized.into());
     }
+    let started = std::time::Instant::now();
+    tracing::debug!(%source_id, kb_id=%source.kb_id, "soc.received");
     super::soc_event_validation::storage_policy(
         &event,
         std::env::var("UTOPIA_SOC_ALLOW_SENSITIVE_PAYLOAD").as_deref() == Ok("1"),
@@ -349,6 +351,8 @@ pub async fn ingest(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    tracing::debug!(%source_id, kb_id=%source.kb_id, receipt_id=%receipt, job_id=?job,
+        replayed=receipt!=proposed, duration_ms=started.elapsed().as_millis(), "soc.receipt_created");
     Ok(Json(
         json!({"schema_version":"soorin.ingestion-receipt.v1","receipt_id":receipt,"job_id":job,"status":status,"replayed":receipt!=proposed}),
     ))
@@ -515,6 +519,8 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
             .bind(id)
             .fetch_one(&state.pool)
             .await?;
+    let started = std::time::Instant::now();
+    tracing::debug!(receipt_id=%id, kb_id=%kb, %source_id, "soc.materialization_started");
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(90),
         process_locked(state, id, kb, source_id, &event, &status),
@@ -535,6 +541,13 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
         .into_iter()
         .find(|code| message.starts_with(code))
         .unwrap_or("soc_ingest_retryable_failure");
+        let reason = if utopia_core::is_deferred(error).is_some() {
+            "deferred"
+        } else {
+            "failed"
+        };
+        tracing::debug!(receipt_id=%id, kb_id=%kb, %source_id, failure_code=code, status=reason,
+            duration_ms=started.elapsed().as_millis(), "soc.materialization_failed");
         let _ = sqlx::query(
             "UPDATE soorin_ingestion_receipts SET failure_code=$2,updated_at=now() WHERE id=$1 AND status NOT IN ('bound','quarantined')",
         )
@@ -548,6 +561,10 @@ pub async fn process(state: &AppState, id: Uuid) -> anyhow::Result<()> {
         .bind(owner)
         .execute(&state.pool)
         .await;
+    if result.is_ok() {
+        tracing::debug!(receipt_id=%id, kb_id=%kb, %source_id,
+            duration_ms=started.elapsed().as_millis(), "soc.materialization_completed");
+    }
     result
 }
 
@@ -821,6 +838,7 @@ async fn process_locked(
         .bind(id)
         .execute(&state.pool)
         .await?;
+    tracing::debug!(receipt_id=%id, kb_id=%kb, %source_id, "soc.receipt_bound");
     Ok(())
 }
 

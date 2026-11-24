@@ -391,7 +391,10 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .ok_or_else(|| anyhow::anyhow!("embedding_not_configured"))?;
             let client = llm_util::embed_client(&settings)
                 .ok_or_else(|| anyhow::anyhow!("embedding_not_configured"))?;
+            let started = std::time::Instant::now();
             pipeline::embed_pending(st, &settings, &client, document).await?;
+            tracing::debug!(document_id=%document, kb_id=%doc.kb_id, job_id=job.id,
+                duration_ms=started.elapsed().as_millis(), "soc.embedding_completed");
             Ok(())
         }
         "soc_ingest" => {

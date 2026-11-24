@@ -5,7 +5,7 @@
 //! 目标数经 AtomicUsize 热读——系统设置里改并发即时生效，无需重启。
 
 use chrono::{DateTime, Utc};
-use sqlx::{postgres::PgListener, PgPool, Postgres, Transaction};
+use sqlx::{postgres::PgListener, FromRow, PgPool, Postgres, Row, Transaction};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -98,6 +98,9 @@ pub async fn enqueue_unless_queued(
     let mut tx = pool.begin().await?;
     let id = enqueue_unless_queued_tx(&mut tx, kind, payload).await?;
     tx.commit().await?;
+    if let Some(job_id) = id {
+        tracing::debug!(job_id, job_kind = kind, "job.enqueued");
+    }
     Ok(id)
 }
 
@@ -404,7 +407,7 @@ pub async fn status_in_kb(pool: &PgPool, kb_id: Uuid, id: i64) -> AppResult<Opti
 
 /// 认领一个到期任务；没有则返回 None。
 async fn claim_one(owner: &mut sqlx::PgConnection, embed_slots: i64) -> AppResult<Option<Job>> {
-    let job = sqlx::query_as(
+    let row = sqlx::query(
         "UPDATE jobs SET status = 'running', locked_at = now(),
                 document_version = CASE WHEN kind IN ('process_document','extract_document') AND
                     pg_input_is_valid(payload->>'document_id','uuid') THEN
@@ -429,12 +432,18 @@ async fn claim_one(owner: &mut sqlx::PgConnection, embed_slots: i64) -> AppResul
              FOR UPDATE SKIP LOCKED
              LIMIT 1
          )
-         RETURNING id, kind, payload, attempts, max_attempts, locked_at",
+         RETURNING id, kind, payload, attempts, max_attempts, locked_at,
+           (GREATEST(0, EXTRACT(EPOCH FROM (locked_at - run_at))) * 1000)::bigint AS delay_ms",
     )
     .bind(embed_slots)
     .fetch_optional(owner)
     .await?;
-    Ok(job)
+    let Some(row) = row else { return Ok(None) };
+    let job = Job::from_row(&row)?;
+    let queue_delay_ms: i64 = row.try_get("delay_ms")?;
+    tracing::debug!(job_id=job.id, job_kind=%job.kind, attempt=job.attempts,
+        claimed_at=%job.locked_at, queue_delay_ms, "job.claimed");
+    Ok(Some(job))
 }
 
 /// 下一次重试等多久；`None` = 到此为止。
@@ -536,6 +545,10 @@ async fn persist_outcome(
         .bind(job.locked_at)
         .execute(pool)
         .await?;
+        if res.rows_affected() > 0 {
+            tracing::debug!(job_id=job.id, job_kind=%job.kind, attempt=job.attempts,
+                duration_ms=(completed_at-job.locked_at).num_milliseconds(), fenced=true, "job.completed");
+        }
         return Ok(res.rows_affected() > 0);
     };
 
@@ -562,6 +575,8 @@ async fn persist_outcome(
         .execute(pool)
         .await?;
         if res.rows_affected() > 0 {
+            tracing::debug!(job_id=job.id, job_kind=%job.kind, attempt=job.attempts,
+                failure_class="deferred", retry_delay_seconds=*secs, fenced=true, "job.deferred");
             return Ok(true);
         }
         // 0 行也可能是旧领取；普通失败分支保留相同保护，不能覆盖新执行。
@@ -588,6 +603,15 @@ async fn persist_outcome(
     .bind(*class)
     .execute(pool)
     .await?;
+    if res.rows_affected() > 0 {
+        if let Some(delay) = backoff_secs {
+            tracing::debug!(job_id=job.id, job_kind=%job.kind, attempt=job.attempts,
+                failure_class=class, retry_delay_seconds=*delay, fenced=true, "job.retry_scheduled");
+        } else {
+            tracing::warn!(job_id=job.id, job_kind=%job.kind, attempt=job.attempts,
+                failure_class=class, fenced=true, "job.failed");
+        }
+    }
     Ok(res.rows_affected() > 0)
 }
 
@@ -680,6 +704,7 @@ where
     .await?
     .rows_affected();
     tracing::info!(recovered, "queue ownership acquired");
+    tracing::debug!(recovered, "job.recovered");
     let finished = Arc::new(tokio::sync::Notify::new());
     tracing::info!(
         concurrency = concurrency.load(Ordering::Relaxed),

@@ -121,7 +121,9 @@ pub async fn ingest(
     headers: HeaderMap,
     raw: Bytes,
 ) -> ApiResult<Json<Value>> {
+    let started = std::time::Instant::now();
     let normalized = normalize(&state, id, &headers, raw).await?;
+    tracing::debug!(source_id=%id, duration_ms=started.elapsed().as_millis(), "soc.normalized");
     super::soc_ingestion::ingest(
         State(state),
         Path(id),
