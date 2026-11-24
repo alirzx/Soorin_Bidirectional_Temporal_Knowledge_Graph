@@ -2,6 +2,7 @@
 import argparse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime
 import fcntl
 import hashlib
@@ -27,6 +28,7 @@ DB_VOLUME = SERVER + "_fresh_db_20261123"
 APP_VOLUME = SERVER + "_fresh_data_20261123"
 REPORTS = ("send-report", "acceptance-report", "job-metrics", "retrieval-report", "resource-summary")
 NETWORK_ERRORS = (OSError, URLError, ValueError)
+PHASES = ("admission", "receipts", "graph", "embedding", "retrieval", "security", "report")
 INVALID_RESPONSE = NETWORK_ERRORS + (KeyError, TypeError, IndexError)
 
 
@@ -48,7 +50,39 @@ def file_digest(path):
 def evidence_inputs(out):
     return {name: file_digest(out / name)
             for name in ("manifest.json", "alerts.jsonl", "accepted.jsonl", "failed.jsonl", "run-target.json",
-                         *(name + ".json" for name in REPORTS))}
+                         *(name + ".json" for name in REPORTS), "verification-phases.json")}
+
+
+def remaining(until, cap=30):
+    if until is None:
+        return cap
+    left = until - time.monotonic()
+    if left <= 0:
+        raise TimeoutError("verification phase deadline")
+    return min(left, cap)
+
+
+@contextmanager
+def phase(out, phases, name, seconds):
+    started = time.monotonic()
+    progress = phases[name] = {"status": "INCONCLUSIVE", "reason": "in_progress"}
+    save(out, "verification-phases", phases)
+    print(json.dumps({"phase": name, "status": "INCONCLUSIVE", "deadline_seconds": seconds}), flush=True)
+    try:
+        yield started + seconds, progress
+    except (TimeoutError, subprocess.TimeoutExpired):
+        progress.update(status="INCONCLUSIVE", reason="deadline")
+        raise
+    except KeyboardInterrupt:
+        progress.update(status="INCONCLUSIVE", reason="interrupted")
+        raise
+    except Exception:
+        progress.update(status="INCONCLUSIVE", reason="phase_error")
+        raise
+    finally:
+        progress["elapsed_seconds"] = round(time.monotonic() - started, 2)
+        save(out, "verification-phases", phases)
+        print(json.dumps({"phase": name, **progress}), flush=True)
 
 
 def distribution(values):
@@ -58,14 +92,16 @@ def distribution(values):
     return {f"p{p}": values[math.ceil(len(values) * p / 100) - 1] for p in (50, 95, 99)}
 
 
-def db(container, sql, **params):
+def db(container, sql, *, until=None, **params):
     # SQL is static source. psql quotes variables as SQL literals via :'name'.
+    timeout = remaining(until, 20)
+    statement_ms = max(1, int(min(15, timeout) * 900))
     cmd = ["docker", "exec", "-i", "-e",
-           "PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000",
+           f"PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout={statement_ms}",
            container, "psql", "-XAtq", "-v", "ON_ERROR_STOP=1", "-U", "utopia", "-d", "utopia"]
     for key, value in params.items():
         cmd.extend(["-v", f"{key}={value}"])
-    result = subprocess.run(cmd, input=sql, capture_output=True, text=True, timeout=20)
+    result = subprocess.run(cmd, input=sql, capture_output=True, text=True, timeout=timeout)
     if result.returncode:
         raise RuntimeError("read-only PostgreSQL measurement failed")
     return json.loads(result.stdout)
@@ -83,16 +119,32 @@ def profile(a):
                                            cwd=Path(__file__).resolve().parents[2], timeout=5).strip()
         if (app["Config"].get("Labels") or {}).get("org.opencontainers.image.revision") != checkout:
             raise ValueError("running Server 55 image revision differs from harness checkout")
-        models = http._docker_inspect(a.project, "models")
-        if models["Config"]["Image"] != "soorin-tkg-v1-qa-models:latest":
-            raise ValueError("unexpected Server 55 model image")
-        for internal, port in [(8080, 2811), (8081, 2812), (8082, 2813)]:
-            if models["NetworkSettings"]["Ports"].get(f"{internal}/tcp") != [
-                {"HostIp": "127.0.0.1", "HostPort": str(port)}
-            ]:
-                raise ValueError("unexpected model port mapping")
     else:
         http.verify_disposable_target(a.base_url, a.project, a.db_port)
+
+
+def server_model_identity(a):
+    model_image = "soorin-tkg-v1-qa-models:latest"
+    isolated = a.model_mode == "isolated"
+    ingress = http._docker_inspect(a.project, "models-proxy" if isolated else "models")
+    if not isolated and ingress["Config"]["Image"] != model_image:
+        raise ValueError("unexpected Server 55 model image")
+    for internal, port in [(8080, 2811), (8081, 2812), (8082, 2813)]:
+        if ingress["NetworkSettings"]["Ports"].get(f"{internal}/tcp") != [
+            {"HostIp": "127.0.0.1", "HostPort": str(port)}
+        ]:
+            raise ValueError("unexpected model port mapping")
+    identity = {"ingress": ingress["Id"], "ingress_image": ingress["Image"]}
+    for role in ("embedding", "reranker", "ner"):
+        if isolated and role == "ner" and not a.isolated_ner:
+            continue
+        model = http._docker_inspect(a.project, f"models-{role}") if isolated else ingress
+        matches = [mount for mount in model["Mounts"] if mount["Destination"] == f"/models/{role}"]
+        if (model["Config"]["Image"] != model_image or len(matches) != 1 or
+                matches[0]["Name"] != f"{a.project}_soorin_{role}_cache" or matches[0]["RW"]):
+            raise ValueError("unexpected model image or cache")
+        identity[role] = {"id": model["Id"], "image": model["Image"]}
+    return identity
 
 
 def scope(a):
@@ -139,6 +191,9 @@ def preflight(a, m):
     app = http._docker_inspect(a.project, "app")
     target = {"database_id": database, "app_container_id": app["Id"], "image_id": app["Image"],
               "revision": (app["Config"].get("Labels") or {}).get("org.opencontainers.image.revision")}
+    if a.target_profile == "server":
+        target["model_mode"] = a.model_mode
+        target["models"] = server_model_identity(a)
     bound = a.out / "run-target.json"
     identity = {"target": target, "manifest_digest": file_digest(a.out / "manifest.json")}
     if bound.exists() and read(a.out, "run-target") != identity:
@@ -162,16 +217,25 @@ def preflight(a, m):
     return database
 
 
-def snapshot(a, database):
-    app = http._docker_inspect(a.project, "app")
-    pg = db(database, """
+def queue_snapshot(database, until=None):
+    return db(database, """
         SELECT json_build_object('queue_depth',count(*) FILTER(WHERE status='queued'),
           'oldest_due_seconds',extract(epoch FROM now()-min(run_at) FILTER(WHERE status='queued' AND run_at<=now())),
           'running_jobs',count(*) FILTER(WHERE status='running'),
+          'pending_embeddings',count(*) FILTER(WHERE kind='soc_reembed_document' AND status IN ('queued','running')),
+          'blocked_jobs',(SELECT coalesce(json_agg(b),'[]') FROM
+              (SELECT kind,failure_class,count(*) AS jobs FROM jobs
+               WHERE status='queued' AND failure_class IS NOT NULL
+               GROUP BY kind,failure_class ORDER BY jobs DESC,kind,failure_class LIMIT 5) b),
           'worker_limit',(SELECT worker_concurrency FROM deployment_settings LIMIT 1),
           'db_connections',(SELECT count(*) FROM pg_stat_activity WHERE datname=current_database()),
           'db_max_connections',current_setting('max_connections')::int) FROM jobs;
-    """)
+    """, until=until)
+
+
+def snapshot(a, database):
+    app = http._docker_inspect(a.project, "app")
+    pg = queue_snapshot(database)
     stats = subprocess.run(["docker", "stats", "--no-stream", "--format", "{{.CPUPerc}}|{{.MemUsage}}",
                             app["Id"], database], check=True, capture_output=True, text=True, timeout=15)
     values = {"timestamp": time.time(), "deployment": pg, "image_id": app["Image"],
@@ -183,17 +247,18 @@ def snapshot(a, database):
             try:
                 health = http._json(f"http://127.0.0.1:{port}/ready", "", timeout=3)
                 values["models"][role] = {k: health.get(k) for k in
-                                          ("ready", "model", "calls", "inference_seconds", "queue_capacity")}
+                                          ("ready", "model", "calls", "inference_seconds", "queue_capacity",
+                                           "active_requests", "waiting_requests", "queue_rejections")}
             except NETWORK_ERRORS:
                 values["models"][role] = {"ready": False}
     return values
 
 
-def coverage(database, m):
+def coverage(database, m, until=None):
     cfg = db(database, """
         SELECT json_build_array(s.embed_base_url,s.embed_model,s.embed_dim) FROM knowledge_bases k
         JOIN llm_settings s ON s.workspace_id=k.workspace_id WHERE k.id=:'kb'::uuid;
-    """, kb=m["scope"]["kb"])
+    """, until=until, kb=m["scope"]["kb"])
     digest = hashlib.sha256(json.dumps(cfg, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
     fingerprint = "sha256:" + digest
     counts = db(database, """
@@ -210,7 +275,7 @@ def coverage(database, m):
           'incompatible',count(*) FILTER(WHERE c.embedding IS NOT NULL AND
           (vector_dims(c.embedding)<>1024 OR vector_norm(c.embedding)=0 OR c.embedding_model IS DISTINCT FROM :'fingerprint')))
           FROM docs JOIN chunks c ON docs.id=c.document_id WHERE c.superseded_at IS NULL;
-    """, kb=m["scope"]["kb"], source=m["scope"]["source"], run=m["run_id"], fingerprint=fingerprint)
+    """, until=until, kb=m["scope"]["kb"], source=m["scope"]["source"], run=m["run_id"], fingerprint=fingerprint)
     counts.update(model=cfg[1] if cfg[1] == MODEL else "unexpected", dimension=cfg[2],
                   fingerprint=fingerprint, missing=counts["active"] - counts["embedded"],
                   ratio=counts["embedded"] / counts["active"] if counts["active"] else 0)
@@ -219,7 +284,7 @@ def coverage(database, m):
     return dict(counts, status="PASS" if ok else "FAIL")
 
 
-def probe(a, q, *, expected=None, as_of=None, topic=None):
+def probe(a, q, *, expected=None, as_of=None, topic=None, until=None):
     body = {"q": q, "top_k": 10}
     if as_of:
         body["as_of"] = as_of
@@ -227,11 +292,12 @@ def probe(a, q, *, expected=None, as_of=None, topic=None):
     try:
         r = http._json(f"{a.base_url}/api/v1/kbs/{a.kb_id}/search",
                        os.environ.get("SCOPED_READ_TOKEN") or os.environ["SESSION_TOKEN"],
-                       payload=json.dumps(body).encode(), timeout=245)
+                       payload=json.dumps(body).encode(), timeout=remaining(until, getattr(a, "probe_timeout", 80)))
         meta = r["retrieval"]
         ids = list(dict.fromkeys(str(UUID(row["document_id"])) for row in r["results"]))
         result = {"ok": True, "lexical": meta["lexical_method"], "dense": meta["dense_executed"] is True,
-                  "reranker": meta["reranker_status"], "returned": len(ids)}
+                  "reranker": meta["reranker_status"], "returned": len(ids),
+                  "fallback_reason": meta.get("fallback_reason")}
         if expected and not as_of:
             rel = {expected}
             recall, mrr, ndcg = _metrics(ids, rel, 10)
@@ -240,8 +306,11 @@ def probe(a, q, *, expected=None, as_of=None, topic=None):
             result["topic_found"] = any(topic.casefold() in row["text"].casefold() for row in r["results"])
         if as_of:
             result["temporal_pass"] = not ids and meta["lexical_method"] == "postgres_versioned_lexical"
+    except (TimeoutError, URLError) as exc:
+        result = {"ok": False, "error": "timeout" if isinstance(getattr(exc, "reason", exc), TimeoutError)
+                  else "request_failed"}
     except INVALID_RESPONSE:
-        result = {"ok": False}
+        result = {"ok": False, "error": "invalid_response"}
     return dict(result, seconds=time.monotonic() - started)
 
 
@@ -331,26 +400,26 @@ def send(a, m, database):
             save(a.out, "retrieval-report", {"status": "INCONCLUSIVE", "during": probe_results[-8:]})
 
 
-def context_check(a, m, index):
+def context_check(a, m, index, until=None):
     token = os.environ.get("SCOPED_READ_TOKEN") or os.environ["SESSION_TOKEN"]
     url = f"{a.base_url}/api/v1/kbs/{a.kb_id}/knowledge"
     key = f"soc-alert-synthetic-{index:05d}"
     authority = {k: m["scope"][k] for k in ("tenant_id", "source_system", "source_instance")}
     authority.update(entity_type="SecurityAlert", authority_name="soc_alert_row_id", source_identifier=key)
     try:
-        r = http._json(url + "/resolve", token, payload=json.dumps(authority).encode())
+        r = http._json(url + "/resolve", token, payload=json.dumps(authority).encode(), timeout=remaining(until))
         if r["status"] != "resolved" or len(r["candidates"]) != 1 or r["knowledge_base_id"] != a.kb_id:
             return False
         entity = str(UUID(r["candidates"][0]["entity_id"]))
         c = http._json(url + "/context", token, payload=json.dumps({
-            "tenant_id": m["scope"]["tenant_id"], "entity": entity, "limit": 10}).encode())
+            "tenant_id": m["scope"]["tenant_id"], "entity": entity, "limit": 10}).encode(), timeout=remaining(until))
         return bool(c["knowledge_base_id"] == a.kb_id and c["tenant_id"] == m["scope"]["tenant_id"]
                     and c["facts"] and c["evidence_references"])
     except INVALID_RESPONSE:
         return False
 
 
-def isolation(a, m, rid):
+def isolation(a, m, rid, until=None):
     token = os.environ.get("SCOPED_READ_TOKEN")
     other = os.environ.get("OTHER_KB_ID")
     if not token or not other:
@@ -362,13 +431,13 @@ def isolation(a, m, rid):
                             (a.kb_id, "knowledge/context", {"tenant_id": "mismatch-" + m["tenant_id"],
                                                            "entity": "synthetic"})]:
         try:
-            http._json(f"{a.base_url}/api/v1/kbs/{kb}/{route}", token, payload=json.dumps(body).encode())
+            http._json(f"{a.base_url}/api/v1/kbs/{kb}/{route}", token, payload=json.dumps(body).encode(), timeout=remaining(until))
         except HTTPError as exc:
             if exc.code in (403, 404):
                 continue
         return "FAIL"
     try:
-        http._json(f"{a.base_url}/api/v1/kbs/{a.kb_id}/knowledge/receipts/{rid}", token)
+        http._json(f"{a.base_url}/api/v1/kbs/{a.kb_id}/knowledge/receipts/{rid}", token, timeout=remaining(until))
     except HTTPError as exc:
         return "PASS" if exc.code in (401, 403, 404) else "FAIL"
     return "FAIL"
@@ -376,97 +445,140 @@ def isolation(a, m, rid):
 
 def verify(a, m, database):
     out = a.out
-    admissions = admission_report(out, read(out, "send-report").get("latest_send_seconds", 0))
-    if admissions["status"] != "PASS" or read(out, "send-report")["status"] != "PASS":
-        raise RuntimeError("finish successful run-scoped admission first")
+    phases = {name: {"status": "NOT_TESTED"} for name in PHASES}
+    save(out, "verification-phases", phases)
+    with phase(out, phases, "admission", 30) as (_, stage):
+        admissions = admission_report(out, read(out, "send-report").get("latest_send_seconds", 0))
+        if admissions["status"] != "PASS" or read(out, "send-report")["status"] != "PASS":
+            stage.update(status="FAIL", reason="incomplete_admission")
+            return
+        stage.update(status="PASS", reason=None)
     journal = http.existing_acceptances(out / "accepted.jsonl")
     wanted = set(journal.values())
-    until = time.monotonic() + a.deadline
     rows, seen_states, jobs = {}, Counter(), []
+    groups, missing, delivery = {}, len(wanted), {}
     def observe(row):
         if row.get("source_id") != a.source_id:
             raise ValueError("journal receipt source mismatch")
         rows[row["receipt_id"]] = row
-    groups, missing, delivery = {}, len(wanted), {}
-    while time.monotonic() < until:
-        try:
-            groups, missing, delivery = http.journal_receipt_groups(a.base_url, a.kb_id, os.environ["SESSION_TOKEN"],
-                wanted, observe=observe, until=until, run_id=m["run_id"])
-        except TimeoutError:
-            break
-        seen_states.update(groups.keys())
-        if len(jobs) < 32:
-            jobs.append(snapshot(a, database)["deployment"])
-        if ((not missing and groups.get("bound") == len(wanted)) or groups.get("quarantined")
-                or delivery.get("terminal_failure") or delivery.get("failed_recoverable")):
-            break
-        time.sleep(max(0, min(a.interval, until - time.monotonic())))
+    with phase(out, phases, "receipts", a.deadline) as (until, stage):
+        while time.monotonic() < until:
+            try:
+                groups, missing, delivery = http.journal_receipt_groups(a.base_url, a.kb_id,
+                    os.environ["SESSION_TOKEN"], wanted, observe=observe, until=until, run_id=m["run_id"])
+            except (TimeoutError, URLError) as exc:
+                if not isinstance(getattr(exc, "reason", exc), TimeoutError):
+                    raise
+                break
+            seen_states.update(groups.keys())
+            queue = queue_snapshot(database, until) or {}
+            if len(jobs) < 32:
+                jobs.append(queue)
+            bound = groups.get("bound", 0)
+            failed = delivery.get("terminal_failure", 0) + delivery.get("failed_recoverable", 0)
+            quarantined = groups.get("quarantined", 0)
+            blockers = Counter((row.get("failure_code") or row.get("delivery_state"))
+                               for row in rows.values() if row.get("status") != "bound")
+            tick = {"phase": "receipts", "run_id": m["run_id"], "expected_receipts": len(wanted),
+                    "observed_receipts": len(wanted)-missing, "bound_receipts": bound,
+                    "pending_receipts": max(0, len(wanted)-missing-bound-failed-quarantined),
+                    "failed_receipts": failed, "quarantined_receipts": quarantined,
+                    "remaining_seconds": round(max(0, until-time.monotonic()), 1),
+                    "elapsed_seconds": round(a.deadline-max(0, until-time.monotonic()), 1),
+                    "blocker_classes": blockers.most_common(5), "blocked_job_kinds": queue.get("blocked_jobs"),
+                    **{k: queue.get(k) for k in ("queue_depth", "running_jobs", "pending_embeddings")}}
+            print(json.dumps(tick), flush=True)
+            save(out, "job-metrics", {"status": "INCONCLUSIVE", "progress": tick, "deployment_samples": jobs})
+            if bound == len(wanted):
+                stage.update(status="PASS", reason=None)
+                break
+            if failed or quarantined:
+                stage.update(status="FAIL", reason="receipt_failure")
+                break
+            time.sleep(max(0, min(a.interval, until-time.monotonic())))
+        if stage["status"] == "INCONCLUSIVE":
+            stage["reason"] = "deadline"
+        latencies = [(datetime.fromisoformat(r["updated_at"]) - datetime.fromisoformat(r["created_at"])).total_seconds()
+                     for r in rows.values() if r["status"] == "bound"]
+        save(out, "job-metrics", {"status": stage["status"], "deployment_samples": jobs,
+             "receipt_states": groups, "delivery_states": delivery, "polls_observing_state": seen_states,
+             "missing": missing, "failed": delivery.get("failed_recoverable", 0) + delivery.get("terminal_failure", 0),
+             "terminal_failure_rate": (delivery.get("terminal_failure", 0) + groups.get("quarantined", 0)) / len(wanted),
+             "unbound_at_deadline": len(wanted)-groups.get("bound", 0) if stage["reason"] == "deadline" else 0,
+             "bound_latency_seconds": distribution(latencies)})
+    if phases["receipts"]["status"] != "PASS":
+        return
+
     url = f"{a.base_url}/api/v1/kbs/{a.kb_id}/knowledge/receipts"
     keys = sorted(journal, key=lambda k: int(k.split(":")[1]))
-    sampled = [keys[i * len(keys) // m["workload"]["sample"]] for i in range(m["workload"]["sample"])]
-    graph, post, blockers = [], [], Counter()
-    pending = [k for k in keys if rows.get(journal[k], {}).get("status") != "bound"]
-    for k in dict.fromkeys(pending[:3] + sampled):
-        rid = journal[k]
-        try:
-            detail = http._json(f"{url}/{rid}", os.environ["SESSION_TOKEN"])
-        except HTTPError as exc:
-            if exc.code != 404:
-                raise
-            detail = {}
-        if k in pending[:3]:
-            for j in detail.get("jobs", []):
-                if j.get("status") != "done":
-                    blockers[(j["kind"], j.get("failure_class") or j["status"])] += 1
-        if k in sampled:
-            graph.append(bool(graph_ok(detail, m, rid)))
-            if len(post) < 5 and graph[-1]:
-                index = m["start_index"] + int(k.split(":")[1])
-                post.append(probe(a, f"soc-alert-synthetic-{index:05d}", expected=detail["document"]["document_id"]))
-    passed = not missing and groups.get("bound") == len(wanted) and all(graph)
-    def latency(row):
-        return (datetime.fromisoformat(row["updated_at"]) - datetime.fromisoformat(row["created_at"])).total_seconds()
-    save(out, "job-metrics", {"status": "PASS" if passed else "FAIL", "deployment_samples": jobs,
-          "receipt_states": groups, "delivery_states": delivery, "polls_observing_state": seen_states,
-          "missing": missing, "failed": delivery.get("failed_recoverable", 0) + delivery.get("terminal_failure", 0),
-          "terminal_failure_rate": (delivery.get("terminal_failure", 0) + groups.get("quarantined", 0)) / len(wanted),
-          "unbound_at_deadline": len(pending) if time.monotonic() >= until else 0,
-          "bound_latency_seconds": distribution([latency(r) for r in rows.values() if r["status"] == "bound"]),
-          "blocked_sample": [{"kind": k, "class": c, "count": n} for (k,c), n in blockers.items()]})
-    vectors = coverage(database, m)
-    initial_vectors = vectors.copy()
-    while passed and vectors["status"] != "PASS" and time.monotonic() < until:
-        time.sleep(max(0, min(a.interval, until - time.monotonic())))
-        vectors = coverage(database, m)
-    save(out, "acceptance-report", {"status": "PASS" if passed and vectors["status"] == "PASS" else "FAIL",
-         "bound": groups.get("bound", 0), "expected": len(wanted), "graph_sample": len(graph),
-         "graph_pass": sum(graph), "embedding_first_observation": initial_vectors, "embedding": vectors})
-    during = read(out, "retrieval-report").get("during", [])
-    historical = probe(a, "synthetic", as_of="1970-01-01T00:00:00Z")
-    from soorin.tests.mock_splunk.scripts.curated_qa_dataset import SCENARIOS
-    topic = SCENARIOS[m["start_index"] % len(SCENARIOS)][0]
-    semantic = probe(a, topic, topic=topic)
-    context = context_check(a, m, m["start_index"])
-    security = isolation(a, m, journal[keys[0]])
-    ok = (bool(post) and all(p["ok"] and p["dense"] and p["reranker"] == "complete" and p["recall10"]
-                             and p["lexical"] == "tantivy_bm25" for p in post)
-          and historical.get("temporal_pass") and context and semantic.get("topic_found")
-          and semantic.get("reranker") == "complete" and semantic.get("dense") and all(p["ok"] for p in during))
-    overall = "FAIL" if not ok or security == "FAIL" else "PASS" if during and security == "PASS" else "INCONCLUSIVE"
-    probes = during + post + [semantic]
-    save(out, "retrieval-report", {"status": overall, "during": during, "after": post, "isolation": security,
-         "historical": historical, "topic_query": semantic, "resolved_evidence": context, "latency_seconds": distribution([p["seconds"] for p in probes]),
-         "success_rate": sum(p["ok"] for p in probes) / len(probes) if probes else None,
-         "reranker_complete_rate": sum(p.get("reranker") == "complete" for p in probes) / len(probes) if probes else None,
-         "reranker_fallback_rate": sum(p.get("reranker") == "fallback" for p in probes) / len(probes) if probes else None,
-         "relevance": {k: statistics.mean(p.get(k, 0) for p in post) if post else None
-                       for k in ("recall5", "recall10", "mrr10", "ndcg10")}})
+    sample_count = m["workload"]["sample"]
+    sampled = [keys[i * len(keys) // sample_count] for i in range(sample_count)]
+    documents = []
+    with phase(out, phases, "graph", a.graph_deadline) as (until, stage):
+        for k in sampled:
+            rid = journal[k]
+            detail = http._json(f"{url}/{rid}", os.environ["SESSION_TOKEN"], timeout=remaining(until))
+            if graph_ok(detail, m, rid):
+                documents.append((m["start_index"] + int(k.split(":")[1]), detail["document"]["document_id"]))
+        stage.update(status="PASS" if len(documents) == sample_count else "FAIL", reason=None)
+
+    save(out, "acceptance-report", {
+         "status": phases["graph"]["status"], "bound": len(wanted), "expected": len(wanted),
+         "graph_sample": sample_count, "graph_pass": len(documents), "embedding": {"status": "NOT_TESTED"}})
+    with phase(out, phases, "embedding", a.embedding_deadline) as (until, stage):
+        vectors = coverage(database, m, until)
+        initial_vectors = vectors.copy()
+        while vectors["status"] != "PASS":
+            stage.update(missing=vectors.get("missing"))
+            accepted = read(out, "acceptance-report")
+            save(out, "acceptance-report", dict(accepted, embedding=vectors))
+            print(json.dumps({"phase":"embedding", "run_id":m["run_id"], "missing":stage["missing"],
+                              "remaining_seconds":round(max(0,until-time.monotonic()),1)}), flush=True)
+            time.sleep(min(a.interval, remaining(until, a.interval)))
+            vectors = coverage(database, m, until)
+        stage.update(status=vectors["status"], reason=None)
+    save(out, "acceptance-report", {
+         "status": phases["graph"]["status"], "bound": len(wanted), "expected": len(wanted),
+         "graph_sample": sample_count, "graph_pass": len(documents),
+         "embedding_first_observation": initial_vectors, "embedding": vectors})
+
+    with phase(out, phases, "retrieval", a.retrieval_deadline) as (until, stage):
+        during = read(out, "retrieval-report").get("during", [])
+        post = [probe(a, f"soc-alert-synthetic-{index:05d}", expected=document, until=until)
+                for index, document in documents[:2]]
+        historical = probe(a, "synthetic", as_of="1970-01-01T00:00:00Z", until=until)
+        from soorin.tests.mock_splunk.scripts.curated_qa_dataset import SCENARIOS
+        topic = SCENARIOS[m["start_index"] % len(SCENARIOS)][0]
+        semantic = probe(a, topic, topic=topic, until=until)
+        context = context_check(a, m, m["start_index"], until)
+        ok = (bool(post) and all(p["ok"] and p["dense"] and p["reranker"] == "complete" and p["recall10"]
+                                 and p["lexical"] == "tantivy_bm25" for p in post)
+              and historical.get("temporal_pass") and context and semantic.get("topic_found")
+              and semantic.get("reranker") == "complete" and semantic.get("dense") and all(p["ok"] for p in during))
+        probes = during + post + [semantic]
+        timed_out = time.monotonic() >= until or any(p.get("error") == "timeout" for p in post + [historical, semantic])
+        overall = "INCONCLUSIVE" if timed_out else "FAIL" if not ok else "PASS" if during else "INCONCLUSIVE"
+        stage.update(status=overall, reason="probe_timeout" if timed_out else None)
+        save(out, "retrieval-report", {"status": overall, "during": during, "after": post,
+             "historical": historical, "topic_query": semantic, "resolved_evidence": context,
+             "latency_seconds": distribution([p["seconds"] for p in probes]),
+             "success_rate": sum(p["ok"] for p in probes) / len(probes),
+             "reranker_complete_rate": sum(p.get("reranker") == "complete" for p in probes) / len(probes),
+             "reranker_fallback_rate": sum(p.get("reranker") == "fallback" for p in probes) / len(probes),
+             "fallback_reasons": Counter((p.get("fallback_reason") or "unknown") for p in probes if p.get("reranker") == "fallback"),
+             "relevance": {k: statistics.mean(p.get(k, 0) for p in post) if post else None
+                           for k in ("recall5", "recall10", "mrr10", "ndcg10")}})
+    with phase(out, phases, "security", a.security_deadline) as (until, stage):
+        stage.update(status=isolation(a, m, journal[keys[0]], until), reason=None)
+    retrieval = read(out, "retrieval-report")
+    save(out, "retrieval-report", dict(retrieval, isolation=phases["security"]["status"]))
     resource = read(out, "resource-summary")
     resource.update(after=snapshot(a, database), status="PASS" if "before" in resource else "INCONCLUSIVE")
     target = read(out, "run-target")["target"]
     final_app = http._docker_inspect(a.project, "app")
     final_db = http._docker_inspect(a.project, "db")
-    if (final_app["Id"] != target["app_container_id"] or final_db["Id"] != target["database_id"] or
+    model_changed = a.target_profile == "server" and server_model_identity(a) != target["models"]
+    if (model_changed or final_app["Id"] != target["app_container_id"] or final_db["Id"] != target["database_id"] or
             any(sample["image_id"] != target["image_id"] or sample["revision"] != target["revision"]
                 for sample in [resource.get("before", {}), resource["after"], *resource.get("during", [])]
                 if sample)):
@@ -482,27 +594,37 @@ def verify(a, m, database):
                     or not isinstance(start.get("inference_seconds"), (float, int))
                     or not isinstance(end.get("inference_seconds"), (float, int))
                     or end["inference_seconds"] < start["inference_seconds"]):
-                resource["status"] = "INCONCLUSIVE"
+                if resource["status"] == "PASS":
+                    resource["status"] = "INCONCLUSIVE"
             else:
                 resource["model_busy_fraction"][role] = (end["inference_seconds"] - start["inference_seconds"]) / duration
     save(out, "resource-summary", resource)
+    with phase(out, phases, "report", 30) as (_, stage):
+        stage.update(status="PASS", reason=None)
     save(out, "verified-inputs", evidence_inputs(out))
 
 
 def report(out):
     states = {name: read(out, name)["status"] for name in REPORTS}
+    phase_path = out / "verification-phases.json"
+    phases = read(out, "verification-phases") if phase_path.exists() else {}
+    states.update({name: item["status"] for name, item in phases.items()})
     values = set(states.values())
     status = ("PASS" if values == {"PASS"} else "FAIL" if "FAIL" in values else
               "NOT_TESTED" if values == {"NOT_TESTED"} else "INCONCLUSIVE")
     if status == "PASS":
         proof = out / "verified-inputs.json"
-        if not proof.exists() or read(out, "verified-inputs") != evidence_inputs(out):
+        try:
+            verified = proof.exists() and read(out, "verified-inputs") == evidence_inputs(out)
+        except FileNotFoundError:
+            verified = False
+        if not verified:
             status = "INCONCLUSIVE"
             states["verified_inputs"] = "INCONCLUSIVE"
     manifest = read(out, "manifest")
     before = read(out, "resource-summary").get("before", {})
     result = {"status": status, "gates": states, "run_id": manifest["run_id"], "count": manifest["alerts"],
-              "scope": manifest["scope"], "revision": before.get("revision"), "image_id": before.get("image_id")}
+              "phases": phases, "scope": manifest["scope"], "revision": before.get("revision"), "image_id": before.get("image_id")}
     save(out, "production-readiness", result)
     summary = [f"# Synthetic acceptance for {manifest['alerts']} alerts", "", f"Overall **{status}**", "",
                f"Run `{manifest['run_id']}` on `{manifest['scope']['project']}`", "",
@@ -531,6 +653,8 @@ def main(argv=None):
     p.add_argument("--allow-existing-server", action="store_true")
     p.add_argument("--base-url")
     p.add_argument("--project")
+    p.add_argument("--model-mode", choices=["unified", "isolated"], default="unified")
+    p.add_argument("--isolated-ner", action="store_true")
     p.add_argument("--db-port", type=int)
     p.add_argument("--kb-id", default=os.environ.get("KB_ID", ""))
     p.add_argument("--source-id", default=os.environ.get("SOURCE_ID", ""))
@@ -543,6 +667,11 @@ def main(argv=None):
     p.add_argument("--rps", type=float, default=3)
     p.add_argument("--sample", type=int, default=10)
     p.add_argument("--deadline", type=int, default=3600)
+    p.add_argument("--graph-deadline", type=int, default=120)
+    p.add_argument("--embedding-deadline", type=int, default=1800)
+    p.add_argument("--retrieval-deadline", type=int, default=180)
+    p.add_argument("--security-deadline", type=int, default=30)
+    p.add_argument("--probe-timeout", type=int, default=80)
     p.add_argument("--interval", type=int, default=20)
     a = p.parse_args(argv)
     server = a.target_profile == "server"
@@ -550,7 +679,9 @@ def main(argv=None):
     a.project = a.project or (SERVER if server else http.DEFAULT_PROJECT)
     a.db_port = a.db_port or (2517 if server else 2627)
     if not (1 <= a.workers <= 8 and 1 <= a.attempts <= 8 and 0 < a.rps <= 100 and
-            1 <= a.sample <= 100 and 1 <= a.deadline <= 86400 and 1 <= a.interval <= 300):
+            1 <= a.sample <= 100 and 1 <= a.deadline <= 86400 and 1 <= a.interval <= 300 and
+            all(1 <= deadline <= 86400 for deadline in (a.graph_deadline, a.embedding_deadline,
+                a.retrieval_deadline, a.security_deadline)) and 1 <= a.probe_timeout <= 240):
         p.error("workload or polling limit out of range")
     os.umask(0o077)
     if a.mode == "prepare":
@@ -564,6 +695,7 @@ def main(argv=None):
         a.kb_id, a.source_id = str(UUID(a.kb_id)), str(UUID(a.source_id))
         m = read(a.out, "manifest")
         if a.mode == "verify":
+            save(a.out, "verification-phases", {name: {"status": "NOT_TESTED"} for name in PHASES})
             for name in ("acceptance-report", "job-metrics"):
                 save(a.out, name, {"status": "NOT_TESTED"})
             previous = read(a.out, "retrieval-report")
@@ -581,6 +713,9 @@ def main(argv=None):
                 send(a, m, database)
             else:
                 verify(a, m, database)
+        except (TimeoutError, subprocess.TimeoutExpired):
+            if a.mode != "verify":
+                raise
         finally:
             status = report(a.out)
         if a.mode == "verify" and status != "PASS":

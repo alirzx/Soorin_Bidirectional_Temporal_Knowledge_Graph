@@ -143,6 +143,8 @@ class ProductionAcceptance(unittest.TestCase):
             for mode in ("preflight", "send", "verify"):
                 suite.main([mode, *self.args])
             self.assertEqual(suite.report(self.out), "PASS")
+            self.assertTrue(all(p["status"] == "PASS" for p in suite.read(self.out, "verification-phases").values()))
+            self.assertEqual(suite.read(self.out,"job-metrics")["polls_observing_state"]["submitted"],1)
             manifest_path = self.out / "manifest.json"
             original = manifest_path.read_text()
             manifest_path.write_text(original + "\n")
@@ -158,6 +160,35 @@ class ProductionAcceptance(unittest.TestCase):
         self.assertEqual(suite.read(self.out,"job-metrics")["bound_latency_seconds"]["p95"], 2)
         for file in self.out.glob("*json*"):
             self.assertNotIn("session-secret", file.read_text())
+
+    def test_phase_records_timeout_and_interruption(self):
+        from contextlib import redirect_stdout
+        phases = {name: {"status": "NOT_TESTED"} for name in suite.PHASES}
+        with redirect_stdout(io.StringIO()) as output:
+            for error, status in [(TimeoutError(), "deadline"), (KeyboardInterrupt(), "interrupted")]:
+                with self.subTest(status=status), self.assertRaises(type(error)):
+                    with suite.phase(self.out, phases, "receipts", 30):
+                        raise error
+                data = suite.read(self.out, "verification-phases")
+                self.assertEqual(data["receipts"]["status"], "INCONCLUSIVE")
+                self.assertEqual(data["receipts"]["reason"], status)
+                self.assertEqual(data["graph"]["status"], "NOT_TESTED")
+                self.assertEqual(suite.report(self.out), "INCONCLUSIVE")
+            self.assertIn('"elapsed_seconds"', output.getvalue())
+
+    def test_search_timeout_obeys_remaining_phase_budget(self):
+        from types import SimpleNamespace
+        a = SimpleNamespace(base_url=http.DEFAULT_BASE, kb_id=self.kb, probe_timeout=80)
+        with patch.object(http, "_json", side_effect=TimeoutError) as request:
+            result = suite.probe(a, "synthetic", until=suite.time.monotonic() + 2)
+        self.assertEqual(result["error"], "timeout")
+        self.assertGreater(request.call_args.kwargs["timeout"], 0)
+        self.assertLessEqual(request.call_args.kwargs["timeout"], 2)
+
+    def test_skipped_security_prevents_pass(self):
+        with patch.dict(os.environ, clear=True):
+            a = type("Target", (), {"kb_id": self.kb})()
+            self.assertEqual(suite.isolation(a, self.manifest, "unused"), "NOT_TESTED")
 
     def test_coverage_rejects_wrong_identity_missing_docs_and_partial_vectors(self):
         for model, docs, active, embedded, incompatible, status in [
