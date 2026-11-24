@@ -220,3 +220,11 @@ One entry per knowledge base you want the agent to reach. The agent sees the sam
 
 - **SQL.** `query_data` (a read-only query against a mounted database) is a chat tool and is not served over MCP. It reaches production databases outside this deployment, and what a borrowed agent should be able to ask them is a question this version does not answer.
 - **Streaming.** Responses are single JSON-RPC replies; there is no server-sent event channel.
+
+`neighbors` and `timeline` return the existing text and an additive
+`structuredContent` object with schema version `soorin.graph-evidence.v1`.
+The object includes the KB, root entity, result limit, matching count,
+truncation and fact rows. Fact rows retain direction, recorded time, world
+time, related entity and source document IDs. The evidence projection reports
+the first live chunk for each displayed fact when available. Its status
+indicates incomplete evidence independently of result truncation.

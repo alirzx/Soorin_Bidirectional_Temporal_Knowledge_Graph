@@ -885,6 +885,25 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
 
 // ---- neighbors -------------------------------------------------------------------
 
+async fn graph_evidence_refs(
+    ctx: &ToolCtx<'_>,
+    fact_ids: Vec<Uuid>,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
+) -> Value {
+    if fact_ids.is_empty() {
+        return json!({"status":"empty","references":[]});
+    }
+    match utopia_store::graph::first_live_evidence(&ctx.state.pool, ctx.kb_id, &fact_ids, as_of).await {
+        Ok(rows) => {
+            let status = if rows.len() < fact_ids.len() { "partial" } else { "complete" };
+            json!({"status":status, "references":rows.iter().map(|(fact,chunk,_)|
+                json!({"fact_id":fact,"chunk_id":chunk.id,"document_id":chunk.document_id}))
+                .collect::<Vec<_>>()})
+        }
+        Err(_) => json!({"status":"unavailable","references":[]}),
+    }
+}
+
 pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> ToolResult {
     let raw = args["entity"]
         .as_str()
@@ -1015,14 +1034,24 @@ pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> 
             lines.push(format!("{key} {}", items.join(" · ")));
         }
     }
+    let references = graph_evidence_refs(ctx, shown.iter().map(|f| f.id).collect(), m.as_of).await;
     let detail = format!("{} of {} linked", shown.len(), linked.len());
     ToolResult::new(
         lines.join("\n"),
-        Step::new("neighbors", node.name, detail)
+        Step::new("neighbors", node.name.as_str(), detail)
             .count(shown.len())
             .total(linked.len())
             .json(),
     )
+    .structured(json!({
+        "schema_version": "soorin.graph-evidence.v1",
+        "tool": "neighbors", "kb_id": ctx.kb_id, "entity_id": node.id,
+        "entity_type": node.type_key, "entity_name": node.name,
+        "limitations": ["Document IDs identify source records; content can be inferred or contested."],
+        "as_of": m.as_of, "limit": limit,
+        "matched": linked.len(), "truncated": shown.len() < linked.len(),
+        "facts": shown, "evidence": references, "at": m.at
+    }))
 }
 
 // ---- timeline --------------------------------------------------------------------
@@ -1136,14 +1165,24 @@ pub async fn timeline(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> T
             ));
         }
     }
+    let references = graph_evidence_refs(ctx, shown.iter().copied().map(|f| f.id).collect(), m.as_of).await;
     let detail = format!("{} of {} dated", shown.len(), dated.len());
     ToolResult::new(
         lines.join("\n"),
-        Step::new("timeline", node.name, detail)
+        Step::new("timeline", node.name.as_str(), detail)
             .count(shown.len())
             .total(dated.len())
             .json(),
     )
+    .structured(json!({
+        "schema_version": "soorin.graph-evidence.v1",
+        "tool": "timeline", "kb_id": ctx.kb_id, "entity_id": node.id,
+        "entity_type": node.type_key, "entity_name": node.name,
+        "limitations": ["Document IDs identify source records; content can be inferred or contested."],
+        "as_of": m.as_of, "limit": limit,
+        "matched": dated.len(), "truncated": shown.len() < dated.len(),
+        "facts": shown, "evidence": references, "undated_omitted": undated, "since": args["since"], "until": args["until"]
+    }))
 }
 
 // ---- paths_between ---------------------------------------------------------------

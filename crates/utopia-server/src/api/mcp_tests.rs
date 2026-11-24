@@ -1066,6 +1066,19 @@ async fn entity_facts_keeps_identity_values_filters_and_both_clocks() -> anyhow:
     assert!(exported
         .iter()
         .any(|r| r.id == uuid(&corrected["id"]) && r.documents == vec![f.document]));
+    for tool in ["neighbors", "timeline"] {
+        let response = f.call(tool, json!({"entity":f.subject,"limit":1})).await?;
+        let result = &response["structuredContent"];
+        assert!(response["content"][0]["text"].as_str().is_some());
+        assert_eq!(uuid(&result["entity_id"]), f.subject);
+        assert_eq!(uuid(&result["kb_id"]), f.kb);
+        assert_eq!(result["schema_version"], "soorin.graph-evidence.v1");
+        assert_eq!(result["tool"], tool);
+        assert_eq!(result["truncated"], result["matched"].as_u64().unwrap() > 1);
+        let rows = result["facts"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(exported.iter().any(|r| r.id == uuid(&rows[0]["id"])));
+    }
     let incoming = f
         .call("entity_facts", json!({"entity_id":f.object}))
         .await?;
@@ -1424,7 +1437,12 @@ async fn missing_entities_and_empty_graph_reads_keep_their_results() -> anyhow::
         let result = f.call(name, args).await?;
         assert_eq!(result["isError"], is_error, "{name}: {result}");
         assert_eq!(result["content"][0]["text"], text, "{name}");
-        assert!(result.get("structuredContent").is_none());
+        if text.starts_with("Isolated (untyped)") {
+            assert_eq!(result["structuredContent"]["facts"], json!([]));
+            assert_eq!(uuid(&result["structuredContent"]["entity_id"]), isolated);
+        } else {
+            assert!(result.get("structuredContent").is_none());
+        }
     }
     let empty = f
         .call("paths_between", json!({"from":f.subject,"to":isolated}))

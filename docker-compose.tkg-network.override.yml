@@ -1,0 +1,9 @@
+services:
+  app:
+    networks:
+      aisoc_tkg:
+        aliases: [soorin-tkg]
+networks:
+  aisoc_tkg:
+    external: true
+    name: aisoc-tkg

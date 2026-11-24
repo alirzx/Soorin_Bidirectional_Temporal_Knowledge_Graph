@@ -210,6 +210,9 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     assert_eq!(preview_status, 200);
     assert_eq!(preview["supports_acceptance_run"], true);
     assert_eq!(preview["persistent_writes"], false);
+    assert_eq!(preview["knowledge_base_id"], json!(kb));
+    assert_eq!(preview["source_id"], json!(source));
+    assert_eq!(preview["canonical_event"]["source_record_id"], "synthetic-preview");
     assert_eq!(preview["canonical_event"]["tenant_id"], "tenant-blue");
     let receipt_count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM soorin_ingestion_receipts WHERE source_id=$1")
@@ -719,6 +722,17 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     let curated = json!({"profile":"agentic-soc.splunk-curated.v1","record":{
         "alert_row_id":"synthetic-http-ingest","event_time":"2026-11-01T10:00:00Z",
         "title":"Password Spray Detection Source Alert","hostname":"http.synthetic.example"}});
+    let curated = match std::env::var_os("AISOC_TKG_TEST_FROZEN_ALERT") {
+        Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
+        None => curated,
+    };
+    let alert_row_id = curated["record"]["alert_row_id"].clone();
+    let (code, preview) = call(
+        app.clone(), format!("/api/v1/sources/{source}/soc/preview"),
+        "synthetic-only-token", curated.clone(),
+    ).await?;
+    assert_eq!(code, 200, "{preview}");
+    assert_eq!(preview["canonical_event"]["source_record_id"], alert_row_id);
     let path = format!("/api/v1/sources/{source}/soc/ingest");
     let (code, first) = call(
         app.clone(),
@@ -764,6 +778,45 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     crate::soc_alignment::phrases(&pool, kb).await?;
     utopia_store::materialize::materialize(&pool, kb).await?;
     soc_ingestion::process(&state, receipt_id).await?;
+    let (_, bound) = receipt_diagnostic(app.clone(), kb, receipt_id, &session).await?;
+    assert_eq!(bound["status"], "bound");
+    let (code, identity) = call(app.clone(), format!("/api/v1/kbs/{kb}/knowledge/resolve"), &session,
+        json!({"tenant_id":"tenant-blue","source_system":"splunk","source_instance":"splunk-e2e",
+               "entity_type":"SecurityAlert","authority_name":"soc_alert_row_id",
+               "source_identifier":alert_row_id})).await?;
+    assert_eq!(code, 200, "{identity}");
+    assert_eq!(identity["status"], "resolved");
+    let entity = &identity["candidates"][0]["entity_id"];
+    let (code, context) = call(app.clone(), format!("/api/v1/kbs/{kb}/knowledge/context"), &session,
+        json!({"tenant_id":"tenant-blue","entity":entity,"limit":5})).await?;
+    assert_eq!(code, 200, "{context}");
+    assert_eq!(context["resolved_entities"][0]["id"], *entity);
+    let facts = context["facts"].as_array().unwrap();
+    assert!(!facts.is_empty(), "materialized SOC alert should have source facts");
+    let (_, pat) =
+        utopia_store::tokens::issue(&pool, user, "SOC MCP fixture", "read", Some(&[kb]), None)
+            .await?;
+    let rpc_path = format!("/api/v1/kbs/{kb}/mcp");
+    for tool in ["neighbors", "timeline"] {
+        let (code, response) = call(
+            app.clone(),
+            rpc_path.clone(),
+            &pat,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                   "params":{"name":tool,"arguments":{"entity":entity,"limit":5}}}),
+        ).await?;
+        assert_eq!(code, 200, "{response}");
+        let result = &response["result"]["structuredContent"];
+        assert_eq!(result["entity_id"], *entity);
+        assert_eq!(result["tool"], tool);
+        assert_eq!(result["kb_id"], json!(kb));
+        for row in result["facts"].as_array().unwrap() {
+            let fact_id: Uuid = row["id"].as_str().unwrap().parse()?;
+            assert!(sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM facts WHERE kb_id=$1 AND id=$2)")
+                .bind(kb).bind(fact_id).fetch_one(&pool).await?);
+        }
+    }
+
     // Full supported relation flow, including a second revision under an
     // already-bound signature. No model/service or global worker is needed.
     let events: Value = serde_json::from_str(include_str!(
