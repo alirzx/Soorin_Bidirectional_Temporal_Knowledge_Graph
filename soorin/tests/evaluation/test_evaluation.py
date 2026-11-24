@@ -36,3 +36,15 @@ class EvaluationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RerankWindowTests(unittest.TestCase):
+    def test_synthetic_window_matches_full_rerank_and_reduces_work(self):
+        from soorin.evaluation.retrieval_benchmark import rerank_window_benchmark
+
+        result = rerank_window_benchmark()
+        quality, work = result["quality"], result["workload_model"]
+        self.assertEqual(quality[16], quality[48])
+        self.assertLess(quality[12]["recall10"], quality[16]["recall10"])
+        self.assertEqual((work[48][8]["requests"], work[16][8]["requests"]), (6, 2))
+        self.assertLess(work[16][8]["padded_tokens"], work[48][8]["padded_tokens"])

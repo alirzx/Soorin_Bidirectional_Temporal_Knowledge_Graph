@@ -31,6 +31,28 @@ static SEARCH_SLOT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1
 const MAX_BODY: usize = 300_000;
 const MAX_RESPONSE: usize = 16_384;
 
+#[derive(Default)]
+struct BatchStats {
+    count: usize,
+}
+
+pub struct Report {
+    pub status: &'static str,
+    pub candidates: usize,
+    pub batches: usize,
+    pub fallback_reason: Option<String>,
+}
+
+impl Report {
+    pub fn order(&self, authorized: usize) -> &'static str {
+        match self.status {
+            "complete" if self.candidates < authorized => "cross_encoder_then_rank_fusion",
+            "complete" => "cross_encoder",
+            _ => "rank_fusion",
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct Score {
     index: usize,
@@ -43,6 +65,7 @@ async fn rank(
     query: &str,
     texts: &[String],
     batch_size: usize,
+    stats: &mut BatchStats,
 ) -> anyhow::Result<Vec<usize>> {
     anyhow::ensure!(texts.len() <= 48, "candidate_bound");
     let url = format!("{}/rerank", cfg.base_url.trim_end_matches('/'));
@@ -54,17 +77,22 @@ async fn rank(
         let body = loop {
             let bytes = serde_json::to_vec(&serde_json::json!({
                 "model": cfg.model, "query": query, "texts": &texts[start..end],
-            }))?;
+            }))
+            .map_err(|_| anyhow::anyhow!("provider_request_encoding"))?;
             if bytes.len() <= MAX_BODY {
                 break bytes;
             }
             anyhow::ensure!(end > start + 1, "provider_request_size");
             end = start + (end - start) / 2;
         };
+        stats.count += 1;
         let mut response = loop {
+            let started = std::time::Instant::now();
+            let provider_request_id = Uuid::now_v7();
             let reply = client
                 .post(&url)
                 .header("Content-Type", "application/json")
+                .header("X-Request-Id", provider_request_id.to_string())
                 .body(body.clone())
                 .send()
                 .await
@@ -78,6 +106,8 @@ async fn rank(
                     }
                 })?;
             let status = reply.status().as_u16();
+            tracing::debug!(%provider_request_id, status, batch = stats.count, batch_size = end-start,
+                provider_elapsed_ms = started.elapsed().as_millis(), "search.rerank_batch_received");
             if retry_available && matches!(status, 429 | 503) {
                 let delay = match reply.headers().get("retry-after") {
                     None => Some(Duration::from_millis(250)),
@@ -95,15 +125,26 @@ async fn rank(
                     continue;
                 }
             }
+            if status == 429
+                && reply
+                    .headers()
+                    .get("x-soorin-rejection")
+                    .and_then(|v| v.to_str().ok())
+                    == Some("queue_timeout")
+            {
+                anyhow::bail!("queue_timeout");
+            }
             anyhow::ensure!(reply.status().is_success(), "provider_http_{status}");
             break reply;
         };
         let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| anyhow::anyhow!("provider_read"))?
-        {
+        while let Some(chunk) = response.chunk().await.map_err(|err| {
+            if err.is_timeout() {
+                anyhow::anyhow!("provider_timeout")
+            } else {
+                anyhow::anyhow!("provider_read")
+            }
+        })? {
             anyhow::ensure!(
                 bytes.len() + chunk.len() <= MAX_RESPONSE,
                 "provider_response_size"
@@ -143,59 +184,73 @@ fn bounded(value: Option<&str>, default: usize, min: usize, max: usize) -> usize
         .unwrap_or(default)
 }
 
-fn tuning() -> (usize, u64) {
-    let batch = std::env::var("SOORIN_RERANK_BATCH_SIZE").ok();
-    let timeout = std::env::var("SOORIN_RERANK_TIMEOUT_SECONDS").ok();
-    (
-        bounded(batch.as_deref(), 8, 1, 16),
-        bounded(timeout.as_deref(), 90, 5, 180) as u64,
-    )
+fn setting(name: &str, default: usize, min: usize, max: usize) -> usize {
+    bounded(std::env::var(name).ok().as_deref(), default, min, max)
+}
+
+pub fn deadline_seconds() -> u64 {
+    setting("SOORIN_RERANK_DEADLINE_SECONDS", 30, 5, 180) as u64
 }
 
 pub async fn apply(
     pool: &sqlx::PgPool,
     workspace: Uuid,
     query: &str,
-    chunks: &mut Vec<ChunkView>,
-) -> anyhow::Result<&'static str> {
+    chunks: &mut [ChunkView],
+) -> anyhow::Result<Report> {
     let cfg = config(pool, workspace).await?;
-    apply_config(&cfg, workspace, query, chunks, &SEARCH_SLOT).await
+    let candidates = setting("SOORIN_RERANK_MAX_CANDIDATES", 16, 1, 48);
+    apply_config(&cfg, query, chunks, &SEARCH_SLOT, candidates).await
 }
 
 async fn apply_config(
     cfg: &Config,
-    workspace: Uuid,
     query: &str,
-    chunks: &mut Vec<ChunkView>,
+    chunks: &mut [ChunkView],
     slot: &tokio::sync::Semaphore,
-) -> anyhow::Result<&'static str> {
+    candidates: usize,
+) -> anyhow::Result<Report> {
     if !cfg.enabled || chunks.is_empty() {
-        return Ok("disabled");
+        return Ok(Report {
+            status: "disabled",
+            candidates: 0,
+            batches: 0,
+            fallback_reason: None,
+        });
     }
-    let (batch_size, timeout_seconds) = tuning();
+    let batch_size = setting("SOORIN_RERANK_BATCH_SIZE", 8, 1, 16);
+    let timeout_seconds =
+        (setting("SOORIN_RERANK_TIMEOUT_SECONDS", 18, 5, 180) as u64).min(deadline_seconds());
+    let window = chunks.len().min(candidates);
     let started = std::time::Instant::now();
+    let mut stats = BatchStats::default();
+    tracing::debug!(
+        rerank_candidate_count = window,
+        candidate_count = chunks.len(),
+        batch_size,
+        model_role = "reranker",
+        "search.rerank_started"
+    );
     let result: anyhow::Result<Vec<usize>> = async {
         utopia_llm::egress::require(&cfg.base_url)
             .map_err(|_| anyhow::anyhow!("egress_blocked"))?;
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_seconds))
+            .connect_timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(timeout_seconds))
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| anyhow::anyhow!("client_configuration"))?;
         let _permit = slot
             .try_acquire()
             .map_err(|_| anyhow::anyhow!("search_capacity"))?;
-        anyhow::ensure!(chunks.len() <= 48, "candidate_bound");
-        let texts: Vec<String> = chunks
+        let texts: Vec<String> = chunks[..window]
             .iter()
             .map(|c| c.text.trim().chars().take(8000).collect())
             .collect();
         let query: String = query.trim().chars().take(4000).collect();
-        let deadline = std::env::var("SOORIN_RERANK_DEADLINE_SECONDS").ok();
-        let seconds = bounded(deadline.as_deref(), 90, 5, 180);
         tokio::time::timeout(
-            Duration::from_secs(seconds as u64),
-            rank(&http, cfg, &query, &texts, batch_size),
+            Duration::from_secs(deadline_seconds()),
+            rank(&http, cfg, &query, &texts, batch_size, &mut stats),
         )
         .await
         .map_err(|_| anyhow::anyhow!("rerank_deadline"))?
@@ -203,34 +258,35 @@ async fn apply_config(
     .await;
     match result {
         Ok(order) => {
-            let original = chunks.clone();
-            *chunks = order
-                .into_iter()
-                .map(|index| original[index].clone())
-                .collect();
+            let original = chunks[..window].to_vec();
+            for (chunk, index) in chunks[..window].iter_mut().zip(order) {
+                chunk.clone_from(&original[index]);
+            }
             tracing::debug!(
-                %workspace,
-                candidate_count = chunks.len(),
-                batch_size,
-                elapsed_ms = started.elapsed().as_millis(),
-                "reranking complete"
+                rerank_candidate_count = window,
+                batch_count = stats.count,
+                duration_ms = started.elapsed().as_millis(),
+                "search.rerank_completed"
             );
-            Ok("complete")
+            Ok(Report {
+                status: "complete",
+                candidates: window,
+                batches: stats.count,
+                fallback_reason: None,
+            })
         }
         Err(error) => {
-            // Log only controlled status/category, never request text, model
-            // payload, provider response bodies, URL or credentials.
-            tracing::warn!(
-                %workspace,
-                reason = %error,
-                candidate_count = chunks.len(),
-                batch_size,
-                timeout_seconds,
-                elapsed_ms = started.elapsed().as_millis(),
-                "reranker failed"
-            );
+            // rank returns controlled categories, never provider response text.
+            tracing::warn!(fallback_reason = %error, rerank_candidate_count = window,
+                batch_count = stats.count, duration_ms = started.elapsed().as_millis(),
+                fallback_enabled = cfg.fallback, "search.rerank_fallback");
             if cfg.fallback {
-                Ok("fallback")
+                Ok(Report {
+                    status: "fallback",
+                    candidates: window,
+                    batches: stats.count,
+                    fallback_reason: Some(error.to_string()),
+                })
             } else {
                 anyhow::bail!("reranker_unavailable_and_fallback_disabled")
             }
@@ -270,12 +326,74 @@ mod tests {
             let texts: Vec<_> = (0..n)
                 .map(|i| format!("{i}:{}", "🔥".repeat(7996)))
                 .collect();
-            let order = rank(&reqwest::Client::new(), &cfg, "id", &texts, 16)
-                .await
-                .unwrap();
+            let order = rank(
+                &reqwest::Client::new(),
+                &cfg,
+                "id",
+                &texts,
+                16,
+                &mut BatchStats::default(),
+            )
+            .await
+            .unwrap();
             let mut expected: Vec<_> = (0..n).collect();
             expected.sort_by_key(|i| std::cmp::Reverse(i / 2));
             assert_eq!(order, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_large_result_set_keeps_its_rrf_tail() {
+        use wiremock::{matchers::path, Mock, MockServer, Request, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(path("/rerank"))
+            .respond_with(|req: &Request| {
+                let body: serde_json::Value = req.body_json().unwrap();
+                let rows: Vec<_> = body["texts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, text)| {
+                        let seq: usize = text.as_str().unwrap().parse().unwrap();
+                        assert!(seq < 16);
+                        serde_json::json!({"index": index, "score": seq})
+                    })
+                    .collect();
+                ResponseTemplate::new(200).set_body_json(rows)
+            })
+            .expect(4)
+            .mount(&server)
+            .await;
+        let cfg = Config {
+            enabled: true,
+            fallback: true,
+            base_url: server.uri(),
+            model: "mock".into(),
+        };
+        let slot = tokio::sync::Semaphore::new(1);
+        for top_k in [1, 30] {
+            let mut chunks: Vec<_> = (0..48)
+                .map(|seq| ChunkView {
+                    id: Uuid::now_v7(),
+                    document_id: Uuid::now_v7(),
+                    seq,
+                    filename: "fixture".into(),
+                    text: seq.to_string(),
+                })
+                .collect();
+            let report = apply_config(&cfg, "query", &mut chunks, &slot, 16)
+                .await
+                .unwrap();
+            assert_eq!(report.status, "complete");
+            assert_eq!((report.candidates, report.batches), (16, 2));
+            assert_eq!(report.order(48), "cross_encoder_then_rank_fusion");
+            chunks.truncate(top_k);
+            let expected: Vec<_> = (0..16).rev().chain(16..48).take(top_k).collect();
+            assert_eq!(
+                chunks.iter().map(|chunk| chunk.seq).collect::<Vec<_>>(),
+                expected
+            );
         }
     }
 
@@ -302,7 +420,7 @@ mod tests {
             .mount(&server)
             .await;
         assert_eq!(
-            rank(&client, &cfg, "q", &texts, 2)
+            rank(&client, &cfg, "q", &texts, 2, &mut BatchStats::default())
                 .await
                 .unwrap_err()
                 .to_string(),
@@ -314,7 +432,7 @@ mod tests {
             .mount(&server)
             .await;
         assert_eq!(
-            rank(&client, &cfg, "q", &texts, 2)
+            rank(&client, &cfg, "q", &texts, 2, &mut BatchStats::default())
                 .await
                 .unwrap_err()
                 .to_string(),
@@ -326,7 +444,11 @@ mod tests {
             ..Default::default()
         };
         drop(socket);
-        assert!(rank(&client, &cfg, "q", &texts, 2).await.is_err());
+        assert!(
+            rank(&client, &cfg, "q", &texts, 2, &mut BatchStats::default())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -353,7 +475,6 @@ mod tests {
             base_url: server.uri(),
             model: "test".into(),
         };
-        let workspace = Uuid::now_v7();
         let slot = tokio::sync::Semaphore::new(1);
         let mut a = vec![ChunkView {
             id: Uuid::now_v7(),
@@ -364,10 +485,10 @@ mod tests {
         }];
         let mut b = a.clone();
         let (left, right) = tokio::join!(
-            apply_config(&cfg, workspace, "query", &mut a, &slot),
-            apply_config(&cfg, workspace, "query", &mut b, &slot)
+            apply_config(&cfg, "query", &mut a, &slot, 16),
+            apply_config(&cfg, "query", &mut b, &slot, 16)
         );
-        let mut statuses = [left.unwrap(), right.unwrap()];
+        let mut statuses = [left.unwrap().status, right.unwrap().status];
         statuses.sort();
         assert_eq!(statuses, ["complete", "fallback"]);
         assert_eq!(a[0].id, b[0].id);
@@ -413,7 +534,8 @@ mod tests {
                 &cfg,
                 "id",
                 &["a".into(), "b".into()],
-                1
+                1,
+                &mut BatchStats::default(),
             )
             .await
             .is_err());

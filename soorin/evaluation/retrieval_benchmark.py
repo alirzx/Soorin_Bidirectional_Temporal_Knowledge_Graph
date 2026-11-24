@@ -116,5 +116,40 @@ def quality_at_cutoffs() -> dict:
     return report
 
 
+def rerank_window_benchmark() -> dict:
+    """Synthetic rank-boundary and padded-token workload model."""
+    queries = [
+        ("password spray", "password spray across directory accounts", 7),
+        ("encoded powershell", "encoded powershell process", 12),
+        ("privileged ticket", "privileged ticket linked to service user", 15),
+    ]
+    windows = (8, 12, 16, 24, 48)
+    quality = {}
+    for window in windows:
+        samples = []
+        for query, positive, positive_rank in queries:
+            doc_ids = [f"doc-{i}" for i in range(48)]
+            documents = ["routine synthetic sensor message"] * 48
+            documents[positive_rank] = positive
+            terms = set(query.split())
+            ranking = sorted(range(window), key=lambda i: -len(terms & set(documents[i].split())))
+            ranking += list(range(window, len(documents)))
+            samples.append(_metrics([doc_ids[i] for i in ranking], {doc_ids[positive_rank]}, 10))
+        quality[window] = dict(zip(("recall10", "mrr10", "ndcg10"), map(statistics.mean, zip(*samples))))
+
+    # Simulated tokenized pair lengths, capped at 512. The relative work proxy
+    # includes padding within each group of four in Engine.predict, plus wire calls.
+    lengths = (74, 160, 290, 512, 100, 175, 410, 244) * 6
+    costs = {}
+    for window in windows:
+        costs[window] = {}
+        for batch in (4, 8, 16):
+            groups = [lengths[i:min(i+batch, window)] for i in range(0, window, batch)]
+            padded_tokens = sum(len(group[i:i+4])*max(group[i:i+4])
+                                for group in groups for i in range(0, len(group), 4))
+            costs[window][batch] = {"requests": len(groups), "padded_tokens": padded_tokens}
+    return {"quality": quality, "workload_model": costs}
+
+
 if __name__ == "__main__":
     print(json.dumps(run_benchmark(), sort_keys=True, indent=2))

@@ -17,6 +17,8 @@ use utopia_core::models::ChunkView;
 use utopia_core::AppResult;
 use uuid::Uuid;
 
+pub const QUERY_EMBED_SECONDS: u64 = 30;
+
 const RECALL_PER_CHANNEL: usize = 24;
 
 pub struct Retrieval {
@@ -50,34 +52,57 @@ pub async fn hybrid_detailed(
     embeddings: Option<&mut llm_util::EmbedCache>,
 ) -> AppResult<Retrieval> {
     let lexical = async {
-        if let Some(when) = as_of {
-            return utopia_store::documents::historical_lexical(
-                &state.pool,
-                kb_id,
-                query,
-                when,
-                RECALL_PER_CHANNEL as i64,
-            )
-            .await;
+        let started = std::time::Instant::now();
+        let result: AppResult<Vec<String>> = async {
+            if let Some(when) = as_of {
+                return utopia_store::documents::historical_lexical(
+                    &state.pool,
+                    kb_id,
+                    query,
+                    when,
+                    RECALL_PER_CHANNEL as i64,
+                )
+                .await;
+            }
+            let search = state.search.clone();
+            let kb = kb_id.to_string();
+            let query = query.to_string();
+            let hits =
+                tokio::task::spawn_blocking(move || search.search(&kb, &query, RECALL_PER_CHANNEL))
+                    .await
+                    .map_err(|_| {
+                        utopia_core::AppError::Other(anyhow::anyhow!("lexical_worker_unavailable"))
+                    })?
+                    .map_err(utopia_core::AppError::Other)?;
+            Ok(hits.into_iter().map(|h| h.chunk_id).collect())
         }
-        let search = state.search.clone();
-        let kb = kb_id.to_string();
-        let query = query.to_string();
-        let hits =
-            tokio::task::spawn_blocking(move || search.search(&kb, &query, RECALL_PER_CHANNEL))
-                .await
-                .map_err(|_| {
-                    utopia_core::AppError::Other(anyhow::anyhow!("lexical_worker_unavailable"))
-                })?
-                .map_err(utopia_core::AppError::Other)?;
-        Ok(hits.into_iter().map(|h| h.chunk_id).collect())
+        .await;
+        if let Ok(ids) = &result {
+            tracing::debug!(
+                candidate_count = ids.len(),
+                duration_ms = started.elapsed().as_millis(),
+                "search.lexical_completed"
+            );
+        }
+        result
+    };
+    let dense = async {
+        let started = std::time::Instant::now();
+        let result = vector_channel(state, kb_id, workspace_id, query, as_of, embeddings).await;
+        if let Ok(ids) = &result {
+            tracing::debug!(
+                executed = ids.is_some(),
+                candidate_count = ids.as_ref().map_or(0, Vec::len),
+                duration_ms = started.elapsed().as_millis(),
+                "search.dense_completed"
+            );
+        }
+        result
     };
     // `join!` 不是 `try_join!`：向量那一路失败是降级不是错误（见 vector_channel），
     // `try_join!` 会把模型故障变成检索报错
-    let (lexical, vector) = tokio::join!(
-        lexical,
-        vector_channel(state, kb_id, workspace_id, query, as_of, embeddings)
-    );
+    let (lexical, vector) = tokio::join!(lexical, dense);
+    let fusion_started = std::time::Instant::now();
     let lexical = lexical?;
     let vector = vector?;
     let dense_executed = vector.is_some();
@@ -91,10 +116,33 @@ pub async fn hybrid_detailed(
     let mut chunks =
         utopia_store::documents::chunks_by_ids(&state.pool, kb_id, &ids, as_of).await?;
     let authorized = chunks.len();
-    let reranker = crate::reranker::apply(&state.pool, workspace_id, query, &mut chunks).await?;
+    tracing::debug!(
+        candidate_count = candidate_limit,
+        authorized_candidate_count = authorized,
+        duration_ms = fusion_started.elapsed().as_millis(),
+        "search.fusion_completed"
+    );
+    let reranker = if top_k == 0 {
+        crate::reranker::apply(&state.pool, workspace_id, query, &mut []).await?
+    } else {
+        crate::reranker::apply(&state.pool, workspace_id, query, &mut chunks).await?
+    };
     chunks.truncate(top_k);
+    let lexical_method = if as_of.is_some() {
+        "postgres_versioned_lexical"
+    } else {
+        "tantivy_bm25"
+    };
     Ok(Retrieval {
-        metadata: serde_json::json!({"schema_version":"soorin.retrieval-metadata.v1","dense_executed":dense_executed,"lexical_method":if as_of.is_some(){"postgres_versioned_lexical"}else{"tantivy_bm25"},"lexical":if as_of.is_some(){"postgres_versioned_lexical"}else{"tantivy_bm25"},"reranker_status":reranker,"candidate_count":candidate_limit,"unique_candidate_count":ids.len(),"authorized_candidate_count":authorized,"final_order":if reranker=="complete"{"cross_encoder"}else{"rank_fusion"},"score_type":"rank_fusion","returned":chunks.len()}),
+        metadata: serde_json::json!({
+            "schema_version":"soorin.retrieval-metadata.v1","dense_executed":dense_executed,
+            "lexical_method":lexical_method,"lexical":lexical_method,"reranker_status":reranker.status,
+            "candidate_count":candidate_limit,"retrieved_candidate_count":candidate_limit,
+            "unique_candidate_count":ids.len(),"authorized_candidate_count":authorized,
+            "rerank_candidate_count":reranker.candidates,"rerank_batch_count":reranker.batches,
+            "fallback_reason":reranker.fallback_reason,"final_order":reranker.order(authorized),
+            "score_type":"rank_fusion","returned":chunks.len()
+        }),
         chunks,
     })
 }
@@ -128,7 +176,7 @@ async fn vector_channel(
                 return Ok(None);
             };
             let mut embeddings = match tokio::time::timeout(
-                std::time::Duration::from_secs(30),
+                std::time::Duration::from_secs(QUERY_EMBED_SECONDS),
                 client.embed(&[query.to_string()]),
             )
             .await
