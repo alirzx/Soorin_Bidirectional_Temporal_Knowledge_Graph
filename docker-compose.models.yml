@@ -8,6 +8,7 @@ services:
       context: .
       dockerfile: docker/models.Dockerfile
       args:
+        SOORIN_BUILD_REVISION: ${SOORIN_MODEL_BUILD_REVISION:-unknown}
         PYTHON_BASE_IMAGE: ${SOORIN_PYTHON_BASE_IMAGE:-docker.arvancloud.ir/python:3.12-slim-bookworm}
         PIP_PRIMARY_INDEX_URL: ${PIP_PRIMARY_INDEX_URL:-https://package-mirror.liara.ir/repository/pypi/simple}
         PIP_FALLBACK_INDEX_URL: ${PIP_FALLBACK_INDEX_URL:-https://mirror2.chabokan.net/pypi/simple/}
@@ -28,8 +29,9 @@ services:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
       SOORIN_MODEL_QUEUE_CAPACITY: ${SOORIN_MODEL_QUEUE_CAPACITY:-4}
-      SOORIN_MODEL_QUEUE_TIMEOUT_SECONDS: ${SOORIN_MODEL_QUEUE_TIMEOUT_SECONDS:-20}
-      SOORIN_MODEL_THREADS: "2"
+      SOORIN_MODEL_QUEUE_TIMEOUT_SECONDS: ${SOORIN_MODEL_QUEUE_TIMEOUT_SECONDS:-6}
+      SOORIN_MODEL_LOG_LEVEL: ${SOORIN_MODEL_LOG_LEVEL:-INFO}
+      SOORIN_MODEL_THREADS: ${SOORIN_MODEL_THREADS:-2}
     ports:
       - "127.0.0.1:2811:8080"
       - "127.0.0.1:2812:8081"

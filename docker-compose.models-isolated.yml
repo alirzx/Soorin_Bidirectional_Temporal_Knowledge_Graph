@@ -1,0 +1,91 @@
+# Experimental Server 55 overlay. Enable models-isolated only after stopping models.
+x-model-role: &model-role
+  image: ${SOORIN_CPU_MODEL_IMAGE:-soorin-tkg-v1-qa-models:latest}
+  pull_policy: never
+  profiles: [models-isolated]
+  init: true
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp:size=256m]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 128
+  networks: [model_roles]
+  environment: &model-env
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    SOORIN_MODEL_LOG_LEVEL: ${SOORIN_MODEL_LOG_LEVEL:-INFO}
+  healthcheck:
+    test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready',timeout=3)"]
+    interval: 20s
+    timeout: 5s
+    retries: 6
+    start_period: 240s
+
+services:
+  models-embedding:
+    <<: *model-role
+    cpus: 1.20
+    mem_limit: 3g
+    command: [serve, --role, embedding, --host, 0.0.0.0, --port, "8080", --cache, /models/embedding]
+    volumes: [soorin_embedding_cache:/models/embedding:ro]
+    environment:
+      <<: *model-env
+      HF_HOME: /models/embedding
+      SOORIN_MODEL_THREADS: ${SOORIN_EMBEDDING_MODEL_THREADS:-1}
+      SOORIN_MODEL_QUEUE_CAPACITY: ${SOORIN_EMBEDDING_MODEL_QUEUE_CAPACITY:-2}
+      SOORIN_MODEL_QUEUE_TIMEOUT_SECONDS: ${SOORIN_EMBEDDING_MODEL_QUEUE_TIMEOUT_SECONDS:-6}
+  models-reranker:
+    <<: *model-role
+    cpus: 1.40
+    mem_limit: 3g
+    command: [serve, --role, reranker, --host, 0.0.0.0, --port, "8080", --cache, /models/reranker]
+    volumes: [soorin_reranker_cache:/models/reranker:ro]
+    environment:
+      <<: *model-env
+      HF_HOME: /models/reranker
+      SOORIN_MODEL_THREADS: ${SOORIN_RERANKER_MODEL_THREADS:-1}
+      SOORIN_MODEL_QUEUE_CAPACITY: ${SOORIN_RERANKER_MODEL_QUEUE_CAPACITY:-1}
+      SOORIN_MODEL_QUEUE_TIMEOUT_SECONDS: ${SOORIN_RERANKER_MODEL_QUEUE_TIMEOUT_SECONDS:-3}
+  models-ner:
+    <<: *model-role
+    profiles: [models-isolated-ner]
+    cpus: 0.25
+    mem_limit: 896m
+    command: [serve, --role, ner, --host, 0.0.0.0, --port, "8080", --cache, /models/ner]
+    volumes: [soorin_ner_cache:/models/ner:ro]
+    environment:
+      <<: *model-env
+      HF_HOME: /models/ner
+      SOORIN_MODEL_THREADS: ${SOORIN_NER_MODEL_THREADS:-1}
+      SOORIN_MODEL_QUEUE_CAPACITY: ${SOORIN_NER_MODEL_QUEUE_CAPACITY:-1}
+      SOORIN_MODEL_QUEUE_TIMEOUT_SECONDS: ${SOORIN_NER_MODEL_QUEUE_TIMEOUT_SECONDS:-3}
+  models-proxy:
+    profiles: [models-isolated]
+    image: ${SOORIN_MODEL_PROXY_IMAGE:?Set reviewed local nginx image digest}
+    pull_policy: never
+    user: "65532:65532"
+    entrypoint: [nginx, -g, "daemon off;"]
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp:size=16m]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    cpus: 0.15
+    mem_limit: 128m
+    volumes:
+      - ./docker/models-proxy.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      default:
+        aliases: [models]
+      model_roles:
+    ports:
+      - "127.0.0.1:2811:8080"
+      - "127.0.0.1:2812:8081"
+      - "127.0.0.1:2813:8082"
+
+networks:
+  model_roles:
+    internal: true

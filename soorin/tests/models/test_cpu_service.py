@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch
-from soorin.services.cpu_models import Engine, texts, serve_all, InferenceGate, BoundedHTTPServer
+from soorin.services.cpu_models import Engine, texts, serve_all, load_role, InferenceGate, BoundedHTTPServer
 
 
 class Scores:
@@ -131,3 +131,25 @@ class CpuServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "reranker.*verification failed"):
                 serve_all("/models", "127.0.0.1")
             serve.assert_not_called()
+
+
+    def test_independent_admission_and_queue_failure_reasons(self):
+        embedding = InferenceGate(capacity=1)
+        reranker = InferenceGate(capacity=2, wait_seconds=0.001)
+        self.assertIsNone(embedding.admit())
+        self.assertIsNone(reranker.admit())
+        self.assertEqual(embedding.admit(), "queue_full")
+        self.assertEqual(reranker.admit(), "queue_timeout")
+        self.assertEqual(reranker.snapshot(), {"active_requests": 1, "waiting_requests": 0, "queue_rejections": 1})
+        embedding.release()
+        self.assertEqual(reranker.snapshot()["active_requests"], 1)
+        reranker.release()
+
+    def test_role_startup_verifies_only_the_requested_pinned_cache(self):
+        with patch("soorin.services.artifacts.verify", return_value={"status": "PASS"}) as verify, \
+             patch.object(Engine, "load", autospec=True) as load:
+            engine = load_role("reranker", "/models/reranker")
+        verify.assert_called_once_with("reranker", "/models/reranker", hashes=True)
+        load.assert_called_once_with(engine)
+        self.assertEqual(engine.role, "reranker")
+        self.assertIn("@953dc", engine.name)

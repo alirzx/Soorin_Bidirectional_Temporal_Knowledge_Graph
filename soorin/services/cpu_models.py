@@ -9,12 +9,14 @@ import argparse
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
 import math
 import os
 from pathlib import Path
 import threading
 import time
 from typing import Any
+from uuid import UUID, uuid4
 
 MODELS = {
     "embedding": ("BAAI/bge-m3", "5617a9f61b028005a4858fdac845db406aefb181"),
@@ -24,6 +26,7 @@ MODELS = {
 MAX_BATCH = 16
 MAX_CHARS = 16000
 MAX_BYTES = 300000
+LOGGER = logging.getLogger("soorin.inference")
 
 
 def texts(value: Any) -> list[str]:
@@ -33,6 +36,12 @@ def texts(value: Any) -> list[str]:
     if any(not isinstance(row, str) or not row.strip() or len(row) > MAX_CHARS for row in rows):
         raise ValueError("texts must be nonempty and at most 16000 characters")
     return rows
+
+
+def model_event(engine, event, *, level=logging.DEBUG, **fields):
+    if LOGGER.isEnabledFor(level):
+        LOGGER.log(level, json.dumps({"event": event, "role": engine.role,
+                                      "model": engine.name, **fields}))
 
 
 class Engine:
@@ -51,7 +60,10 @@ class Engine:
             return
         from huggingface_hub import snapshot_download
         import torch
-        torch.set_num_threads(int(os.environ.get("SOORIN_MODEL_THREADS", "2")))
+        threads = int(os.environ.get("SOORIN_MODEL_THREADS", "2"))
+        if not 1 <= threads <= 8:
+            raise ValueError("invalid CPU model thread count")
+        torch.set_num_threads(threads)
         path = snapshot_download(self.model_id, revision=self.revision, cache_dir=self.cache, local_files_only=True)
         if self.role == "embedding":
             from sentence_transformers import SentenceTransformer
@@ -122,35 +134,55 @@ def initialize(role: str, cache: str) -> str:
 
 class InferenceGate:
     """One inference plus at most four waiters across all model roles."""
-    def __init__(self, capacity: int = 5, wait_seconds: float = 20):
+    def __init__(self, capacity: int = 5, wait_seconds: float = 6):
         self.queue_capacity = capacity - 1
         self.slots = threading.BoundedSemaphore(capacity)
         self.active = threading.BoundedSemaphore(1)
         self.wait_seconds = wait_seconds
+        self.lock = threading.Lock()
+        self.running = self.waiting = self.rejected = 0
 
     @classmethod
     def configured(cls) -> InferenceGate:
         waiters = int(os.getenv("SOORIN_MODEL_QUEUE_CAPACITY", "4"))
-        wait = float(os.getenv("SOORIN_MODEL_QUEUE_TIMEOUT_SECONDS", "20"))
+        wait = float(os.getenv("SOORIN_MODEL_QUEUE_TIMEOUT_SECONDS", "6"))
         if not 0 <= waiters <= 4 or not 0 < wait <= 120:
             raise ValueError("invalid CPU model queue capacity or timeout")
         return cls(capacity=1 + waiters, wait_seconds=wait)
 
+    def snapshot(self):
+        with self.lock:
+            return {"active_requests": self.running, "waiting_requests": self.waiting,
+                    "queue_rejections": self.rejected}
+
     def acquire(self) -> bool:
+        return self.admit() is None
+
+    def admit(self) -> str | None:
         if not self.slots.acquire(blocking=False):
-            return False
+            with self.lock:
+                self.rejected += 1
+            return "queue_full"
+        with self.lock:
+            self.waiting += 1
+        acquired = False
         try:
-            if self.active.acquire(timeout=self.wait_seconds):
-                return True
-        except BaseException:
-            self.slots.release()
-            raise
-        self.slots.release()
-        return False
+            acquired = self.active.acquire(timeout=self.wait_seconds)
+            return None if acquired else "queue_timeout"
+        finally:
+            with self.lock:
+                self.waiting -= 1
+                if acquired:
+                    self.running += 1
+                else:
+                    self.rejected += 1
+                    self.slots.release()
 
     def release(self) -> None:
-        self.active.release()
-        self.slots.release()
+        with self.lock:
+            self.running -= 1
+            self.active.release()
+            self.slots.release()
 
 
 class BoundedHTTPServer(ThreadingHTTPServer):
@@ -169,7 +201,7 @@ class BoundedHTTPServer(ThreadingHTTPServer):
     def process_request(self, request, client_address):
         if not self.handlers.acquire(blocking=False):
             try:
-                request.sendall(b'HTTP/1.1 429 Too Many Requests\r\nRetry-After: 2\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+                request.sendall(b'HTTP/1.1 429 Too Many Requests\r\nRetry-After: 2\r\nContent-Length: 0\r\nX-Soorin-Rejection: handler_capacity\r\nConnection: close\r\n\r\n')
             finally:
                 self.shutdown_request(request)
             return
@@ -196,13 +228,15 @@ def serve(engine: Engine, host: str, port: int,
         def log_message(self, *_args: Any) -> None:
             pass  # Do not log URLs, payloads, tokens or model exception bodies.
 
-        def respond(self, status: int, value: Any) -> None:
+        def respond(self, status: int, value: Any, *, rejection=None) -> None:
             raw = json.dumps(value, allow_nan=False).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(raw)))
             if status == 429:
                 self.send_header("Retry-After", "2")
+            if rejection:
+                self.send_header("X-Soorin-Rejection", rejection)
             self.end_headers()
             self.wfile.write(raw)
 
@@ -214,7 +248,7 @@ def serve(engine: Engine, host: str, port: int,
                     "device": "cpu", "dimension": 1024 if engine.role == "embedding" else None,
                     "max_batch": MAX_BATCH, "max_chars": MAX_CHARS, "max_bytes": MAX_BYTES,
                     "max_tokens": 512, "inference_concurrency": 1, "queue_capacity": gate.queue_capacity,
-                    "calls": engine.calls, "inference_seconds": engine.total_seconds})
+                    "calls": engine.calls, "inference_seconds": engine.total_seconds, **gate.snapshot()})
             else:
                 self.respond(404, {"error": "not_found"})
 
@@ -232,20 +266,45 @@ def serve(engine: Engine, host: str, port: int,
                 if not isinstance(body, dict):
                     raise ValueError("body must be an object")
                 engine.validate_request(self.path, body)
-                if not gate.acquire():
-                    self.respond(429, {"error": "busy"})
-                    return
-                try:
-                    self.respond(200, engine.infer(self.path, body))
-                finally:
-                    gate.release()
-            except (ValueError, KeyError):
+            except (ValueError, KeyError, OSError):
                 self.respond(422, {"error": "invalid_model_request"})
+                return
+            try:
+                request_id = str(UUID(self.headers.get("X-Request-Id", "")))
+            except ValueError:
+                request_id = str(uuid4())
+            batch = body.get("texts", body.get("input"))
+            fields = {"request_id": request_id, "batch_size": len(batch) if isinstance(batch, list) else 1}
+            model_event(engine, "inference.request_received", **fields)
+            started = time.perf_counter()
+            rejection = gate.admit()
+            queue_ms = round((time.perf_counter() - started) * 1000, 2)
+            if rejection:
+                model_event(engine, "inference.queue_rejected", reason=rejection,
+                            queue_wait_ms=queue_ms, **fields, **gate.snapshot())
+                self.respond(429, {"error": "busy"}, rejection=rejection)
+                return
+            model_event(engine, "inference.queue_admitted", queue_wait_ms=queue_ms, **fields, **gate.snapshot())
+            began = time.perf_counter()
+            model_event(engine, "inference.started", **fields, **gate.snapshot())
+            status = 200
+            try:
+                result = engine.infer(self.path, body)
             except Exception:
-                self.respond(503, {"error": "inference_failed"})
+                status, result = 503, {"error": "inference_failed"}
+            finally:
+                gate.release()
+            event = "inference.completed" if status == 200 else "inference.failed"
+            model_event(engine, event, status=status, queue_wait_ms=queue_ms,
+                        duration_ms=round((time.perf_counter() - began) * 1000, 2), **fields, **gate.snapshot())
+            # Release inference before writing to a slow client.
+            try:
+                self.respond(status, result)
+            except OSError:
+                pass
 
     server = BoundedHTTPServer((host, port), Handler)
-    server.daemon_threads = True
+    model_event(engine, "model.ready", level=logging.INFO, port=port)
     server.serve_forever()
 
 
@@ -260,14 +319,7 @@ def serve_all(cache_root: str, host: str) -> None:
     ports = {"embedding": 8080, "reranker": 8081, "ner": 8082}
     engines: dict[str, Engine] = {}
     for role in ports:
-        from .artifacts import verify
-        cache = str(Path(cache_root) / role)
-        result = verify(role, cache, hashes=True)
-        if result["status"] != "PASS":
-            raise RuntimeError(f"{role}: artifact verification failed: {result['status']}")
-        engine = Engine(role, cache)
-        engine.load()
-        engines[role] = engine
+        engines[role] = load_role(role, str(Path(cache_root) / role))
     # A common semaphore prevents simultaneous heavy inference on a CPU host.
     gate = InferenceGate.configured()
     with ThreadPoolExecutor(max_workers=3, thread_name_prefix="soorin-model") as pool:
@@ -279,7 +331,26 @@ def serve_all(cache_root: str, host: str) -> None:
             future.result()
 
 
+def load_role(role: str, cache: str) -> Engine:
+    from .artifacts import verify
+
+    engine = Engine(role, cache)
+    model_event(engine, "model.initialization_started", level=logging.INFO)
+    if verify(role, cache, hashes=True)["status"] != "PASS":
+        raise RuntimeError(f"{role}: artifact verification failed")
+    try:
+        engine.load()
+    except Exception:
+        raise RuntimeError(f"{role}: model initialization failed") from None
+    return engine
+
+
 def main() -> None:
+    logging.basicConfig(level=logging.DEBUG if os.getenv("SOORIN_MODEL_LOG_LEVEL") == "DEBUG" else logging.INFO,
+                        format="%(message)s")
+    # Restrict debug output to our metadata, even when dependency loggers exist.
+    logging.getLogger().setLevel(logging.WARNING)
+    LOGGER.setLevel(logging.DEBUG if os.getenv("SOORIN_MODEL_LOG_LEVEL") == "DEBUG" else logging.INFO)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["init", "download", "verify-artifacts", "serve", "serve-all"])
     parser.add_argument("--role", choices=list(MODELS), required=False)
@@ -300,7 +371,7 @@ def main() -> None:
     elif args.command == "serve-all":
         serve_all(args.cache, args.host)
     else:
-        serve(Engine(args.role, args.cache), args.host, args.port)
+        serve(load_role(args.role, args.cache), args.host, args.port)
 
 
 if __name__ == "__main__":
