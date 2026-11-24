@@ -214,6 +214,14 @@ Resolve then use the returned UUID with context. Curated alert rows use the auth
 {"schema_version":"soorin.knowledge-context.v2","retrieval_status":"partial","knowledge_time":"2026-11-23T10:01:00Z","retrieval_methods":["entity_lookup","temporal_graph","fact_evidence"],"model_versions":{"usage":"none","reason":"deterministic_graph_lookup"}}
 ```
 
+A successful Search may also return an opaque `request_id` and the additive
+`retrieved_candidate_count`, `rerank_candidate_count`, `rerank_batch_count`,
+and `fallback_reason` fields. `reranker_status=complete` covers the selected
+window. `final_order=cross_encoder_then_rank_fusion` marks a reranked prefix
+with unmodified RRF ordering outside it. Keep `fallback` and `disabled` distinct
+in client telemetry. Use the configured Search deadline to size client
+timeouts. See [Retrieval and reranking](RETRIEVAL_AND_RERANKING.md).
+
 After a lost admission response, resend identical bytes and retain the returned receipt. Use bounded backoff for 429/503 and transport outages. For 409, only the named normalizer capacity or timeout conditions are transport-retry candidates. Poll administratively every 5–30 seconds with an overall deadline. On expiry retain the receipt and resume later. Use diagnostics for child failure classes and versioned evidence. Failed or quarantined dependencies require the documented repair/review process. Consumer code must surface lexical-only results and enabled-reranker fallback. Disabled fallback can return an HTTP error. Production source tokens never need the synthetic harness header.
 
 The executable wire handlers are in `crates/utopia-server/src/api/{soc_curated,soc_ingestion,search_routes,soc_knowledge}.rs`. The full graph context schema is in `soorin/contracts/schemas/knowledge_context_v2.schema.json`. The Server 55 runbook defines release and scale gates.

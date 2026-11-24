@@ -33,6 +33,34 @@ git merge --ff-only "$RELEASE_SHA"
 test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
 ```
 
+#### Server 55 root Git identity
+
+The `api` account selects the Agentic_SOC-specific deploy key. Use the
+approved root Git identity if the `api` identity cannot read this repository.
+Repeat the SHA assignment inside the root login shell. Confirm this checkout
+belongs to `api` and contains no unrelated mounts or worktrees before restoring
+ownership. Exit root before continuing the release.
+
+```bash
+sudo -i
+set -euo pipefail
+cd /home/api/Soorin_TKG
+: "${RELEASE_SHA:?set the approved full SHA in this root shell}"
+[[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+test "$(git branch --show-current)" = main
+test -z "$(git status --porcelain)"
+git remote get-url origin
+test "$(git ls-remote --exit-code origin refs/heads/main | cut -f1)" = "$RELEASE_SHA"
+git fetch origin main
+test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_SHA"
+test "$(git rev-parse origin/main)" = "$RELEASE_SHA"
+git merge-base --is-ancestor HEAD origin/main
+git merge --ff-only origin/main
+test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+chown -hR api:api /home/api/Soorin_TKG
+exit
+```
+
 ### Method B — verified Git bundle
 
 On the laptop, use the clean synchronized checkout with both remote tips freshly verified. Create the bundle inside an existing private transfer directory. Verify Server 55's SSH host key and use an existing owner-only `~/tkg-release-incoming` directory.
@@ -143,7 +171,7 @@ Record image ID even if RepoDigests is empty for a local build. A missing revisi
 
 ## Preserve rollback and build with the current app running
 
-Use the existing cache, exact project and three Compose inputs. The build can compete for CPU and disk, so budget the window and check both resources before starting. Build only the app. A changed `latest` tag does not switch the running container. Keep any app recreation automation suspended until the cutover.
+Use the existing cache, exact project and three Compose inputs. The build can compete for CPU and disk, so budget the window and check both resources before starting. Build the app first. The existing model image can serve the new request window. A changed `latest` tag does not switch the running container. Keep any app recreation automation suspended until the cutover.
 
 ```bash
 if docker image inspect "$rollback" >/dev/null 2>&1; then exit 1; fi
@@ -206,7 +234,7 @@ target=(--target-profile server --allow-existing-server --out "$RUN_OUT" --tenan
 "${run[@]}" prepare "${target[@]}" --count "$COUNT" --start-index "$START_INDEX" --workers 2 --rps 3
 "${run[@]}" preflight "${target[@]}"
 "${run[@]}" send "${target[@]}"
-"${run[@]}" verify "${target[@]}" --deadline 14400 --interval 30
+"${run[@]}" verify "${target[@]}" --deadline 14400 --embedding-deadline 3600 --retrieval-deadline 180 --interval 30
 "${run[@]}" report --out "$RUN_OUT"
 ```
 
@@ -237,3 +265,108 @@ cargo test --locked -p utopia-server soc_runtime_tests -- --test-threads=1
 cargo test --locked -p utopia-store enrichment_backlog_leaves_room_for_graph_work
 cargo test --locked --workspace
 ```
+
+## Model image and optional isolation
+
+The current unified image supports the new app's smaller reranking requests
+and the role-specific `serve` CLI. The changed Python telemetry, queue rejection
+header and startup diagnostics require rebuilding and deploying the **model**
+image. Qualify the app in unified mode first, then make model rollout a
+separate window. Use the local pinned CPU image and existing snapshots.
+
+Record the actual image ID and save a fresh rollback tag before either model
+operation. Existing historical tags are unavailable. Keep the model rollback
+artifact with the app rollback image and PostgreSQL/app-data backup record.
+
+```bash
+model_current=$(docker inspect -f '{{.Image}}' "$("${dc[@]}" ps -q models)")
+model_tag=soorin-tkg-v1-qa-models:latest
+model_rollback="soorin-tkg-v1-qa-models:rollback-$stamp"
+docker image tag "$model_current" "$model_rollback"
+printf '%s\n' "$model_current" "$model_rollback" > "$save/model-rollback.txt"
+```
+
+To deploy the new telemetry, build with cache while unified serving continues.
+The build installs Python dependencies and contains no model weight download.
+Verify the OCI revision and image ID. Model startup verifies and loads the
+offline snapshots before binding.
+
+```bash
+export SOORIN_MODEL_BUILD_REVISION="$RELEASE_SHA"
+"${dc[@]}" build models
+model_new=$(docker image inspect "$model_tag" -f '{{.Id}}')
+test "$(docker image inspect "$model_new" -f '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$RELEASE_SHA"
+"${dc[@]}" up -d --no-deps --no-build --pull never --force-recreate models
+test "$(docker inspect "$("${dc[@]}" ps -q models)" -f '{{.Image}}')" = "$model_new"
+for port in 2811 2812 2813; do
+  curl --retry 24 --retry-all-errors --retry-delay 5 --max-time 5 --retry-max-time 180 -fsS "http://127.0.0.1:$port/ready"
+done
+```
+
+### Experimental isolation
+
+Isolation gives each role an independent admission gate and restart lifecycle.
+Each role loads one snapshot from the same qualified image. The proxy owns the
+`models` DNS alias and forwards 8080, 8081, and 8082 to the embedding,
+reranker, and optional NER roles. Stored URLs, trusted origins, and embedding
+fingerprints stay valid. Host ports 2811–2813 remain bound to loopback. When NER
+is disabled, 2813 has no healthy upstream. Roles share an internal Docker network.
+
+| Service | CPU quota | Memory ceiling | PyTorch threads |
+| --- | ---: | ---: | ---: |
+| `models-embedding` | 1.20 | 3 GiB | 1 |
+| `models-reranker` | 1.40 | 3 GiB | 1 |
+| `models-ner` (optional) | 0.25 | 896 MiB | 1 |
+| `models-proxy` | 0.15 | 128 MiB | None |
+| Maximum total | 3.00 | 7 GiB | 3 |
+
+Separate Python processes add memory overhead. A single busy role has a lower
+CPU quota than the unified service. These caps keep the combined allowance
+at the previous maximum. Before choosing split mode, compare memory peaks,
+OOM/restarts, startup time, latency, throughput, queue wait, and fallback
+using the same fixture and concurrency. Preserve unified operation if memory
+or latency gates fail. Verify a reranker-only restart leaves embedding healthy.
+
+Supply a reviewed, already-local nginx digest and the qualified CPU image.
+Confirm the effective role mounts match the exact
+`soorin-tkg-server55_soorin_{embedding,reranker,ner}_cache` volumes and are
+read-only. Check the app and DB volume configuration against preflight.
+Start split roles after stopping unified to avoid port and DNS conflicts.
+Commands below leave NER disabled. To enable it add
+`--profile models-isolated-ner` to the split array and `models-ner` to the
+split start and stop commands.
+
+```bash
+: "${SOORIN_MODEL_PROXY_IMAGE:?approved local nginx digest}"
+[[ "$SOORIN_MODEL_PROXY_IMAGE" =~ @sha256:[a-f0-9]{64}$ ]]
+docker image inspect "$SOORIN_MODEL_PROXY_IMAGE" "$model_tag" >/dev/null
+split=(docker compose --env-file .env -p soorin-tkg-server55 -f docker-compose.soorin-dev.yml -f docker-compose.models.yml -f "$override" -f docker-compose.models-isolated.yml --profile models-isolated)
+export SOORIN_MODEL_PROXY_IMAGE
+"${split[@]}" config --format json > "$save/models-isolated.private.json"
+"${dc[@]}" stop models
+"${split[@]}" up -d --no-deps --no-build --pull never models-embedding models-reranker models-proxy
+for port in 2811 2812; do
+  curl --retry 24 --retry-all-errors --retry-delay 5 --max-time 5 --retry-max-time 180 -fsS "http://127.0.0.1:$port/ready"
+done
+```
+
+Confirm stored URLs, model IDs and mounted caches through health and Search.
+Run the [synthetic CPU timing probe](RETRIEVAL_AND_RERANKING.md) for each mode.
+For a new guarded run pass `--model-mode isolated` and add
+`--isolated-ner` only when NER is active. The harness binds the result to
+model image and container identity as well as the app and DB.
+
+To return to unified after a failed split, stop every split service first
+(including NER if enabled), then restore the pinned image with an override
+on `models` alone.
+
+```bash
+"${split[@]}" stop models-proxy models-reranker models-embedding
+test "$(docker image inspect -f '{{.Id}}' "$model_rollback")" = "$model_current"
+printf 'services:\n  models:\n    image: %s\n' "$model_rollback" > "$save/model-rollback.yml"
+"${dc[@]}" -f "$save/model-rollback.yml" up -d --no-deps --no-build --pull never --force-recreate models
+test "$(docker inspect "$("${dc[@]}" ps -q models)" -f '{{.Image}}')" = "$model_current"
+```
+
+Repeat model health, inference and Search after recovery. Pause the scale run
+until each stage passes.

@@ -16,18 +16,21 @@ route promises stemming equivalence across languages. Empty/punctuation-only
 historical terms return no matches. Future records cannot consume historical
 candidate limits.
 
-Native optional TEI reranking scores all eligible candidates in batches <=16,
-validates complete unique indices and finite scores, and sorts by raw relevance
-score then original candidate order. It retains candidates beyond 16. With
-fallback=true, any failed batch preserves the entire original RRF list.
-With fallback=false, provider failure is explicit. Relevance is not maliciousness
-probability. Reranking cannot introduce candidates.
+Native TEI reranking scores a bounded prefix of the authorized RRF order. It
+validates complete unique indices and finite scores. Ties retain original
+order. The final result appends the untouched RRF tail when requested. A
+failed batch restores the original RRF list when fallback is enabled.
 
-Search responses include retrieval metadata: dense_executed, lexical method,
-reranker_status, candidate_count and returned. Dense failures fall back to
-lexical search; SQL failures remain errors. The UI exposes lexical-only and
-reranker-fallback state. A nonempty hybrid result alone does not prove dense
-inference or reranker execution.
+The response includes an opaque `request_id`, `retrieved_candidate_count` (same
+raw hit count as legacy `candidate_count`), `unique_candidate_count`,
+`authorized_candidate_count`, `rerank_candidate_count` (selected prefix),
+`rerank_batch_count` (batches attempted, excluding retry attempts), and
+`fallback_reason` (null or a sanitized code). Existing `score_type=rank_fusion`
+is retained. `final_order` is `cross_encoder` for a fully reranked candidate set,
+`cross_encoder_then_rank_fusion` for a reranked prefix, and `rank_fusion` for
+fallback or disabled reranking. A `complete` status means every batch in the
+selected prefix completed. Dense failures fall back to lexical search. SQL
+failures remain errors.
 
 ## KnowledgeContext v2
 
@@ -89,52 +92,77 @@ remains a separate native retrieval concern.
 V1 baseline exposes `lexical_method` additively (retaining `lexical`) and includes retrieval diagnostics in MCP search_chunks structuredContent. Invalid MCP as_of errors instead of searching today. REST search accepts KB-scoped read PATs. UI displays reranker_status=complete as executed. Exact authority lookup is `/knowledge/resolve`; BM25/name similarity is never exact resolution. See [agent contracts](AGENT_TOOL_CONTRACTS.md).
 
 
-## CPU-only reranker diagnostics and safe tuning
+## CPU budgets and timing
 
-The consolidated three-model CPU service shares **one** inference slot (with at
-most four queued callers). The initial Rust reranker requested up to 16
-candidate pairs per call with a 30-second HTTP timeout. This can be insufficient
-on a busy CPU host even if a separate two-candidate model smoke test passed.
+On Server 55, a Search with 48 authorized candidates ran for 90.66 seconds
+and returned RRF fallback. Its reranker span ended at 90.023 seconds with
+`rerank_deadline`. A direct eight-pair POST succeeded. Six sequential POSTs
+against a CPU shared with embedding and NER can exceed the aggregate budget.
+The incident did not measure separate tokenization, queue, and forward-pass
+durations. The patch defaults to 16 candidates in two batches while retaining
+48 in first-stage retrieval.
 
-The reranking integration now defaults to **8 candidates per batch** and a
-**90-second per-request timeout**. Operators can tune these deployment-owned
-environment variables on the **app** container only:
+| Runtime setting | Default and valid range | Precedence and scope |
+| --- | --- | --- |
+| `SOORIN_RERANK_MAX_CANDIDATES` | 16, integer 1–48 | App env, caps the authorized RRF prefix |
+| `SOORIN_RERANK_BATCH_SIZE` | 8, integer 1–16 | App env, further split if serialized body would exceed 300,000 bytes |
+| `SOORIN_RERANK_TIMEOUT_SECONDS` | 18 s, integer 5–180 | App env, capped by remaining aggregate deadline. Includes HTTP connect, waiting and response reads |
+| `SOORIN_RERANK_DEADLINE_SECONDS` | 30 s, integer 5–180 | App env, covers all batches and at most one transient retry |
+| `SOORIN_MODEL_QUEUE_CAPACITY` | 4 waiters, integer 0–4 | Unified process. Isolated role env uses `SOORIN_{EMBEDDING,RERANKER,NER}_MODEL_QUEUE_CAPACITY` with defaults 2/1/1 |
+| `SOORIN_MODEL_QUEUE_TIMEOUT_SECONDS` | 6 s, positive up to 120 | Unified process. Isolated role defaults 6/3/3 using the role-specific prefix above |
+| `SOORIN_MODEL_THREADS` | 2, integer 1–8 | Unified PyTorch thread count. Isolated roles default to 1 via role-specific prefix |
+| `UTOPIA_MODEL_READ_SECONDS` | 300 s idle timeout unless overridden, JSON map values 1–3600 | Exact model string overrides the generic client. Search query embedding retains an independent 30 s limit. Reranking uses its own HTTP client |
 
-- `SOORIN_RERANK_BATCH_SIZE`: integer 1..16, default 8; invalid values use 8.
-- `SOORIN_RERANK_TIMEOUT_SECONDS` limits one POST to 5–180 seconds, default 90.
-- `SOORIN_RERANK_DEADLINE_SECONDS` limits the full batch sequence, including the shared transient retry, to 5–180 seconds, default 90.
+Invalid app reranker settings use defaults. Invalid model queue or thread
+settings fail at startup. Search allows the query-embedding budget plus the
+configured reranker deadline and 15 seconds for retrieval overhead after
+authorization. That is 75 seconds by default, with no more than 30 spent
+reranking and a 3-second reranker connect limit. Use a client timeout above
+the Search budget when measuring the app deadline. Acceptance defaults to
+80 seconds per probe and an independent 180-second retrieval phase.
+Both model revisions and the 512-token model limit are retained. Rust still
+clips inputs to 4,000 query characters and 8,000 chunk characters. Changing
+the text window further needs evidence of a stable relevance tradeoff.
 
-The values are read when a Search invokes the reranker; no change is made to
-the retrieval candidate ceiling (48), KB scope, temporal filters, result format,
-or RRF fallback policy. These changes require **building/deploying the new Rust
-app image**; merely checking out source does not change a running container.
-An application recreation without a rebuilt image cannot apply these Rust
-changes. Keep the existing database and cache volumes intact.
+### Reproduce the comparison
 
-A fallback now emits a structured, **sanitized** warning: `reason`,
-`candidate_count`, `batch_size`, `timeout_seconds`, `elapsed_ms`.
-Known categories include `egress_blocked`, `provider_timeout`,
-`provider_connect`, `provider_transport`, `provider_http_<status>`,
-`provider_invalid_json`, and `provider_invalid_scores`.
-No request content, model URL, provider response body, or credential is logged.
-Clients still receive the previous public `reranker_status` values. `search_capacity` identifies concurrent foreground admission and `rerank_deadline` identifies the overall budget. For candidate counts, fixture metrics and the exact deployment gate see [Ingestion reliability](INGESTION_RELIABILITY_V1.md) and the [Server 55 release runbook](SERVER55_PRODUCTION_RELEASE.md).
+```bash
+python3 -m soorin.evaluation.cpu_rerank_benchmark --offline
+```
 
-Before deployment, diagnose from the current running container:
+A deterministic three-query fixture over 48 synthetic ranks puts relevant
+items at positions 8, 13 and 16. Recall@10, MRR@10 and nDCG@10 are each 0.333
+for windows of 8 and 12, and 1.000 for 16, 24 and 48. A padded-token work
+model with pair lengths up to 512 estimates 7,376 token positions for 16
+pairs and 22,128 for 48. For 16 candidates, outer batches of 4, 8 and 16
+require 4, 2 and 1 POSTs respectively. The token proxy is the same because
+the installed cross-encoder processes groups of four. This validates the
+ranking boundary and models workload only. Real BGE quality, throughput and
+latency still require labeled server queries and controlled CPU measurements.
 
-1. Check app `UTOPIA_MODEL_TRUSTED_ORIGINS` contains the exact model origin
-   `http://models:8081`. Do not add external or unapproved destinations.
-2. Use the pinned model's `/rerank` contract and time two synthetic batches
-   of 2 and 8 candidates directly from inside the app network.
-3. Check model `/ready` call counters before and after Search. A static
-   reranker counter with fallback often indicates egress/configuration/transport
-   failure; an increment suggests the service received at least a request.
-4. Finish background embedding/backfill before benchmarking. The shared CPU
-   inference gate serializes heavy work and can return 429 under saturation.
-5. Verify `reranker_status=complete`, no unauthorized cross-KB results,
-   latency and answer relevance on a controlled SOC query set. `fallback`
-   remains a degraded but usable RRF result, not a passing reranker test.
+Use the operator-only timing probe on the already running Server 55 model
+during a quiet window. It compares outer batches 4/8/16 with 500/1,800/3,500
+character synthetic passages and records connection and request times.
+Join Rust provider request IDs to the model's `queue_wait_ms` and
+`duration_ms` for actual model timings. Request time includes connection
+handling, serialization, queueing, and inference. Compare the same corpus
+and concurrency in unified and isolated mode.
 
-Do not start the 5,500-alert acceptance while a model saturation incident is
-unresolved. Even after retrieval succeeds, separately verify run-scoped
-receipt binding, active vector coverage, identity resolution, temporal
-evidence context, tenant isolation, and recovery behavior.
+```bash
+python3 -m soorin.evaluation.cpu_rerank_benchmark --existing-server-model --port 2812
+```
+
+### Investigate fallback
+
+Filter app logs on `search`, `search.rerank_fallback` and the opaque
+`request_id`. Rust emits stage durations for authorization, lexical, dense,
+fusion, provider batches, and the final response. Stage success events are
+debug level. The model exposes counts and cumulative inference seconds at
+`/ready`. Set `SOORIN_MODEL_LOG_LEVEL=DEBUG` temporarily on the new model
+image for per-request events with UUIDs, queue and model execution times.
+Filter `queue_timeout` for expired provider waits, `provider_http_429` for other
+model saturation, `search_capacity` for an unavailable foreground permit,
+`provider_timeout` for per-POST expiration, and `rerank_deadline` for aggregate
+expiration. HTTP 503, invalid scores and egress rejection have separate
+categories. Neither log stream records query text, document text, raw
+provider bodies, or credentials. See [Server 55 model rollout](SERVER55_PRODUCTION_RELEASE.md).
