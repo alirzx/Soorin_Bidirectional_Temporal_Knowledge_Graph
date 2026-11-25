@@ -225,3 +225,13 @@ timeouts. See [Retrieval and reranking](RETRIEVAL_AND_RERANKING.md).
 After a lost admission response, resend identical bytes and retain the returned receipt. Use bounded backoff for 429/503 and transport outages. For 409, only the named normalizer capacity or timeout conditions are transport-retry candidates. Poll administratively every 5–30 seconds with an overall deadline. On expiry retain the receipt and resume later. Use diagnostics for child failure classes and versioned evidence. Failed or quarantined dependencies require the documented repair/review process. Consumer code must surface lexical-only results and enabled-reranker fallback. Disabled fallback can return an HTTP error. Production source tokens never need the synthetic harness header.
 
 The executable wire handlers are in `crates/utopia-server/src/api/{soc_curated,soc_ingestion,search_routes,soc_knowledge}.rs`. The full graph context schema is in `soorin/contracts/schemas/knowledge_context_v2.schema.json`. The Server 55 runbook defines release and scale gates.
+
+## Continuous SOC receipt polling
+
+Automatic submission remains opt-in in SOC. A source token authenticates Preview and Ingest. Preserve exact request bytes for uncertain Ingest acknowledgments. A successful admission is a pending receipt. Document processing and graph materialization are required before the receipt becomes bound.
+
+The separate SOC reconciler issues only `GET /api/v1/kbs/{kb}/knowledge/receipts/{receipt}/status`. It checks the receipt and source IDs against the stored binding. Provision a `receipt_status` PAT through `POST /api/v1/me/tokens` using an explicit KB allowlist and a service identity with KB Viewer access. Keep it separate from the source token and the read PAT. Existing KB-admin sessions can use the status route and the separate operator diagnostics. Receipt PATs cannot access the diagnostics list, Search, graph evidence, documents, or MCP.
+
+Enable polling after migration `10009_receipt_status_pat.sql` is applied and both sides agree on the status contract. Poll under a bounded cadence on the private integration network. A recoverable failure remains pending in SOC and the reconciler checks the existing receipt again. Reprocessing and quarantine release remain operator actions using their existing paths.
+
+SOC Case Recon applies a signed workspace and case grant, ranks eligible alert roots across connector bindings, and reads with a scoped reader PAT. Search results remain semantic candidates. SOC accepts a candidate pivot only when a current Context result on a verified source root links its exact document and chunk to one unambiguous graph endpoint.

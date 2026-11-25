@@ -143,6 +143,9 @@ pub(crate) async fn require_reader_kb(
     reader: &DocumentReader,
     kb_id: Uuid,
 ) -> ApiResult<()> {
+    if reader.pat.as_ref().is_some_and(Authenticated::receipt_only) {
+        return Err(AppError::Forbidden.into());
+    }
     utopia_store::access::require_kb(&state.pool, &reader.user, kb_id, Role::Viewer).await?;
     if let Some(pat) = &reader.pat {
         if !pat.covers(kb_id) {

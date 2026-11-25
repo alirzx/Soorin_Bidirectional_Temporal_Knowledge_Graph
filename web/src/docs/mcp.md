@@ -228,3 +228,7 @@ truncation and fact rows. Fact rows retain direction, recorded time, world
 time, related entity and source document IDs. The evidence projection reports
 the first live chunk for each displayed fact when available. Its status
 indicates incomplete evidence independently of result truncation.
+
+## SOC receipt status
+
+A PAT with `receipt_status` scope is restricted to the REST receipt status operation for its allowed KBs. Use a scoped read PAT for MCP retrieval. SOC consumes structured graph facts and evidence references alongside human-readable MCP text. A Search match provides document and chunk provenance. For entity traversal, use a verified entity or graph link from authenticated evidence.

@@ -2757,6 +2757,71 @@ async fn rdf_export_preserves_unbound_literal_objects() -> anyhow::Result<()> {
     result.and(cleanup)
 }
 
+#[tokio::test]
+async fn high_degree_graph_preserves_bounds_temporal_filters_and_lineage() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        const DEGREE: i64 = 3_000;
+        sqlx::query(
+            "WITH peers AS (
+                 INSERT INTO entities(id,kb_id,canonical_name)
+                 SELECT gen_random_uuid(),$1,'Synthetic peer ' || i FROM generate_series(1,$3) i
+                 RETURNING id
+             )
+             INSERT INTO facts(id,kb_id,subject_id,predicate_id,object_id,valid_from,
+                               valid_from_precision,recorded_at)
+             SELECT gen_random_uuid(),$1,$2,(SELECT predicate_id FROM facts WHERE id=$4),
+                    id,'2026-07-01','day','2026-07-01'
+             FROM peers",
+        )
+        .bind(f.kb)
+        .bind(f.subject)
+        .bind(DEGREE)
+        .bind(f.corrected)
+        .execute(&f.state.pool)
+        .await?;
+
+        let started = std::time::Instant::now();
+        let (_, facts) = utopia_store::graph::entity_detail(&f.state.pool, f.kb, f.subject, None, None).await?;
+        let storage_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert!(facts.len() >= DEGREE as usize);
+        let args = json!({"entity": f.subject, "limit": 3});
+        let started = std::time::Instant::now();
+        let (neighbors, timeline) = tokio::try_join!(
+            f.call("neighbors", args.clone()),
+            f.call("timeline", args),
+        )?;
+        let concurrent_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let mut sizes = Vec::new();
+        for result in [neighbors, timeline] {
+            let structured = &result["structuredContent"];
+            assert_eq!(structured["truncated"], true);
+            assert_eq!(structured["facts"].as_array().unwrap().len(), 3);
+            sizes.push(serde_json::to_vec(&result)?.len());
+        }
+        let historical = f.call("neighbors", json!({
+            "entity": f.subject, "as_of": "2026-03-19", "limit": 3,
+        })).await?;
+        let structured = &historical["structuredContent"];
+        assert_eq!(structured["truncated"], false);
+        assert!(structured["facts"].as_array().unwrap().iter().any(|row| row["id"] == json!(f.fact)));
+        assert!(structured["evidence"]["references"].as_array().unwrap().iter()
+            .any(|row| row["fact_id"] == json!(f.fact) && row["chunk_id"] == json!(f.chunk)));
+        println!("TKG_HIGH_DEGREE {}", json!({
+            "inserted": DEGREE, "storage_rows": facts.len(), "storage_ms": storage_ms,
+            "concurrent_end_to_end_ms": concurrent_ms, "response_bytes": sizes,
+        }));
+        Ok(())
+    }
+
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
+}
+
 /// A list cut at its limit says so in the text the model reads. `changes` lists the newest
 /// 40 events, `find_entities` reads the first 8 names, `paths_between` keeps 10 paths; a
 /// model shown a full list takes it for all there is. `structuredContent` keeps its own

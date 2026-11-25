@@ -93,7 +93,7 @@ async fn authorize(
         .ok_or(utopia_core::AppError::Unauthorized)?;
     let auth = utopia_store::tokens::authenticate(&state.pool, raw.trim()).await?;
     // 令牌的范围：限定过库的，够不着别的
-    if !auth.covers(kb_id) {
+    if auth.receipt_only() || !auth.covers(kb_id) {
         return Err(utopia_core::AppError::Forbidden);
     }
     // 人：停用立即生效（find_user_by_id 会挡住）

@@ -206,6 +206,96 @@
           }
         }
       }
+    },
+    "/api/v1/kbs/{kb}/knowledge/receipts/{receipt}/status": {
+      "get": {
+        "operationId": "socReceiptStatus",
+        "security": [
+          {
+            "receiptStatusBearer": []
+          },
+          {
+            "sessionBearer": []
+          }
+        ],
+        "description": "Payload-free status for one known receipt. Requires a KB administrator session or a receipt_status PAT with an explicit KB allowlist and Viewer access.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kb",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "receipt",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Receipt state and source UUID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "receipt_id",
+                    "source_id",
+                    "status",
+                    "delivery_state"
+                  ],
+                  "properties": {
+                    "receipt_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "source_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "delivery_state": {
+                      "type": "string"
+                    },
+                    "job_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "nullable": true
+                    },
+                    "failure_code": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, expired, or revoked bearer."
+          },
+          "403": {
+            "description": "Credential has insufficient scope or KB permissions."
+          },
+          "404": {
+            "description": "Receipt not found in the requested KB."
+          }
+        }
+      }
     }
   },
   "components": {
@@ -219,6 +309,11 @@
         "type": "http",
         "scheme": "bearer",
         "description": "Authenticated KB administrator session."
+      },
+      "receiptStatusBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A receipt_status PAT restricted to explicitly selected KBs."
       }
     }
   }

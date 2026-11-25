@@ -145,3 +145,7 @@ curl --fail-with-body --max-time 15 \
 Change only the final path to `/soc/ingest` for explicit submission. Save/replay
 canonical bytes or the same curated observation; do not manufacture a new source
 clock. Synthetic receipt metadata is the durable admission audit record.
+
+## Poll a known receipt
+
+Source authentication and manual Preview/Ingest usage remain available. An administrator can poll the known receipt's payload-free state at `GET /api/v1/kbs/{kb}/knowledge/receipts/{receipt}/status`. A separate PAT with `receipt_status` scope and an explicit KB allowlist may poll that same endpoint when the owner has Viewer access. The status response includes the admitted source ID. Detail, listing, summary and recovery use their existing administrator paths. A lost Ingest acknowledgment can be recovered by replaying identical bytes to the same source.

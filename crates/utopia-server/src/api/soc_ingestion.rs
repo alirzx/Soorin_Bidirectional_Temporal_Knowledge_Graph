@@ -887,12 +887,17 @@ pub async fn receipts(
 /// Payload-free polling. No entity, relation, or evidence traversal.
 pub async fn status(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    reader: super::documents_routes::DocumentReader,
     Path((kb, id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<Value>> {
-    utopia_store::access::require_kb(&state.pool, &user, kb, Role::Admin).await?;
+    let role = match reader.pat {
+        Some(ref pat) if pat.receipt_only() && pat.covers(kb) => Role::Viewer,
+        Some(_) => return Err(AppError::Forbidden.into()),
+        None => Role::Admin,
+    };
+    utopia_store::access::require_kb(&state.pool, &reader.user, kb, role).await?;
     let row = sqlx::query_scalar("SELECT jsonb_build_object('receipt_id',r.id,'status',r.status,
-        'job_id',r.job_id,'failure_code',r.failure_code,'delivery_state',v.delivery_state,'updated_at',r.updated_at)
+        'source_id',r.source_id,'job_id',r.job_id,'failure_code',r.failure_code,'delivery_state',v.delivery_state,'updated_at',r.updated_at)
         FROM soorin_ingestion_receipts r JOIN soorin_receipt_delivery v USING(id,kb_id) WHERE r.id=$1 AND r.kb_id=$2")
         .bind(id).bind(kb).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
     Ok(Json(row))

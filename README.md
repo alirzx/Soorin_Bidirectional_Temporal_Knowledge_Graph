@@ -150,6 +150,8 @@ The following are selected endpoints; paths are relative to `/api/v1`.
 
 Curated SOC ingestion uses a documented versioned source profile; it is not a generic, schema-free JSON endpoint. Read and write clients use different scoped credentials. Retrieval metadata identifies which lexical, dense, and reranking stages were actually executed.
 
+The optional SOC receipt reconciler polls a payload-free status route with a KB-scoped receipt PAT. Investigation clients continue to use a separate scoped reader PAT. [Agentic_SOC integration](docs/soorin/AGENTIC_SOC_INTEGRATION_V1.md)
+
 Soorin TKG is independently deployable. **Agentic_SOC** and other investigation systems can integrate as event producers and evidence consumers through these interfaces without sharing the graph database directly.
 
 See [Producer Mapping](docs/soorin/PRODUCER_MAPPING_V1_20261115.md), [Agentic_SOC Integration](docs/soorin/AGENTIC_SOC_INTEGRATION_V1.md), [Agent Tool Contracts](docs/soorin/AGENT_TOOL_CONTRACTS.md), and [Retrieval & Reranking](docs/soorin/RETRIEVAL_AND_RERANKING.md).

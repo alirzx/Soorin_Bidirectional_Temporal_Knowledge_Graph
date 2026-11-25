@@ -481,6 +481,47 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
         .0,
         403 | 404
     ));
+    let (receipt_view, receipt_pat) = utopia_store::tokens::issue(
+        &pool, user, "SOC receipt test", "receipt_status", Some(&[kb]), None,
+    ).await?;
+    for (scope, token, expected) in [(kb, receipt_pat.as_str(), 200), (other_kb, receipt_pat.as_str(), 403),
+                                     (kb, pat.as_str(), 403), (kb, session.as_str(), 200)] {
+        let response = app.clone().oneshot(
+            Request::get(format!("/api/v1/kbs/{scope}/knowledge/receipts/{id}/status"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())?,
+        ).await?;
+        assert_eq!(response.status(), expected);
+        if expected == 200 {
+            let payload: Value = serde_json::from_slice(
+                &to_bytes(response.into_body(), 4096).await?,
+            )?;
+            assert_eq!(payload["receipt_id"], json!(id));
+            assert_eq!(payload["source_id"], json!(source));
+            assert_eq!(payload["status"], "bound");
+            assert!(payload.get("document").is_none() && payload.get("payload").is_none());
+        }
+    }
+    for (path, payload) in [
+        (search_path.clone(), json!({"q":"fixture"})),
+        (format!("/api/v1/kbs/{kb}/knowledge/context"), json!({"entity":"fixture","tenant_id":"tenant-blue"})),
+        (format!("/api/v1/kbs/{kb}/mcp"), json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})),
+    ] {
+        let response = app.clone().oneshot(
+            Request::post(path)
+                .header("authorization", format!("Bearer {receipt_pat}"))
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))?,
+        ).await?;
+        assert_eq!(response.status(), 403);
+    }
+    utopia_store::tokens::revoke(&pool, user, receipt_view.id).await?;
+    let response = app.clone().oneshot(
+        Request::get(format!("/api/v1/kbs/{kb}/knowledge/receipts/{id}/status"))
+            .header("authorization", format!("Bearer {receipt_pat}"))
+            .body(Body::empty())?,
+    ).await?;
+    assert_eq!(response.status(), 401);
     utopia_store::tokens::revoke(&pool, user, pat_view.id).await?;
     assert_eq!(
         call(app.clone(), search_path, &pat, json!({"q":"A1"}))
@@ -921,6 +962,9 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
         let mut ingest_ms = Vec::new();
         let mut materialization_ms = Vec::new();
         let mut context_ms = Vec::new();
+        let materialize_limit: usize = std::env::var("AISOC_TKG_TEST_MATERIALIZE_LIMIT")
+            .ok().map(|value| value.parse()).transpose()?.unwrap_or(6);
+        assert!((1..=1_000).contains(&materialize_limit));
         let mut admitted = 0;
         let mut replayed = 0;
         for (index, line) in corpus.lines().enumerate() {
@@ -954,8 +998,7 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
                 assert_eq!(duplicate["replayed"], true);
                 replayed += 1;
             }
-            // Keep extraction bounded. All records exercise actual admission.
-            if index < 6 {
+            if index < materialize_limit {
                 let phase = std::time::Instant::now();
                 let receipt_id: Uuid = receipt["receipt_id"].as_str().unwrap().parse()?;
                 let pending = soc_ingestion::process(&state, receipt_id).await.unwrap_err();

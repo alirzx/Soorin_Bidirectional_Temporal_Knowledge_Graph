@@ -45,6 +45,10 @@ impl Authenticated {
         }
     }
 
+    pub fn receipt_only(&self) -> bool {
+        self.scope == "receipt_status"
+    }
+
     pub fn can_write(&self) -> bool {
         self.scope == "write"
     }
@@ -81,10 +85,16 @@ pub async fn issue(
             "Token name must be 1-64 characters",
         ));
     }
-    if !matches!(scope, "read" | "write") {
+    if !matches!(scope, "read" | "write" | "receipt_status") {
         return Err(AppError::invalid(
             "bad_token_scope",
-            "Scope must be read or write",
+            "Scope must be read, write, or receipt_status",
+        ));
+    }
+    if scope == "receipt_status" && kb_ids.is_none_or(|ids| ids.is_empty()) {
+        return Err(AppError::invalid(
+            "receipt_token_requires_kb",
+            "Receipt-status tokens must name at least one knowledge base",
         ));
     }
     // 两个 v4 拼起来 ≈ 244 位熵。与 `new_ingest_token` 同一个做法，
