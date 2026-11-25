@@ -2785,15 +2785,14 @@ async fn high_degree_graph_preserves_bounds_temporal_filters_and_lineage() -> an
         .await?;
 
         let started = std::time::Instant::now();
-        let (_, facts) = utopia_store::graph::entity_detail(&f.state.pool, f.kb, f.subject, None, None).await?;
+        let (_, facts) =
+            utopia_store::graph::entity_detail(&f.state.pool, f.kb, f.subject, None, None).await?;
         let storage_ms = started.elapsed().as_secs_f64() * 1000.0;
         assert!(facts.len() >= DEGREE as usize);
         let args = json!({"entity": f.subject, "limit": 3});
         let started = std::time::Instant::now();
-        let (neighbors, timeline) = tokio::try_join!(
-            f.call("neighbors", args.clone()),
-            f.call("timeline", args),
-        )?;
+        let (neighbors, timeline) =
+            tokio::try_join!(f.call("neighbors", args.clone()), f.call("timeline", args),)?;
         let concurrent_ms = started.elapsed().as_secs_f64() * 1000.0;
         let mut sizes = Vec::new();
         for result in [neighbors, timeline] {
@@ -2802,18 +2801,33 @@ async fn high_degree_graph_preserves_bounds_temporal_filters_and_lineage() -> an
             assert_eq!(structured["facts"].as_array().unwrap().len(), 3);
             sizes.push(serde_json::to_vec(&result)?.len());
         }
-        let historical = f.call("neighbors", json!({
-            "entity": f.subject, "as_of": "2026-03-19", "limit": 3,
-        })).await?;
+        let historical = f
+            .call(
+                "neighbors",
+                json!({
+                    "entity": f.subject, "as_of": "2026-03-19", "limit": 3,
+                }),
+            )
+            .await?;
         let structured = &historical["structuredContent"];
         assert_eq!(structured["truncated"], false);
-        assert!(structured["facts"].as_array().unwrap().iter().any(|row| row["id"] == json!(f.fact)));
-        assert!(structured["evidence"]["references"].as_array().unwrap().iter()
+        assert!(structured["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == json!(f.fact)));
+        assert!(structured["evidence"]["references"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|row| row["fact_id"] == json!(f.fact) && row["chunk_id"] == json!(f.chunk)));
-        println!("TKG_HIGH_DEGREE {}", json!({
-            "inserted": DEGREE, "storage_rows": facts.len(), "storage_ms": storage_ms,
-            "concurrent_end_to_end_ms": concurrent_ms, "response_bytes": sizes,
-        }));
+        println!(
+            "TKG_HIGH_DEGREE {}",
+            json!({
+                "inserted": DEGREE, "storage_rows": facts.len(), "storage_ms": storage_ms,
+                "concurrent_end_to_end_ms": concurrent_ms, "response_bytes": sizes,
+            })
+        );
         Ok(())
     }
 

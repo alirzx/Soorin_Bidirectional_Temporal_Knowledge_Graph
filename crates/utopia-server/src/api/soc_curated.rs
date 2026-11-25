@@ -99,8 +99,8 @@ async fn normalize(
     })
     .await
     .map_err(|_| AppError::Conflict("soc_normalizer_timeout".into()))?;
-    let mut preview = result
-        .map_err(|_| AppError::Other(anyhow::anyhow!("soc_normalizer_unavailable")))??;
+    let mut preview =
+        result.map_err(|_| AppError::Other(anyhow::anyhow!("soc_normalizer_unavailable")))??;
     preview["knowledge_base_id"] = json!(source.kb_id);
     preview["source_id"] = json!(source_id);
     Ok(preview)

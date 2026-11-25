@@ -893,9 +893,15 @@ async fn graph_evidence_refs(
     if fact_ids.is_empty() {
         return json!({"status":"empty","references":[]});
     }
-    match utopia_store::graph::first_live_evidence(&ctx.state.pool, ctx.kb_id, &fact_ids, as_of).await {
+    match utopia_store::graph::first_live_evidence(&ctx.state.pool, ctx.kb_id, &fact_ids, as_of)
+        .await
+    {
         Ok(rows) => {
-            let status = if rows.len() < fact_ids.len() { "partial" } else { "complete" };
+            let status = if rows.len() < fact_ids.len() {
+                "partial"
+            } else {
+                "complete"
+            };
             json!({"status":status, "references":rows.iter().map(|(fact,chunk,_)|
                 json!({"fact_id":fact,"chunk_id":chunk.id,"document_id":chunk.document_id}))
                 .collect::<Vec<_>>()})
@@ -1165,7 +1171,8 @@ pub async fn timeline(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> T
             ));
         }
     }
-    let references = graph_evidence_refs(ctx, shown.iter().copied().map(|f| f.id).collect(), m.as_of).await;
+    let references =
+        graph_evidence_refs(ctx, shown.iter().copied().map(|f| f.id).collect(), m.as_of).await;
     let detail = format!("{} of {} dated", shown.len(), dated.len());
     ToolResult::new(
         lines.join("\n"),
