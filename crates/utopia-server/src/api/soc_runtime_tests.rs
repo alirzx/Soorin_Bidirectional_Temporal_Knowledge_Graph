@@ -603,7 +603,7 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
     .await?;
     assert!(matches!(status, 403 | 404));
     let (status, _) = call(
-        app,
+        app.clone(),
         format!("/api/v1/kbs/{kb}/knowledge/context"),
         &session,
         json!({"tenant_id":"tenant-red","entity":"A1"}),
@@ -914,6 +914,87 @@ async fn receipt_replay_materialization_binding_and_tenant_isolation() -> anyhow
         .unwrap()
         .iter()
         .any(|r| r["binding"]["evidence_link_status"] == false));
+    if let Some(path) = std::env::var_os("AISOC_TKG_TEST_CURATED_CORPUS") {
+        let corpus = std::fs::read_to_string(path)?;
+        let started = std::time::Instant::now();
+        let mut preview_ms = Vec::new();
+        let mut ingest_ms = Vec::new();
+        let mut materialization_ms = Vec::new();
+        let mut context_ms = Vec::new();
+        let mut admitted = 0;
+        let mut replayed = 0;
+        for (index, line) in corpus.lines().enumerate() {
+            assert!(index < 1_000, "qualification corpus must be bounded");
+            let body: Value = serde_json::from_str(line)?;
+            let row = &body["record"]["alert_row_id"];
+            let phase = std::time::Instant::now();
+            let (code, preview) = call(
+                app.clone(), format!("/api/v1/sources/{source}/soc/preview"),
+                "synthetic-only-token", body.clone(),
+            ).await?;
+            assert_eq!(code, 200, "corpus preview row {index}: {preview}");
+            assert_eq!(preview["canonical_event"]["source_record_id"], *row);
+            preview_ms.push(phase.elapsed().as_secs_f64() * 1000.0);
+            let ingest_path = format!("/api/v1/sources/{source}/soc/ingest");
+            let phase = std::time::Instant::now();
+            let (code, receipt) = call(
+                app.clone(), ingest_path.clone(), "synthetic-only-token", body.clone(),
+            ).await?;
+            assert_eq!(code, 200, "corpus ingest row {index}: {receipt}");
+            assert_eq!(receipt["status"], "pending");
+            ingest_ms.push(phase.elapsed().as_secs_f64() * 1000.0);
+            admitted += 1;
+
+            if index % 8 == 0 {
+                let (code, duplicate) = call(
+                    app.clone(), ingest_path, "synthetic-only-token", body.clone(),
+                ).await?;
+                assert_eq!(code, 200);
+                assert_eq!(duplicate["receipt_id"], receipt["receipt_id"]);
+                assert_eq!(duplicate["replayed"], true);
+                replayed += 1;
+            }
+            // Keep extraction bounded. All records exercise actual admission.
+            if index < 6 {
+                let phase = std::time::Instant::now();
+                let receipt_id: Uuid = receipt["receipt_id"].as_str().unwrap().parse()?;
+                let pending = soc_ingestion::process(&state, receipt_id).await.unwrap_err();
+                assert!(utopia_core::is_deferred(&pending).is_some());
+                let (_, detail) = receipt_diagnostic(app.clone(), kb, receipt_id, &session).await?;
+                let document: Uuid = detail["document"]["document_id"].as_str().unwrap().parse()?;
+                crate::pipeline::process_document(&state, document).await?;
+                crate::extraction::extract_document(&state, document, Default::default()).await?;
+                crate::soc_alignment::types(&pool, kb).await?;
+                crate::soc_alignment::phrases(&pool, kb).await?;
+                utopia_store::materialize::materialize(&pool, kb).await?;
+                soc_ingestion::process(&state, receipt_id).await?;
+                let (_, detail) = receipt_diagnostic(app.clone(), kb, receipt_id, &session).await?;
+                assert_eq!(detail["status"], "bound");
+                materialization_ms.push(phase.elapsed().as_secs_f64() * 1000.0);
+                let (code, resolved) = call(app.clone(), format!("/api/v1/kbs/{kb}/knowledge/resolve"), &pat,
+                    json!({"tenant_id":"tenant-blue","source_system":"splunk","source_instance":"splunk-e2e",
+                           "entity_type":"SecurityAlert","authority_name":"soc_alert_row_id","source_identifier":row})).await?;
+                assert_eq!(code, 200, "{resolved}");
+                assert_eq!(resolved["status"], "resolved");
+                let phase = std::time::Instant::now();
+                let (code, context) = call(app.clone(), format!("/api/v1/kbs/{kb}/knowledge/context"), &pat,
+                    json!({"tenant_id":"tenant-blue","entity":resolved["candidates"][0]["entity_id"],"limit":5})).await?;
+                assert_eq!(code, 200, "{context}");
+                assert!(!context["facts"].as_array().unwrap().is_empty());
+                context_ms.push(phase.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        assert!(admitted > 0);
+        fn latency(samples: &mut [f64]) -> Value {
+            samples.sort_by(f64::total_cmp);
+            json!({"count":samples.len(), "p50":samples[samples.len()/2],
+                   "p95":samples[(samples.len()-1)*95/100], "max":samples[samples.len()-1]})
+        }
+        println!("TKG_CORPUS {}", json!({"admitted":admitted,"replays":replayed,
+            "materialized":materialization_ms.len(),"elapsed_seconds":started.elapsed().as_secs_f64(),
+            "preview_ms":latency(&mut preview_ms),"ingest_ms":latency(&mut ingest_ms),
+            "materialization_ms":latency(&mut materialization_ms),"context_ms":latency(&mut context_ms)}));
+    }
     sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1 OR payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id=$2)")
         .bind(kb.to_string()).bind(kb).execute(&pool).await?;
     sqlx::query("DELETE FROM organizations WHERE id=$1")
