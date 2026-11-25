@@ -57,18 +57,19 @@ def runtime(data, services, integrated):
                 volume = data["volumes"][mount["source"]]["name"]
                 subprocess.run(["docker", "volume", "inspect", volume], check=True,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    db_mount = next(m for m in services["db"]["volumes"] if m["target"] == "/var/lib/postgresql/data")
-    expected = data["volumes"][db_mount["source"]]["name"]
-    running = subprocess.run(
-        ["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=soorin-tkg-server55",
-         "--filter", "label=com.docker.compose.service=db"],
-        check=True, capture_output=True, text=True,
-    ).stdout.split()
-    for container in running:
-        mounts = subprocess.run(["docker", "inspect", "--format", "{{json .Mounts}}", container],
-                                check=True, capture_output=True, text=True)
-        require(any(m.get("Name") == expected and m["Destination"] == "/var/lib/postgresql/data" for m in json.loads(mounts.stdout)),
-                "Existing TKG database uses a different volume. Review the cutover plan before proceeding.")
+    for name, target in (("db", "/var/lib/postgresql/data"), ("app", "/app/data")):
+        planned = next(m for m in services[name]["volumes"] if m["target"] == target)
+        expected = data["volumes"][planned["source"]]["name"]
+        containers = subprocess.run(
+            ["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=soorin-tkg-server55",
+             "--filter", f"label=com.docker.compose.service={name}"],
+            check=True, capture_output=True, text=True,
+        ).stdout.split()
+        for container in containers:
+            mounts = subprocess.run(["docker", "inspect", "--format", "{{json .Mounts}}", container],
+                                    check=True, capture_output=True, text=True)
+            require(any(m.get("Name") == expected and m["Destination"] == target for m in json.loads(mounts.stdout)),
+                    f"Existing TKG {name} has a different volume. Review the cutover plan before proceeding.")
 
 
 def main():
