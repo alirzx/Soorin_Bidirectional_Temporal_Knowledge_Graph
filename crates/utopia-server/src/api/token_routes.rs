@@ -18,7 +18,7 @@ use crate::state::AppState;
 #[derive(Deserialize)]
 pub struct IssueReq {
     pub name: String,
-    /// read | write。缺省只读——要让 agent 写进账本,得显式勾
+    /// read | write | receipt_status。缺省只读——要让 agent 写进账本,得显式勾
     #[serde(default = "default_scope")]
     pub scope: String,
     /// 缺省 = 这个人能进的全部库

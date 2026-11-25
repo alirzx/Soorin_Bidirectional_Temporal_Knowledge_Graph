@@ -27,7 +27,7 @@ const SHOWN: usize = 16;
 pub struct Authenticated {
     pub user_id: Uuid,
     pub token_id: Uuid,
-    /// read | write
+    /// read | write | receipt_status
     pub scope: String,
     /// None = 这个人能进的全部库
     pub kb_ids: Option<Vec<Uuid>>,
@@ -40,7 +40,7 @@ impl Authenticated {
     /// 那个人在这个库里是什么角色，还得照常问 `access::require_kb`。
     pub fn covers(&self, kb_id: Uuid) -> bool {
         match &self.kb_ids {
-            None => true,
+            None => !self.receipt_only(),
             Some(ids) => ids.contains(&kb_id),
         }
     }

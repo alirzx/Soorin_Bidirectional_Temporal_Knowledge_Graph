@@ -62,3 +62,7 @@ Compose-scoped containers and volumes. Do not run `down -v`, `prune`, or
 
 To reverse the publication, restore `SOORIN_DEV_APP_BIND=127.0.0.1:2516`
 in the **same** `.env` and re-run the **app-only** `up` command above.
+
+## Hardened production path
+
+Use [the canonical production interface](SERVER55_PRODUCTION_RELEASE.md#canonical-hardened-production-interface) for a reviewed cutover. The historical `SOORIN_DEV_APP_BIND` example above applies to the historical Compose stack. In hardened production use `SOORIN_APP_BIND` with a loopback receiver behind the approved HTTPS proxy. The app binds port 1516 inside its container. For SOC integration enable `SOORIN_SOC_INTEGRATION=on` and verify the private alias `soorin-tkg`. Keep database and model ports internal. The standalone DLP HTTPS deployment and its network remain separate.

@@ -83,4 +83,6 @@ networks:
   egress: {}
 volumes:
   soorin_production_db:
+    name: ${SOORIN_PROD_DB_VOLUME:-soorin-tkg-server55_soorin_production_db}
   soorin_production_data:
+    name: ${SOORIN_PROD_DATA_VOLUME:-soorin-tkg-server55_soorin_production_data}

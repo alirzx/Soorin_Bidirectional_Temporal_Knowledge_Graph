@@ -220,6 +220,8 @@ export const en = {
     tokenName: "Name",
     tokenNamePlaceholder: "My laptop",
     tokenScope: "Scope",
+    scopeReceipt: "Receipt status",
+    receiptPickBases: "Select at least one base",
     scopeRead: "Read",
     scopeWrite: "Write",
     scopeHint: "A ceiling, not a grant — a token never does more than you can.",

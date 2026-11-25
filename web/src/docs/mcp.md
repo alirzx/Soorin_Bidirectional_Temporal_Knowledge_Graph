@@ -232,3 +232,5 @@ indicates incomplete evidence independently of result truncation.
 ## SOC receipt status
 
 A PAT with `receipt_status` scope is restricted to the REST receipt status operation for its allowed KBs. Use a scoped read PAT for MCP retrieval. SOC consumes structured graph facts and evidence references alongside human-readable MCP text. A Search match provides document and chunk provenance. For entity traversal, use a verified entity or graph link from authenticated evidence.
+
+Token Settings identifies receipt-only credentials separately and requires an explicit base selection before issuing one. A scoped investigative reader token is still required for tools/list and graph retrieval.

@@ -84,7 +84,7 @@ export interface TokenView {
   name: string;
   /** 给人认的那一小截（`utp_pat_ab12`），够对上配置文件里那一串，又不足以复原 */
   token_prefix: string;
-  scope: "read" | "write";
+  scope: "read" | "write" | "receipt_status";
   kb_ids: string[] | null;
   expires_at: string | null;
   last_used_at: string | null;
@@ -1684,7 +1684,7 @@ export const api = {
   /** 发一枚。**明文只在这一次的响应里**，列表永远给不出它 */
   issueToken: (body: {
     name: string;
-    scope: "read" | "write";
+    scope: "read" | "write" | "receipt_status";
     /** 缺省 = 这个人能进的全部库 */
     kb_ids?: string[] | null;
     /** 0 = 不过期 */

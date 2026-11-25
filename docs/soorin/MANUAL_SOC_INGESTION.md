@@ -149,3 +149,5 @@ clock. Synthetic receipt metadata is the durable admission audit record.
 ## Poll a known receipt
 
 Source authentication and manual Preview/Ingest usage remain available. An administrator can poll the known receipt's payload-free state at `GET /api/v1/kbs/{kb}/knowledge/receipts/{receipt}/status`. A separate PAT with `receipt_status` scope and an explicit KB allowlist may poll that same endpoint when the owner has Viewer access. The status response includes the admitted source ID. Detail, listing, summary and recovery use their existing administrator paths. A lost Ingest acknowledgment can be recovered by replaying identical bytes to the same source.
+
+For polling, use a receipt-only credential with the explicit KB selected in Token Settings. An admin session remains required for the full diagnostic, aggregate status and recovery operations. A pending recoverable processing failure can be polled again with the same receipt ID. A regular reader or source token is not a substitute for the receipt credential.

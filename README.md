@@ -170,6 +170,7 @@ Start with [Local Development](docs/soorin/LOCAL_DEVELOPMENT.md) for an engineer
 | **Ingestion and API contracts** | [Manual SOC Ingestion](docs/soorin/MANUAL_SOC_INGESTION.md) · [OpenAPI Schema](soorin/contracts/schemas/curated_http_v1.openapi.json) |
 | **Identity and temporal semantics** | [Identity Resolution](docs/soorin/ENTITY_RESOLUTION.md) · [Temporal Model](docs/soorin/TEMPORAL_MODEL.md) · [SOC Ontology](docs/soorin/SOC_ONTOLOGY.md) |
 | **Search and agent tools** | [Retrieval & Reranking](docs/soorin/RETRIEVAL_AND_RERANKING.md) · [Agent Tool Contracts](docs/soorin/AGENT_TOOL_CONTRACTS.md) |
+| **Production** | [Hardened Compose and compatibility](docs/soorin/SERVER55_PRODUCTION_RELEASE.md#canonical-hardened-production-interface) |
 | **Integrations** | [Agentic_SOC](docs/soorin/AGENTIC_SOC_INTEGRATION_V1.md) · [Source Mapping](docs/soorin/PRODUCER_MAPPING_V1_20261115.md) |
 | **Models, security, and operations** | [Model Configuration](docs/soorin/MODEL_CONFIGURATION.md) · [Security Boundaries](docs/soorin/SECURITY_BOUNDARIES.md) · [Deployment](docs/soorin/PRODUCTION_DEPLOYMENT.md) |
 | **Engineering validation** | [Testing & Evaluation](docs/soorin/TESTING_AND_EVALUATION.md) · [Engineering Documentation Index](docs/soorin/README.md) |

@@ -370,3 +370,23 @@ test "$(docker inspect "$("${dc[@]}" ps -q models)" -f '{{.Image}}')" = "$model_
 
 Repeat model health, inference and Search after recovery. Pause the scale run
 until each stage passes.
+
+## Canonical hardened production interface
+
+Run `bash scripts/server55_tkg_production.sh config` to validate effective Compose without printing environment values. Set `SOORIN_PROD_ENV_FILE` to the protected file based on `soorin/config/production.env.example`. Use `SOORIN_SOC_INTEGRATION=on` to attach only the app to `aisoc-tkg`. An optional external `SOORIN_PROD_RUNTIME_OVERRIDE` is applied last and subjected to the same checks. The entry point uses the `soorin-tkg-server55` project, the hardened base, and one unified CPU model service. The `preflight` stage checks that required volumes exist and verifies the running database's mount against the planned volume. `status` and `images` inspect the selected project. Build or obtain reviewed images through the existing QA and release build workflow. Deploy a reviewed digest through the separately approved runtime procedure.
+
+| Property | Historical release path | Hardened path |
+|---|---|---|
+| Project and services | `soorin-tkg-server55`, `db`, `app`, unified `models` or experimental model roles | Same project and application service names, one unified `models` |
+| Container and image identity | Compose-generated IDs and reviewed local build tags | Compose-managed containers using reviewed immutable digests |
+| DB volume | `soorin_sprint1_db` at `/var/lib/postgresql/data` | `soorin_production_db` at the same target. Override the platform volume name only after inventory and restoration testing |
+| App data | `soorin_sprint1_data` at `/app/data`, historical ownership | `soorin_production_data` at the same target, writable by UID/GID 65532 |
+| DB identity and role | Historical source run may use DB owner for app | Existing database `utopia` and owner for migrations. Separate `utopia_app` runtime login |
+| Model cache | Three project-scoped snapshot volumes, optional localhost publication | Same three snapshot keys and mount targets, private and read-only under UID/GID 65532 |
+| Networks | Historical default network and role network | Private `database`, private `models`, app egress, optional `aisoc-tkg` |
+| Host listener | Operator-approved LAN/VPN mapping or loopback | App loopback to approved HTTPS proxy. DB and models have no host-published ports |
+| Runtime and health | Historical env and override, version-specific health/restart | Hardened overrides and explicit health/restart, 2 CPUs and 2 GiB each for DB and app, 3 CPUs and 7 GiB for unified CPU models |
+
+The historical deployment remains supported by its original command. The experimental isolated overlay expects a proxy alias on the historical default network. The hardened app uses explicit private networks. Do not combine the two overlays in the canonical command. Model URLs remain in workspace configuration and must resolve through the private model service on ports 8080, 8081 and 8082. Keep approved endpoint origins and snapshots consistent with those settings. Template resources are operating defaults.
+
+For a cutover, inventory existing containers, volume IDs, ownership, active model settings and host bindings. Back up and restore the DB and application data to an isolated target to validate recovery. Review existing PostgreSQL 16/pgvector versions, create and verify the dedicated app role, and resolve receipt PAT migration `10009` before flag activation. Validate the same project and data mapping or approve a documented restore to separately named volumes. Preserve the prior override, image digests and volume inventory until acceptance is complete. For rollback, disable SOC integration first and restore the approved app/database/config combination from the tested recovery point. Never treat starting an empty volume as a migration.

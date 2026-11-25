@@ -157,7 +157,7 @@ function TokenRow({
       </Td>
       <Td>
         <Chip tone={t.scope === "write" ? "warn" : "neutral"}>
-          {t.scope === "write" ? S.account.scopeWrite : S.account.scopeRead}
+          {t.scope === "write" ? S.account.scopeWrite : t.scope === "receipt_status" ? S.account.scopeReceipt : S.account.scopeRead}
         </Chip>
       </Td>
       <Td className="text-small text-ink-2" title={bases}>
@@ -202,7 +202,7 @@ export function Tokens() {
   // 发令牌是个动作，不是这一页的常驻内容：表单住在弹窗里，页面上只有名单
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
-  const [scope, setScope] = useState<"read" | "write">("read");
+  const [scope, setScope] = useState<TokenView["scope"]>("read");
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [days, setDays] = useState<number>(90);
   const [issued, setIssued] = useState<{ token: string; info: TokenView } | null>(null);
@@ -315,7 +315,7 @@ export function Tokens() {
                   {S.account.cancel}
                 </Button>
                 <Button variant="primary" size="sm"
-                  disabled={!name.trim() || issue.isPending}
+                  disabled={!name.trim() || issue.isPending || (scope === "receipt_status" && !picked.size)}
                   onClick={() => issue.mutate()}
                 >
                   {S.account.issueToken}
@@ -344,12 +344,13 @@ export function Tokens() {
                 <Field label={S.account.tokenScope} hint={S.account.scopeHint}>
                   <RadioGroup
                     name="token-scope"
-                    className="flex h-8 flex-row items-center gap-4"
+                    className="flex min-h-8 flex-wrap items-center gap-3"
                     value={scope}
                     onChange={(v) => setScope(v)}
                     options={[
                       { value: "read" as const, label: S.account.scopeRead },
                       { value: "write" as const, label: S.account.scopeWrite },
+                      { value: "receipt_status" as const, label: S.account.scopeReceipt },
                     ]}
                   />
                 </Field>
@@ -374,7 +375,7 @@ export function Tokens() {
                   values={Array.from(picked)}
                   options={kbs.map((k) => ({ value: k.id, label: k.name }))}
                   placeholder={S.account.pickBases}
-                  emptyHint={S.account.allBases}
+                  emptyHint={scope === "receipt_status" ? S.account.receiptPickBases : S.account.allBases}
                   onToggle={(id) => {
                     const next = new Set(picked);
                     if (next.has(id)) next.delete(id);

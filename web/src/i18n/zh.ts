@@ -197,6 +197,8 @@ export const zh: Strings = {
     tokenName: "名字",
     tokenNamePlaceholder: "我的笔记本",
     tokenScope: "范围",
+    scopeReceipt: "回执状态",
+    receiptPickBases: "请选择至少一个库",
     scopeRead: "只读",
     scopeWrite: "可写",
     scopeHint: "是上限，不是授权——令牌永远不会比你自己能做的更多。",
