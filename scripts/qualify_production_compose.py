@@ -38,6 +38,9 @@ def config(data, integrated):
     env = app["environment"]
     require(env.get("UTOPIA_BIND_ADDR") == "0.0.0.0:1516" and env.get("UTOPIA_MODEL_TEST_MODE") == "0",
             "Wrong TKG listener or model-test mode")
+    origin = urlsplit(env.get("UTOPIA_CORS_ORIGIN", ""))
+    require(origin.scheme == "https" and origin.hostname and env.get("UTOPIA_COOKIE_SECURE") == "true",
+            "Immutable production requires an HTTPS origin and secure cookies")
     runtime, owner = (urlsplit(env[name]) for name in ("UTOPIA_DATABASE_URL", "UTOPIA_MIGRATION_URL"))
     require(runtime.username == "utopia_app" and owner.username == db["environment"]["POSTGRES_USER"]
             and runtime.username != owner.username, "Verify separate application and migration database roles")

@@ -1,0 +1,5 @@
+# Applied only by the source runner after explicit selection of lan-http.
+services:
+  app:
+    environment:
+      UTOPIA_COOKIE_SECURE: 'false'

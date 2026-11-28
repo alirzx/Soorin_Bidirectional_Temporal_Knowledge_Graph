@@ -1,6 +1,6 @@
 # Server 55 app release
 
-For local and Server 55 source builds, use the [isolated source deployment procedure](SOURCE_DEPLOYMENT.md).
+For Server 55 synthetic qualification over direct LAN HTTP, use the [LAN upgrade procedure](SOURCE_DEPLOYMENT.md#server-55-direct-lan-http). For encrypted deployments, use the immutable HTTPS procedure below.
 
 Execute on `192.168.0.55` during an approved release window. The last reported baseline was 111 bound and embedded synthetic alerts. A successful eight-pair POST to the model established reachability. The running Rust revision and the full Search result remain release gates.
 

@@ -1,5 +1,6 @@
 # Layer after production and models-isolated. Only the source runner selects profiles.
 x-source:
+  access: ${SOORIN_ACCESS_MODE:-https-proxy}
   model_revision: ${SOORIN_MODEL_BUILD_REVISION:-${SOORIN_BUILD_REVISION:?}}
   soc: ${SOORIN_SOC_INTEGRATION:-off}
   diagnostics: ${SOORIN_MODEL_DIAGNOSTICS:-off}
