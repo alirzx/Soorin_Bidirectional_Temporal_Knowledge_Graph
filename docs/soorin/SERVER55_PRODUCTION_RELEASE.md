@@ -1,5 +1,7 @@
 # Server 55 app release
 
+For local and Server 55 source builds, use the [isolated source deployment procedure](SOURCE_DEPLOYMENT.md).
+
 Execute on `192.168.0.55` during an approved release window. The last reported baseline was 111 bound and embedded synthetic alerts. A successful eight-pair POST to the model established reachability. The running Rust revision and the full Search result remain release gates.
 
 ## Synchronize the server checkout
@@ -266,7 +268,7 @@ cargo test --locked -p utopia-store enrichment_backlog_leaves_room_for_graph_wor
 cargo test --locked --workspace
 ```
 
-## Model image and optional isolation
+## Historical unified-image rollout
 
 The current unified image supports the new app's smaller reranking requests
 and the role-specific `serve` CLI. The changed Python telemetry, queue rejection
@@ -303,7 +305,7 @@ for port in 2811 2812 2813; do
 done
 ```
 
-### Experimental isolation
+### Historical QA isolation
 
 Isolation gives each role an independent admission gate and restart lifecycle.
 Each role loads one snapshot from the same qualified image. The proxy owns the

@@ -160,6 +160,8 @@ See [Producer Mapping](docs/soorin/PRODUCER_MAPPING_V1_20261115.md), [Agentic_SO
 
 The repository separates application, model-runtime, and database concerns and provides distinct configurations for development and controlled deployment. Model artifacts, secrets, persistent volumes, and service access are managed outside the source tree.
 
+Build from a reviewed source revision on a local host or Server 55 with isolated CPU embedding and reranking. [Source deployment and rollback](docs/soorin/SOURCE_DEPLOYMENT.md)
+
 Start with [Local Development](docs/soorin/LOCAL_DEVELOPMENT.md) for an engineering environment or [Deployment & Operations](docs/soorin/PRODUCTION_DEPLOYMENT.md) for the documented deployment, configuration, security, backup, and recovery requirements.
 
 ## Documentation

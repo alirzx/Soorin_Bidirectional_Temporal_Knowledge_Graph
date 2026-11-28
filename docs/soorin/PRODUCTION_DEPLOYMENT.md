@@ -1,7 +1,11 @@
 # Independent Soorin deployment
 
+For local and Server 55 source builds, use the [isolated source deployment procedure](SOURCE_DEPLOYMENT.md).
+
 Status: configuration prepared and statically validated. No image built, release
 published, stack started, or production acceptance claimed in this pass.
+
+## Immutable registry images
 
 Use `docker-compose.production.yml`, optionally with
 `docker-compose.models-production.yml`.

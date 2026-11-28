@@ -1,4 +1,4 @@
-# Experimental Server 55 overlay. Enable models-isolated only after stopping models.
+# Isolated CPU workers shared by the QA and source deployment paths.
 x-model-role: &model-role
   image: ${SOORIN_CPU_MODEL_IMAGE:-soorin-tkg-v1-qa-models:latest}
   pull_policy: never
@@ -25,8 +25,8 @@ x-model-role: &model-role
 services:
   models-embedding:
     <<: *model-role
-    cpus: 1.20
-    mem_limit: 3g
+    cpus: ${SOORIN_EMBEDDING_CPUS:-1.20}
+    mem_limit: ${SOORIN_EMBEDDING_MEMORY:-3g}
     command: [serve, --role, embedding, --host, 0.0.0.0, --port, "8080", --cache, /models/embedding]
     volumes: [soorin_embedding_cache:/models/embedding:ro]
     environment:
@@ -37,8 +37,8 @@ services:
       SOORIN_MODEL_QUEUE_TIMEOUT_SECONDS: ${SOORIN_EMBEDDING_MODEL_QUEUE_TIMEOUT_SECONDS:-6}
   models-reranker:
     <<: *model-role
-    cpus: 1.40
-    mem_limit: 3g
+    cpus: ${SOORIN_RERANKER_CPUS:-1.40}
+    mem_limit: ${SOORIN_RERANKER_MEMORY:-3g}
     command: [serve, --role, reranker, --host, 0.0.0.0, --port, "8080", --cache, /models/reranker]
     volumes: [soorin_reranker_cache:/models/reranker:ro]
     environment:

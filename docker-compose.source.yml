@@ -1,0 +1,64 @@
+# Layer after production and models-isolated. Only the source runner selects profiles.
+x-source:
+  model_revision: ${SOORIN_MODEL_BUILD_REVISION:-${SOORIN_BUILD_REVISION:?}}
+  soc: ${SOORIN_SOC_INTEGRATION:-off}
+  diagnostics: ${SOORIN_MODEL_DIAGNOSTICS:-off}
+  ner: ${SOORIN_ENABLE_NER:-off}
+  lifecycle: ${SOORIN_VOLUME_MODE:?Select fresh or preserve}
+
+services:
+  db:
+    pull_policy: never
+  app:
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        SOORIN_BUILD_REVISION: ${SOORIN_BUILD_REVISION:?}
+        CARGO_BUILD_JOBS: ${SOORIN_BUILD_JOBS:-1}
+        NODE_BASE_IMAGE: ${SOORIN_NODE_BASE_IMAGE:-docker.arvancloud.ir/node:20-slim}
+        RUST_BASE_IMAGE: ${SOORIN_RUST_BASE_IMAGE:-docker.arvancloud.ir/rust:1.99.1-slim-bookworm}
+        DEBIAN_BASE_IMAGE: ${SOORIN_DEBIAN_BASE_IMAGE:-docker.arvancloud.ir/debian:bookworm-slim}
+        NPM_REGISTRY_URL: ${NPM_REGISTRY_URL:-https://package-mirror.liara.ir/repository/npm/}
+        NPM_FALLBACK_REGISTRY_URL: ${NPM_FALLBACK_REGISTRY_URL:-https://registry.npmjs.org/}
+        APT_PRIMARY_DEBIAN_URL: ${APT_PRIMARY_DEBIAN_URL:-https://mirror.arvancloud.ir/debian}
+        APT_PRIMARY_SECURITY_URL: ${APT_PRIMARY_SECURITY_URL:-https://mirror.arvancloud.ir/debian-security}
+        APT_FALLBACK_DEBIAN_URL: ${APT_FALLBACK_DEBIAN_URL:-https://mirror.metanet.ch/debian}
+        APT_FALLBACK_SECURITY_URL: ${APT_FALLBACK_SECURITY_URL:-https://mirror.metanet.ch/debian-security}
+        APT_LAST_DEBIAN_URL: ${APT_LAST_DEBIAN_URL:-https://mirrors.huaweicloud.com/repository/debian}
+        APT_LAST_SECURITY_URL: ${APT_LAST_SECURITY_URL:-https://mirrors.huaweicloud.com/repository/debian-security}
+    environment:
+      UTOPIA_MODEL_TRUSTED_ORIGINS: http://models:8080,http://models:8081
+  models-embedding:
+    build:
+      context: .
+      dockerfile: docker/models.Dockerfile
+      args:
+        SOORIN_BUILD_REVISION: ${SOORIN_BUILD_REVISION:?}
+        PYTHON_BASE_IMAGE: ${SOORIN_PYTHON_BASE_IMAGE:-docker.arvancloud.ir/python:3.12-slim-bookworm}
+        PIP_PRIMARY_INDEX_URL: ${PIP_PRIMARY_INDEX_URL:-https://package-mirror.liara.ir/repository/pypi/simple}
+        PIP_FALLBACK_INDEX_URL: ${PIP_FALLBACK_INDEX_URL:-https://mirror2.chabokan.net/pypi/simple/}
+        TORCH_CPU_INDEX_URL: ${TORCH_CPU_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+  models-proxy:
+    networks: !override
+      models:
+        aliases: [models]
+      model_roles: {}
+    ports: !reset []
+volumes:
+  soorin_production_db:
+    external: true
+    name: ${SOORIN_PROD_DB_VOLUME:?Select a database volume}
+  soorin_production_data:
+    external: true
+    name: ${SOORIN_PROD_DATA_VOLUME:?Select an application data volume}
+  soorin_embedding_cache:
+    external: true
+    name: ${SOORIN_EMBEDDING_CACHE_VOLUME:-${COMPOSE_PROJECT_NAME}_soorin_embedding_cache}
+  soorin_reranker_cache:
+    external: true
+    name: ${SOORIN_RERANKER_CACHE_VOLUME:-${COMPOSE_PROJECT_NAME}_soorin_reranker_cache}
+  soorin_ner_cache:
+    external: true
+    name: ${SOORIN_NER_CACHE_VOLUME:-${COMPOSE_PROJECT_NAME}_soorin_ner_cache}

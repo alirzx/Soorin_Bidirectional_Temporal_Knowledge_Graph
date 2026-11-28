@@ -55,6 +55,8 @@ jobs:
             -p soorin-tkg-v1-qa \
             -f docker-compose.soorin-dev.yml -f docker-compose.models.yml -f docker-compose.models-isolated.yml \
             --profile models-isolated --profile models-isolated-ner config --quiet
+      - name: Render canonical source deployment with synthetic local and Server 55 inputs
+        run: python -m unittest soorin.tests.contracts.test_source_deployment -v
       - name: Verify guarded acceptance harness using mocks
         run: python -m unittest soorin.e2e.test_reliability_5k_http soorin.e2e.test_soc_production_reliability -v
       - name: Compile Python sources

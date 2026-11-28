@@ -1,0 +1,4 @@
+services:
+  app:
+    environment:
+      UTOPIA_MODEL_TRUSTED_ORIGINS: http://models:8080,http://models:8081,http://models:8082

@@ -1,0 +1,5 @@
+services:
+  models-proxy:
+    ports:
+      - "127.0.0.1:${SOORIN_EMBEDDING_DIAGNOSTIC_PORT:-2811}:8080"
+      - "127.0.0.1:${SOORIN_RERANKER_DIAGNOSTIC_PORT:-2812}:8081"

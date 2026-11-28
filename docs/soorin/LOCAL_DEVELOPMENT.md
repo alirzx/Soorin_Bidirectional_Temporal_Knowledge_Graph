@@ -1,5 +1,7 @@
 # Local development
 
+For local and Server 55 source builds, use the [isolated source deployment procedure](SOURCE_DEPLOYMENT.md).
+
 Repository: `/mnt/X/Soorin/soorin_bi_TKG/utopia`; active branch: `main`. Preserve existing services and volumes.
 Both the historical 1516/1517 lab and the 2516/2517 source-build project may already
 exist; inventory ports, container/project names and mounted volumes before startup.
